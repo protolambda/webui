@@ -42,31 +42,70 @@ func Render(w http.ResponseWriter, r *http.Request, status int, node elem.Node) 
 	return nil
 }
 
-// Choose renders fragment for htmx requests ([IsHTMX]) and full otherwise,
-// with [Render], and adds HX-Request to the Vary header of both, so that
-// caches (the browser's own included) keep the two representations apart.
+// Choose renders fragment for requests that swap the answer into an
+// element of the page ([WantsFragment]) and full otherwise, with [Render].
+// It adds HX-Request and HX-Boosted to the Vary header of both, so that
+// caches (the browser's own included) keep the representations apart.
 //
 // The fragment is usually the part of the page that the htmx request swaps,
 // and full the page that embeds the same fragment, so that the URL also
-// works without htmx (a reload, a bookmark, a browser without script).
+// works without htmx (a reload, a bookmark, a browser without script). A
+// boosted request (hx-boost, HX-Boosted) gets the full page too: htmx
+// swaps the body of a boosted answer into the page's body, so a fragment
+// would replace the whole page, the navbar and the alerts region included.
+// A boosted link inside an element with hx-target swaps into that target
+// instead; give it hx-select, which picks the part from the full page.
 func Choose(w http.ResponseWriter, r *http.Request, status int, fragment, full elem.Node) error {
-	hx2.AddVary(w.Header())
-	if IsHTMX(r) {
+	h := w.Header()
+	hx2.AddVary(h)
+	addVary(h, hx2.HeaderBoosted)
+	if WantsFragment(r) {
 		return Render(w, r, status, fragment)
 	}
 	return Render(w, r, status, full)
 }
 
-// IsHTMX reports whether r is an htmx request that expects a fragment: it
+// addVary adds name to the Vary header of h, unless a Vary value already
+// names it (in any letter case) or is "*".
+func addVary(h http.Header, name string) {
+	for _, line := range h.Values("Vary") {
+		for v := range strings.SplitSeq(line, ",") {
+			if v = strings.TrimSpace(v); v == "*" || strings.EqualFold(v, name) {
+				return
+			}
+		}
+	}
+	h.Add("Vary", name)
+}
+
+// IsHTMX reports whether r is an htmx request whose answer htmx handles: it
 // carries HX-Request: true, and is not a history restore request
 // (HX-History-Restore-Request: true), which needs a full page because htmx
 // swaps the response into the whole body.
+//
+// Boosted requests (HX-Boosted) are htmx requests: [Redirect] answers them
+// with HX-Redirect and [Errors] with an alert for the alerts region, which
+// suits them. Only their successful answer differs from other htmx
+// requests: it is the full page, which [Choose] picks with
+// [WantsFragment].
 //
 // The headers come from the client, and anyone can forge them: use IsHTMX
 // to choose a representation, never to make an authorization decision.
 func IsHTMX(r *http.Request) bool {
 	h := hx2.ParseRequestHeaders(r.Header)
 	return h.Request && !h.HistoryRestoreRequest
+}
+
+// WantsFragment reports whether r is an htmx request ([IsHTMX]) that swaps
+// its answer into an element of the page, so that a fragment answers it:
+// one that is not boosted (HX-Boosted: true). A boosted request, from a
+// link or form inside an element with hx-boost, navigates: htmx swaps the
+// body of the answer into the page's body, so it needs the full page.
+//
+// Like IsHTMX, use it to choose a representation only, and add HX-Request
+// and HX-Boosted to Vary when the answer depends on it ([Choose] does).
+func WantsFragment(r *http.Request) bool {
+	return IsHTMX(r) && !hx2.ParseRequestHeaders(r.Header).Boosted
 }
 
 // IsPrefetch reports whether r is a speculative request that the browser

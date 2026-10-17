@@ -48,9 +48,12 @@ func (n Notice) Alert() elem.Node {
 type Notices map[string]Notice
 
 // Target returns target with the notice parameter set to code (replacing
-// an earlier one), as [WithParam] does. It panics if code is not a valid
-// code of the registry: codes are constants of the application, so an
-// unknown one is a programming error.
+// an earlier one), as [WithParam] does. Pass target as an absolute path,
+// as for [Redirect]: a relative one, such as "#new", gives a relative
+// result ("?notice=saved#new"), which plain and htmx requests resolve
+// against different URLs. It panics if code is not a valid code of the
+// registry: codes are constants of the application, so an unknown one is
+// a programming error.
 func (n Notices) Target(target, code string) string {
 	if _, ok := n[code]; !ok || !validCode(code) {
 		panic(fmt.Sprintf("web: unknown notice code %q", code))
@@ -58,8 +61,8 @@ func (n Notices) Target(target, code string) string {
 	return WithParam(target, NoticeParam, code)
 }
 
-// Redirect redirects to target with the notice code, with [Redirect]. It
-// panics like [Notices.Target].
+// Redirect redirects to target, an absolute path, with the notice code,
+// with [Redirect]. It panics like [Notices.Target].
 func (n Notices) Redirect(w http.ResponseWriter, r *http.Request, target, code string) {
 	Redirect(w, r, n.Target(target, code))
 }

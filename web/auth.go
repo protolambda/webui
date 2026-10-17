@@ -17,9 +17,11 @@ const NextParam = "next"
 // login, a local path such as "/login":
 //
 //   - an htmx request ([IsHTMX]) gets 401 with HX-Redirect to
-//     login?next=PAGE, where PAGE is the path and query of the page the user
-//     is on (HX-Current-URL), so that an expired session in a polled or
-//     submitted fragment moves the whole page to the login;
+//     login?next=PAGE, so that an expired session in a polled or submitted
+//     fragment moves the whole page to the login. PAGE is the path and query
+//     of the request for a boosted GET or HEAD (HX-Boosted), which navigates
+//     to it like a plain link, and otherwise of the page the user is on
+//     (HX-Current-URL);
 //   - a GET or HEAD request gets 303 See Other to login?next=URI, where URI
 //     is the path and query of the request;
 //   - any other request (a form post without htmx) gets a 403 error page
@@ -54,7 +56,7 @@ func (e Errors) RequireAuth(login string, authed func(r *http.Request) bool) mw.
 			switch {
 			case IsHTMX(r):
 				hx2.AddVary(h)
-				hx2.SetRedirect(h, loginURL(login, currentPage(r)))
+				hx2.SetRedirect(h, loginURL(login, returnPage(r)))
 				w.WriteHeader(http.StatusUnauthorized)
 			case r.Method == http.MethodGet || r.Method == http.MethodHead:
 				hx2.AddVary(h)
@@ -64,6 +66,17 @@ func (e Errors) RequireAuth(login string, authed func(r *http.Request) bool) mw.
 			}
 		})
 	}
+}
+
+// returnPage returns the page that an htmx request should come back to
+// after logging in: the request itself for a boosted GET or HEAD, which is a
+// navigation, and otherwise the page it came from ([currentPage]). It is a
+// safe local path, or "".
+func returnPage(r *http.Request) string {
+	if hx2.ParseRequestHeaders(r.Header).Boosted && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		return SafeNext(r.URL.RequestURI(), "")
+	}
+	return currentPage(r)
 }
 
 // currentPage returns the path and query of the page that an htmx request

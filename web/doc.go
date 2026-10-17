@@ -18,22 +18,28 @@
 // error, which the policy classifies: request-size, form, CSRF and origin
 // errors get their 4xx status, an interrupted request 503, and anything
 // else 500 with a fixed message. Public messages never contain request
-// data; causes are logged, with the route pattern rather than the path.
+// data; causes are logged, never the path or query (mw.LogRequests with
+// RequestLog.Routes tags the records with the route pattern).
 //
 // A plain request gets a full error page in the application's layout. An
-// htmx request gets an alert that htmx swaps into the alerts region of the
-// page (page.AlertsID), with the real status: webui's htmx configuration
-// swaps 4xx and 5xx responses, so the message shows without client-side
-// script.
+// htmx request, boosted or not, gets an alert that htmx swaps into the
+// alerts region of the page (page.AlertsID), whatever hx-select the page
+// uses, with the real status: webui's htmx configuration swaps 4xx and 5xx
+// responses, so the message shows without client-side script. A client
+// that went away gets nothing, while a request whose context ended on the
+// server's side, such as past the deadline of a timeout middleware, still
+// gets its answer (503 for the context error).
 //
 // # Rendering
 //
 // [Render] renders a view into a buffer before it writes anything, so a
 // failing view never produces half a page. [Choose] picks the fragment for
-// htmx requests and the full page otherwise, and sets Vary: HX-Request.
-// [IsHTMX] reports whether a request wants a fragment; it is false for
-// htmx history restore requests, which need a full page. htmx headers are
-// set by the client: they choose a representation, never an authorization.
+// htmx requests and the full page otherwise, and sets Vary: HX-Request,
+// HX-Boosted. [WantsFragment] reports whether a request wants a fragment:
+// an htmx request ([IsHTMX]) that is not boosted, since htmx swaps a
+// boosted answer into the whole body, as it does for history restore
+// requests, which IsHTMX excludes. htmx headers are set by the client: they
+// choose a representation, never an authorization.
 //
 // # Redirects
 //

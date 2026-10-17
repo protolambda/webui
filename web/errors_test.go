@@ -24,6 +24,7 @@ import (
 
 	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/form"
+	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/session"
@@ -76,12 +77,16 @@ func TestErrorFragment(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	h := web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("HX-Trigger", "taskSaved")
+		w.Header().Set("HX-Reselect", "#main")
 		return web.Conflict("", nil)
 	})
 	res := cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPost, "/tasks/7", nil), "https://app.example/tasks"))
 	t.Must(res.Status(http.StatusConflict))
 	t.Must(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
 	t.Must(res.Header("HX-Reswap", ct.Exact("innerHTML")))
+	// An hx-select that the page puts on the trigger would filter the
+	// alert out: the answer turns it off.
+	t.Must(res.Header("HX-Reselect", ct.Exact("unset")))
 	t.Must(res.Header("HX-Push-Url", ct.Exact("false")))
 	t.Must(res.HeaderAbsent("HX-Trigger"))
 	t.Must(res.Header("Vary", ct.Exact("HX-Request")))
@@ -205,20 +210,127 @@ func TestClientGone(gt *testing.T) {
 		{web.NotFound("", nil), slog.LevelDebug},
 		{errors.New("db failed"), slog.LevelError},
 	}
-	for _, c := range cases {
-		l := new(logs)
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		r := request(t, l, http.MethodGet, "/", nil).WithContext(mw.WithLogger(ctx, slog.New(l.handler())))
-		w := newFakeWriter()
-		web.Errors{}.Handle(failWith(c.err)).ServeHTTP(w, r)
-		t.Must(be.Equal(0, w.status))
-		t.Must(be.Equal("", w.body.String()))
-		recs := l.all()
-		t.Must(be.Equal(1, len(recs)))
-		t.Must(be.Equal(c.level, recs[0].level))
-		t.Must(be.Equal("request failed after the client went away", recs[0].msg))
+	// net/http cancels the request's context when the client goes away;
+	// contexts that handlers or middleware derive from it report the same,
+	// a deadline or a cause of their own included.
+	derive := map[string]func(ctx context.Context) context.Context{
+		"request": func(ctx context.Context) context.Context { return ctx },
+		"with cause": func(ctx context.Context) context.Context {
+			ctx, cancel := context.WithCancelCause(ctx)
+			t.Cleanup(func() { cancel(nil) })
+			return ctx
+		},
+		"with timeout": func(ctx context.Context) context.Context {
+			ctx, cancel := context.WithTimeout(ctx, time.Hour)
+			t.Cleanup(cancel)
+			return ctx
+		},
 	}
+	for name, derived := range derive {
+		for _, c := range cases {
+			l := new(logs)
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			ctx = derived(ctx)
+			r := request(t, l, http.MethodGet, "/", nil).WithContext(mw.WithLogger(ctx, slog.New(l.handler())))
+			w := newFakeWriter()
+			web.Errors{}.Handle(failWith(c.err)).ServeHTTP(w, r)
+			t.Mustf(be.Equal(0, w.status), "%s: %v", name, c.err)
+			t.Must(be.Equal("", w.body.String()))
+			recs := l.all()
+			t.Must(be.Equal(1, len(recs)))
+			t.Must(be.Equal(c.level, recs[0].level))
+			t.Must(be.Equal("request failed after the client went away", recs[0].msg))
+		}
+	}
+}
+
+// TestServerSideDeadline checks that a request whose context ended on the
+// server's side, past a deadline that a timeout middleware set or canceled
+// with the application's own cause, is answered: its client still waits.
+func TestServerSideDeadline(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	ended := map[string]func(ctx context.Context) context.Context{
+		"deadline": func(ctx context.Context) context.Context {
+			ctx, cancel := context.WithDeadline(ctx, time.Unix(0, 0))
+			t.Cleanup(cancel)
+			return ctx
+		},
+		"deadline with cause": func(ctx context.Context) context.Context {
+			ctx, cancel := context.WithDeadlineCause(ctx, time.Unix(0, 0), errors.New("too slow"))
+			t.Cleanup(cancel)
+			return ctx
+		},
+		"cancel cause": func(ctx context.Context) context.Context {
+			ctx, cancel := context.WithCancelCause(ctx)
+			cancel(errors.New("shutting down"))
+			return ctx
+		},
+	}
+	cases := []struct {
+		name    string
+		err     func(r *http.Request) error
+		status  int
+		message string
+		level   slog.Level
+	}{
+		{"context error", func(r *http.Request) error { return fmt.Errorf("query: %w", r.Context().Err()) }, 503, web.MessageInterrupted, slog.LevelWarn},
+		{"other error", func(*http.Request) error { return errors.New("db failed") }, 500, web.DefaultMessage(500), slog.LevelError},
+		{"public error", func(*http.Request) error { return web.NotFound("", nil) }, 404, web.DefaultMessage(404), slog.LevelDebug},
+	}
+	for name, end := range ended {
+		for _, c := range cases {
+			t.Run(name+"/"+c.name, func(t devtest.T) {
+				timeout := func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						next.ServeHTTP(w, r.WithContext(end(r.Context())))
+					})
+				}
+				l := new(logs)
+				h := timeout(web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+					<-r.Context().Done()
+					return c.err(r)
+				}))
+
+				res := cthttp.Serve(h, request(t, l, http.MethodGet, "/tasks", nil))
+				t.Must(res.Status(c.status))
+				t.Must(res.Header("Content-Type", ct.Exact(web.ContentType)))
+				t.Must(res.HTML().Find(ct.ID(page.AlertsID)).Find(ct.Role("alert")).Texts(c.message))
+
+				htmx := cthttp.Serve(h, asHTMX(request(t, l, http.MethodPost, "/tasks", nil), ""))
+				t.Must(htmx.Status(c.status))
+				t.Must(htmx.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
+				t.Must(htmx.HTMLFragment("div").Find(ct.Role("alert")).Texts(c.message))
+
+				// One record per request, none about a failed render.
+				recs := l.all()
+				t.Must(be.Equal(2, len(recs)))
+				for _, rec := range recs {
+					t.Must(be.Equal("request failed", rec.msg))
+					t.Must(be.Equal(c.level, rec.level))
+				}
+			})
+		}
+	}
+}
+
+// TestErrorDocumentKeepsContextValues checks that the error page of a
+// request past its deadline renders with the request context's values.
+func TestErrorDocumentKeepsContextValues(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	type key struct{}
+	errs := web.Errors{Document: func(r *http.Request, v web.ErrorView) elem.Node {
+		return elem.Fn(func(ctx context.Context) (elem.Node, error) {
+			return text.P()(text.Text(ctx.Value(key{}).(string))), nil
+		})
+	}}
+	ctx, cancel := context.WithDeadline(context.WithValue(t.Context(), key{}, "from the request"), time.Unix(0, 0))
+	defer cancel()
+	r := request(t, nil, http.MethodGet, "/", nil)
+	r = r.WithContext(mw.WithLogger(ctx, mw.Logger(r.Context())))
+	res := cthttp.Serve(errs.Handle(failWith(ctx.Err())), r)
+	t.Must(res.Status(http.StatusServiceUnavailable))
+	t.Must(res.Body(ct.Exact("<p>from the request</p>")))
 }
 
 func TestErrorAfterResponseStarted(gt *testing.T) {
@@ -402,30 +514,79 @@ func TestDefaultDocumentAssets(gt *testing.T) {
 	t.Must(res.HTML().Find(ct.Attr("rel", "stylesheet")).Matches(ct.Attr("href", set.URL("app.css"))))
 }
 
-// TestLogsRouteNotPath checks that the error log names the route pattern,
-// never the path, which may hold a capability.
-func TestLogsRouteNotPath(gt *testing.T) {
+// TestLogsPatternNotPath checks that the error log names the route pattern,
+// through the request logger of mw.LogRequests, and never the path, which
+// may hold a capability.
+func TestLogsPatternNotPath(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	l := new(logs)
 	errs := web.Errors{}
 	mux := http.NewServeMux()
 	mux.Handle("GET /share/{token}", errs.Handle(failWith(errors.New("lookup failed"))))
+	mux.Handle("GET /panic", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("broken") }))
 	mux.Handle("/", errs.NotFound())
+	// A middleware that derives a new request loses r.Pattern: the request
+	// logger keeps it.
+	derive := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(r.Context()))
+		})
+	}
+	h := mw.Chain(mux, mw.LogRequests(mw.RequestLog{Routes: mux}), errs.Recover, derive)
 
-	res := cthttp.Serve(mux, request(t, l, http.MethodGet, "/share/CAPABILITY-TOKEN?x=QUERY-VALUE", nil))
+	res := cthttp.Serve(h, request(t, l, http.MethodGet, "/share/CAPABILITY-TOKEN?x=QUERY-VALUE", nil))
 	t.Must(res.Status(http.StatusInternalServerError))
-	res = cthttp.Serve(mux, request(t, l, http.MethodGet, "/missing/PATH-VALUE", nil))
+	res = cthttp.Serve(h, request(t, l, http.MethodGet, "/missing/PATH-VALUE", nil))
 	t.Must(res.Status(http.StatusNotFound))
 	t.Must(be.False(strings.Contains(res.BodyString(), "PATH-VALUE")))
+	res = cthttp.Serve(h, request(t, l, http.MethodGet, "/panic?x=QUERY-VALUE", nil))
+	t.Must(res.Status(http.StatusInternalServerError))
 
-	recs := l.all()
-	t.Must(be.Equal(2, len(recs)))
-	t.Must(be.Equal("GET /share/{token}", recs[0].attrs["route"]))
-	t.Must(be.Equal("/", recs[1].attrs["route"]))
+	want := map[string]string{
+		"request failed": "",
+		"handler panic":  "GET /panic",
+	}
+	var failed []string
+	for _, rec := range l.all() {
+		if rec.msg == "http request" {
+			continue
+		}
+		_, ok := want[rec.msg]
+		t.Mustf(be.True(ok), "record %q", rec.msg)
+		_, hasRoute := rec.attrs["route"]
+		t.Must(be.False(hasRoute))
+		t.Must(be.Equal("GET", rec.attrs["method"]))
+		if rec.msg == "request failed" {
+			failed = append(failed, rec.attrs["pattern"])
+		} else {
+			t.Must(be.Equal(want[rec.msg], rec.attrs["pattern"]))
+		}
+	}
+	t.Must(be.DeepEqual([]string{"GET /share/{token}", "/"}, failed))
 	logText := l.text()
 	for _, leaked := range []string{"CAPABILITY-TOKEN", "QUERY-VALUE", "PATH-VALUE"} {
 		t.Mustf(be.False(strings.Contains(logText, leaked)), "log contains %s", leaked)
 	}
+}
+
+func TestNotFoundAnswers(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	h := web.Errors{}.NotFound()
+	res := cthttp.Serve(h, request(t, nil, http.MethodGet, "/projects/PATH-VALUE", nil))
+	t.Must(res.Status(http.StatusNotFound))
+	t.Must(res.HTML().Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusNotFound)))
+	t.Must(be.False(strings.Contains(res.BodyString(), "PATH-VALUE")))
+
+	// A boosted link to a missing page shows the alert on the current page.
+	r := asHTMX(request(t, nil, http.MethodGet, "/projects/PATH-VALUE", nil), "https://app.example/tasks")
+	r.Header.Set(hx2.HeaderBoosted, "true")
+	htmx := cthttp.Serve(h, r)
+	t.Must(htmx.Status(http.StatusNotFound))
+	t.Must(htmx.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
+	t.Must(htmx.Header("HX-Reswap", ct.Exact("innerHTML")))
+	t.Must(htmx.Header("HX-Reselect", ct.Exact("unset")))
+	t.Must(htmx.Header("HX-Push-Url", ct.Exact("false")))
+	t.Must(htmx.HTMLFragment("div").Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusNotFound)))
 }
 
 func TestWriteNilError(gt *testing.T) {
@@ -458,6 +619,8 @@ func TestRecover(gt *testing.T) {
 	htmx := cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPost, "/tasks", nil), ""))
 	t.Must(htmx.Status(http.StatusInternalServerError))
 	t.Must(htmx.Header("HX-Retarget", ct.Exact("#alerts")))
+	t.Must(htmx.Header("HX-Reselect", ct.Exact("unset")))
+	t.Must(htmx.Header("HX-Push-Url", ct.Exact("false")))
 }
 
 // recovered runs fn and returns the value it panics with.

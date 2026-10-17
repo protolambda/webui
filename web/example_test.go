@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 
 	"github.com/protolambda/chord/core/elem"
@@ -83,7 +84,8 @@ func ExampleRender() {
 }
 
 // One handler serves the fragment to htmx and the page around it to
-// everyone else.
+// everyone else, boosted links included: htmx swaps their answer into the
+// whole body.
 func ExampleChoose() {
 	list := text.P()(text.Text("3 tasks"))
 	h := web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
@@ -92,12 +94,17 @@ func ExampleChoose() {
 	})
 	serve(h, htmxRequest(http.MethodGet, "/tasks", "https://app.example/tasks"), "Vary")
 	serve(h, httptest.NewRequest(http.MethodGet, "/tasks", nil), "Vary")
+	boosted := htmxRequest(http.MethodGet, "/tasks", "https://app.example/notes")
+	boosted.Header.Set("HX-Boosted", "true")
+	serve(h, boosted)
 	// Output:
 	// 200
-	// Vary: HX-Request
+	// Vary: HX-Request, HX-Boosted
 	// <p>3 tasks</p>
 	// 200
-	// Vary: HX-Request
+	// Vary: HX-Request, HX-Boosted
+	// <main id="main" class="flex-grow-1"><div class="container py-3"><div id="alerts" aria-live="polite"></div><p>3 tasks</p></div></main>
+	// 200
 	// <main id="main" class="flex-grow-1"><div class="container py-3"><div id="alerts" aria-live="polite"></div><p>3 tasks</p></div></main>
 }
 
@@ -123,18 +130,70 @@ func ExampleErrors_Handle() {
 }
 
 // An htmx request gets the alert, retargeted to the page's alerts region,
-// with the real status; unknown errors get a fixed message.
+// with the real status; unknown errors get a fixed message. HX-Reselect
+// unset keeps an hx-select of the page from filtering the alert out, and
+// HX-Push-Url false keeps the URL.
 func ExampleErrors_Handle_htmx() {
 	save := web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
 		return errors.New("store: disk full at /var/lib/tasks")
 	})
-	serve(save, htmxRequest(http.MethodPost, "/tasks", "https://app.example/tasks"), "HX-Retarget", "HX-Reswap", "HX-Push-Url")
+	serve(save, htmxRequest(http.MethodPost, "/tasks", "https://app.example/tasks"), "HX-Retarget", "HX-Reswap", "HX-Reselect", "HX-Push-Url")
 	// Output:
 	// 500
 	// HX-Retarget: #alerts
 	// HX-Reswap: innerHTML
+	// HX-Reselect: unset
 	// HX-Push-Url: false
 	// <div class="alert alert-danger" role="alert">The request failed. The server log has details.</div>
+}
+
+// Recover answers a panic with the 500 error page; the panic value goes to
+// the log only. Placed inside mw.LogRequests, the request record has the
+// 500, and the panic record carries the request's method and pattern.
+func ExampleErrors_Recover() {
+	// Print the records without their varying attributes.
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case slog.TimeKey, "stack", "duration", "bytes":
+				return slog.Attr{}
+			}
+			return a
+		},
+	}))
+	errs := web.Errors{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		panic("task store not opened")
+	})
+	h := mw.Chain(mux, mw.LogRequests(mw.RequestLog{Logger: logger, Routes: mux}), errs.Recover)
+	serve(h, httptest.NewRequest(http.MethodGet, "/tasks/7", nil))
+	// Output:
+	// level=ERROR msg="handler panic" method=GET pattern="GET /tasks/{id}" panic="task store not opened"
+	// level=INFO msg="http request" method=GET pattern="GET /tasks/{id}" status=500
+	// 500
+	// <main id="main" class="flex-grow-1"><div class="container py-3"><header id="page-header" class="mb-3"><h1 class="h4 mb-0">500 Internal Server Error</h1></header><div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">The request failed. The server log has details.</div></div><p><a href="/">Go to the start page</a></p></div></main>
+}
+
+// NotFound answers the requests that no other route matches, without
+// naming the path; a boosted link to a missing page shows the alert on the
+// page it was clicked on.
+func ExampleErrors_NotFound() {
+	errs := web.Errors{}
+	mux := http.NewServeMux()
+	mux.Handle("/", errs.NotFound())
+	serve(mux, httptest.NewRequest(http.MethodGet, "/projects/7", nil), "Cache-Control")
+	boosted := htmxRequest(http.MethodGet, "/projects/7", "https://app.example/tasks")
+	boosted.Header.Set("HX-Boosted", "true")
+	serve(mux, boosted, "HX-Retarget", "HX-Push-Url")
+	// Output:
+	// 404
+	// Cache-Control: no-store
+	// <main id="main" class="flex-grow-1"><div class="container py-3"><header id="page-header" class="mb-3"><h1 class="h4 mb-0">404 Not Found</h1></header><div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">Nothing was found here.</div></div><p><a href="/">Go to the start page</a></p></div></main>
+	// 404
+	// HX-Retarget: #alerts
+	// HX-Push-Url: false
+	// <div class="alert alert-danger" role="alert">Nothing was found here.</div>
 }
 
 // Applications map their own errors before the defaults.
@@ -163,13 +222,20 @@ func ExampleErrors_RequireAuth() {
 	tasks := guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	serve(tasks, httptest.NewRequest(http.MethodGet, "/tasks?page=2", nil), "Location")
+	// A fragment request returns to the page it came from.
 	serve(tasks, htmxRequest(http.MethodPost, "/tasks/7/done", "https://app.example/tasks?page=2"), "HX-Redirect")
+	// A boosted link returns to the page it leads to.
+	boosted := htmxRequest(http.MethodGet, "/tasks?page=3", "https://app.example/")
+	boosted.Header.Set("HX-Boosted", "true")
+	serve(tasks, boosted, "HX-Redirect")
 	// Output:
 	// 303
 	// Location: /login?next=%2Ftasks%3Fpage%3D2
 	// <a href="/login?next=%2Ftasks%3Fpage%3D2">See Other</a>.
 	// 401
 	// HX-Redirect: /login?next=%2Ftasks%3Fpage%3D2
+	// 401
+	// HX-Redirect: /login?next=%2Ftasks%3Fpage%3D3
 }
 
 // SafeNext accepts local paths only, so a crafted "next" parameter cannot

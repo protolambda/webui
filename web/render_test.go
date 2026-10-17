@@ -87,6 +87,10 @@ func TestChoose(gt *testing.T) {
 	}{
 		{"plain", nil, "full"},
 		{"htmx", map[string]string{hx2.HeaderRequest: "true"}, "fragment"},
+		// htmx swaps a boosted answer into the whole body.
+		{"htmx boosted", map[string]string{hx2.HeaderRequest: "true", hx2.HeaderBoosted: "true"}, "full"},
+		{"htmx boosted not true", map[string]string{hx2.HeaderRequest: "true", hx2.HeaderBoosted: "1"}, "fragment"},
+		{"boosted without htmx", map[string]string{hx2.HeaderBoosted: "true"}, "full"},
 		{"htmx history restore", map[string]string{hx2.HeaderRequest: "true", hx2.HeaderHistoryRestoreRequest: "true"}, "full"},
 		{"history restore without htmx", map[string]string{hx2.HeaderHistoryRestoreRequest: "true"}, "full"},
 		{"not true", map[string]string{hx2.HeaderRequest: "1"}, "full"},
@@ -97,11 +101,34 @@ func TestChoose(gt *testing.T) {
 			for k, v := range c.headers {
 				r.Header.Set(k, v)
 			}
+			t.Must(be.Equal(c.want == "fragment", web.WantsFragment(r)))
 			res := cthttp.Serve(http.HandlerFunc(handler), r)
 			t.Must(res.Status(http.StatusOK))
 			t.Must(res.Body(ct.Exact("<p>" + c.want + "</p>")))
-			t.Must(be.DeepEqual([]string{"Accept-Encoding", "HX-Request"}, res.Headers().Values("Vary")))
+			t.Must(be.DeepEqual([]string{"Accept-Encoding", "HX-Request", "HX-Boosted"}, res.Headers().Values("Vary")))
 		})
+	}
+}
+
+// TestChooseVaryOnce checks that Choose keeps the Vary values that name
+// its headers already, in any letter case, or "*".
+func TestChooseVaryOnce(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	cases := []struct {
+		name string
+		vary []string
+		want []string
+	}{
+		{"both", []string{"hx-request, hx-boosted"}, []string{"hx-request, hx-boosted"}},
+		{"star", []string{"*"}, []string{"*"}},
+		{"boosted", []string{"Accept-Encoding,HX-Boosted"}, []string{"Accept-Encoding,HX-Boosted", "HX-Request"}},
+	}
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		rec.Header()["Vary"] = c.vary
+		err := web.Choose(rec, request(t, nil, http.MethodGet, "/", nil), http.StatusOK, text.Text("f"), text.Text("p"))
+		t.Must(be.NoError(err))
+		t.Mustf(be.DeepEqual(c.want, rec.Header().Values("Vary")), "case %s", c.name)
 	}
 }
 

@@ -31,7 +31,9 @@ const (
 	// MessageForged answers a request with an invalid CSRF token or from
 	// another origin.
 	MessageForged = "The form expired or came from another site. Reload the page and try again."
-	// MessageInterrupted answers a request whose context ended.
+	// MessageInterrupted answers a request that failed with
+	// context.Canceled or context.DeadlineExceeded, such as one that ran
+	// past the deadline that a timeout middleware set on its context.
 	MessageInterrupted = "The request was interrupted. Try again."
 	// MessageLogin answers an unauthenticated request that cannot be
 	// redirected to the login page; see [Errors.RequireAuth].
@@ -69,13 +71,21 @@ const DefaultHomeLabel = "Go to the start page"
 // a [page.Document] with the policy's Assets and HTMX configuration around
 // [ErrorView.Layout]. An htmx request ([IsHTMX]) gets the alert of
 // [ErrorView.Alert] (or the Fragment hook) with HX-Retarget set to the
-// alerts region of the page ([page.AlertsID]), HX-Reswap innerHTML and
-// HX-Push-Url false, keeping the real status: webui's htmx configuration
-// (hx2.Config) swaps 4xx and 5xx responses, so the message shows without
-// script, and the URL does not change. Pages that make htmx requests must
-// contain the alerts region ([page.Layout] renders it): without it htmx
-// reports a target error and shows nothing. Both answers carry
-// Vary: HX-Request and Cache-Control: no-store.
+// alerts region of the page ([page.AlertsID]), HX-Reswap innerHTML,
+// HX-Reselect unset and HX-Push-Url false, keeping the real status: webui's
+// htmx configuration (hx2.Config) swaps 4xx and 5xx responses, so the
+// message shows without script, and the URL does not change. HX-Reselect
+// unset turns off an hx-select that the triggering element has or
+// inherits (such as a boosted body with hx-select="#main"), which would
+// otherwise filter the alert out and empty the alerts region. Pages that
+// make htmx requests must contain the alerts region ([page.Layout] renders
+// it): without it htmx reports a target error and shows nothing. Both
+// answers carry Vary: HX-Request and Cache-Control: no-store.
+//
+// A boosted request (HX-Boosted) gets the alert too, although a
+// successful one gets a full page (see [Choose]): the user stays on the
+// page that made the request, with the error above its content, and a
+// boosted form keeps what was typed into it.
 //
 // Headers that the handler set for the response it meant to send, which
 // would contradict the error page, are removed first: the content
@@ -87,17 +97,29 @@ const DefaultHomeLabel = "Go to the start page"
 //
 // When an error page fails to render, the answer is the plain-text message
 // instead. Nothing is written when the response has already started (see
-// [Errors.Handle]), or when the request's context has ended (the client is
-// gone); the error is then logged only.
+// [Errors.Handle]), or when the client went away; the error is then logged
+// only. The client went away when the request's context was canceled the
+// way net/http cancels it on a disconnect: with context.Canceled and no
+// cause of its own ([context.Cause]). A context that passed its deadline,
+// such as one that a timeout middleware set, or that the application
+// canceled with a cause of its own ([context.WithCancelCause]), ended on
+// the server's side while the client still waits: it is answered like any
+// other error, a context error with 503 and [MessageInterrupted]. The
+// answer is then rendered with the context's values but without its
+// cancellation, which would stop the render.
 //
 // # Logging
 //
-// Errors are logged to mw.Logger of the request context, with the route
-// pattern (r.Pattern), never the path or query, which may carry
-// capabilities or personal data. Server errors (5xx) are logged at error
-// level, interrupted requests at warn level, and client errors (4xx),
-// departed clients and errors after the response started at debug level
-// unless they are server errors.
+// Errors are logged to mw.Logger of the request context, with the status
+// and the error, never the path or query, which may carry capabilities or
+// personal data. The records carry the attributes of that logger:
+// mw.LogRequests with RequestLog.Routes set (as in the package example)
+// tags them with the method and the route pattern, also for errors written
+// by middleware outside the mux and for requests that an inner middleware
+// derived. Server errors (5xx) are logged at error level, interrupted
+// requests at warn level, and client errors (4xx), departed clients and
+// errors after the response started at debug level unless they are server
+// errors.
 type Errors struct {
 	// Classify maps an error to its answer before the default
 	// classification. It returns nil for an error it does not know. Its
@@ -109,7 +131,8 @@ type Errors struct {
 	// HTMX fields below.
 	Document func(r *http.Request, v ErrorView) elem.Node
 	// Fragment renders the content swapped into the alerts region for an
-	// htmx request. Nil means v.Alert().
+	// htmx request; htmx swaps all of it, without the hx-select of the
+	// page. Nil means v.Alert().
 	Fragment func(r *http.Request, v ErrorView) elem.Node
 	// Assets and HTMX configure the default error document.
 	Assets []*asset.Set
@@ -187,7 +210,7 @@ func (e Errors) Write(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	a := e.classify(err)
-	gone := r.Context().Err() != nil
+	gone := clientGone(r.Context())
 	level := a.level
 	if a.silent || (gone && a.interrupted) {
 		level = slog.LevelDebug
@@ -232,7 +255,6 @@ func (e Errors) Recover(next http.Handler) http.Handler {
 			}
 			ctx := r.Context()
 			mw.Logger(ctx).LogAttrs(ctx, slog.LevelError, "handler panic",
-				slog.String("route", r.Pattern),
 				slog.Any("panic", v),
 				slog.String("stack", string(debug.Stack())),
 			)
@@ -261,8 +283,17 @@ type answer struct {
 	level   slog.Level
 	// silent means nothing is written: the client of a stream went away.
 	silent bool
-	// interrupted means the request's context ended.
+	// interrupted means the error is a context error.
 	interrupted bool
+}
+
+// clientGone reports whether ctx was canceled the way net/http cancels the
+// context of a request whose client went away: with context.Canceled and
+// no cause of its own. A context derived from it reports the same. A
+// deadline, or a cancellation with a cause of the application's own, ended
+// on the server's side, and its client may still wait for the answer.
+func clientGone(ctx context.Context) bool {
+	return errors.Is(ctx.Err(), context.Canceled) && errors.Is(context.Cause(ctx), context.Canceled)
 }
 
 func internalAnswer() answer {
@@ -328,7 +359,7 @@ func clientAnswer(status int, message string) answer {
 
 func (e Errors) log(r *http.Request, level slog.Level, msg string, status int, err error) {
 	ctx := r.Context()
-	attrs := []slog.Attr{slog.String("route", r.Pattern)}
+	attrs := make([]slog.Attr, 0, 2)
 	if status != 0 {
 		attrs = append(attrs, slog.Int("status", status))
 	}
@@ -356,6 +387,9 @@ func (e Errors) answer(w http.ResponseWriter, r *http.Request, a answer) {
 		}
 		hx2.SetRetarget(h, target)
 		hx2.SetReswap(h, hx2.SwapInnerHTML)
+		// Swap the whole alert, whatever hx-select the trigger has or
+		// inherits: a selection would empty the alerts region.
+		hx2.SetReselect(h, "unset")
 		hx2.SetPushURL(h, "false")
 		if e.Fragment != nil {
 			node = e.Fragment(r, v)
@@ -368,8 +402,15 @@ func (e Errors) answer(w http.ResponseWriter, r *http.Request, a answer) {
 		node = page.Document{Title: v.Title, Assets: e.Assets, HTMX: e.HTMX, Body: v.Layout()}
 	}
 
+	// The request's context may have passed its deadline, which is often the
+	// error being answered: render without its cancellation, which would
+	// stop the render, keeping its values.
+	ctx := r.Context()
+	if ctx.Err() != nil {
+		ctx = context.WithoutCancel(ctx)
+	}
 	var buf bytes.Buffer
-	if err := core.Render(r.Context(), node, &buf); err != nil {
+	if err := core.Render(ctx, node, &buf); err != nil {
 		e.log(r, slog.LevelError, "error page failed to render", a.status, err)
 		writePlain(w, r, a.status, a.message)
 		return

@@ -24,6 +24,17 @@ import (
 // HX-Current-URL, the htmx answer also carries HX-Refresh, and htmx
 // reloads the page after the navigation.
 //
+// Pass target as an absolute path, such as "/tasks#new", or an absolute
+// URL. The two answers resolve a relative target against different URLs:
+// http.Redirect against the directory of the request's path, and htmx
+// against the page that the browser shows, which the server does not know
+// for a plain request. So "#new", posted to /tasks/7/done from the page
+// /tasks, would end at /tasks/7/#new without htmx and at /tasks#new with
+// htmx.
+//
+// A boosted request (HX-Boosted) is an htmx request: HX-Redirect makes
+// htmx load the target as a full page, as for other htmx requests.
+//
 // Both answers add HX-Request to Vary. Redirect does not check target:
 // pass a value from the request (such as a "next" parameter) through
 // [SafeNext] first.
@@ -43,8 +54,8 @@ func Redirect(w http.ResponseWriter, r *http.Request, target string) {
 
 // sameDocument reports whether target has a fragment and otherwise is the
 // current URL, so that a browser navigates to it by scrolling only. The
-// current URL must be absolute (as htmx sends it); target may be relative
-// to it.
+// current URL must be absolute (as htmx sends it). A relative target is
+// resolved against it, as the browser resolves HX-Redirect.
 func sameDocument(current, target string) bool {
 	if !strings.Contains(target, "#") {
 		return false

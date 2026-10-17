@@ -10,6 +10,8 @@ import (
 	"github.com/protolambda/chord/html/text"
 
 	"github.com/protolambda/webui/bs"
+	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/session"
 )
 
 func ExampleField() {
@@ -108,13 +110,16 @@ func ExampleRadio() {
 }
 
 // A form that htmx replaces in place with the answer to its submission,
-// rendered again with the error. The field and the submit button have ids
-// that stay the same in every rendering, so that htmx gives the focus back
-// to the control that had it (see Forms in the package documentation).
+// rendered again with the error. Without htmx it posts like any form (method
+// and action), and the server answers with the whole page; the CSRF field
+// goes along either way. The field and the submit button have ids that stay
+// the same in every rendering, so that htmx gives the focus back to the
+// control that had it (see Forms in the package documentation).
 func ExampleBtnPrimary_htmxForm() {
-	core.Dump(form.Form(attr.KV("hx-post", "/notes"), attr.KV("hx-swap", "outerHTML"))(
+	core.Dump(form.Form(form.Method(form.MethodPost), form.Action("/notes"), hx2.Post("/notes"), hx2.Swap(hx2.SwapOuterHTML))(
+		session.CSRFInput("dG9rZW4"),
 		bs.Field{ID: "note-title", Name: "title", Label: text.Text("Title"), Error: text.Text("Enter a title.")},
 		bs.BtnPrimary(button.Type(button.TypeSubmit), attr.ID("note-save"))(text.Text("Save")),
 	))
-	// Output: <form hx-post="/notes" hx-swap="outerHTML"><div class="mb-3"><label class="form-label" for="note-title">Title</label><input class="form-control is-invalid" type="text" id="note-title" name="title" aria-invalid="true" aria-describedby="note-title-error"/><div class="invalid-feedback" id="note-title-error">Enter a title.</div></div><button class="btn btn-primary" type="submit" id="note-save">Save</button></form>
+	// Output: <form method="post" action="/notes" hx-post="/notes" hx-swap="outerHTML"><input type="hidden" name="csrf" value="dG9rZW4"/><div class="mb-3"><label class="form-label" for="note-title">Title</label><input class="form-control is-invalid" type="text" id="note-title" name="title" aria-invalid="true" aria-describedby="note-title-error"/><div class="invalid-feedback" id="note-title-error">Enter a title.</div></div><button class="btn btn-primary" type="submit" id="note-save">Save</button></form>
 }

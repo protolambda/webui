@@ -441,6 +441,7 @@ func TestInvalidIDsFailTheRender(gt *testing.T) {
 			t.Run(name+"/"+id, func(t devtest.T) {
 				err := renderErr(t, node)
 				t.Must(be.ErrorIs(err, bs.ErrInvalidID))
+				t.Must(be.ErrorIs(err, bs.ErrInvalidOption))
 				if id != "" {
 					t.Must(be.False(strings.Contains(err.Error(), id)))
 				}
@@ -506,6 +507,7 @@ func TestInvalidOptionsFailTheRender(gt *testing.T) {
 		t.Run(name, func(t devtest.T) {
 			err := renderErr(t, node)
 			t.Must(be.ErrorIs(err, bs.ErrInvalidOption))
+			t.Must(be.False(errors.Is(err, bs.ErrInvalidID)))
 			t.Must(be.False(strings.Contains(err.Error(), "onclick")))
 		})
 	}

@@ -5,7 +5,10 @@
 //
 // Every page loads these files from the application's own origin, never from
 // a CDN, with integrity values, so the content security policy can allow
-// only 'self'.
+// scripts, styles and fonts from 'self' only. Bootstrap's CSS also draws its
+// form-control, close-button and navbar-toggler icons as data: SVG images,
+// so img-src needs data: as well, as in
+// [github.com/protolambda/webui/mw.StrictCSP].
 //
 // # The webui theme
 //
@@ -50,8 +53,10 @@
 // A bare html selector is less specific and loses. A class selector sets
 // them for the subtree of the elements it matches. The tokens:
 //
-//   - --webui-control-border: the border of fields, outline buttons, floating
-//     layers (dropdown menus, modals, toasts) and progress tracks.
+//   - --webui-control-border: the border of fields, of the secondary and dark
+//     buttons (filled and outline), of floating layers (dropdown menus,
+//     modals, toasts) and of progress tracks. The other buttons keep a
+//     border in their theme color.
 //   - --webui-focus-color, --webui-focus-width, --webui-focus-offset: the one
 //     keyboard focus outline, which replaces Bootstrap's focus glows.
 //   - --webui-nav-link-color: the links of a nav (tabs, pills, underline).

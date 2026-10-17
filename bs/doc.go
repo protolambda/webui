@@ -58,8 +58,18 @@
 // unknown value fails the render with [ErrInvalidOption] instead of
 // emitting a class that does not exist. Ids that components use in CSS
 // selectors, id references or derived ids must be tokens (see [ValidID]),
-// or the render fails with [ErrInvalidID]. Error messages name the
-// component and the problem, never the offending value.
+// or the render fails with [ErrInvalidID], which also matches
+// [ErrInvalidOption]. Error messages name the component and the problem,
+// never the offending value.
+//
+// # Text from users
+//
+// chord escapes all text, so caller text never becomes markup. Escaping
+// does not filter direction overrides, invisible characters or look-alike
+// letters, which can make a name read as another: render names and titles
+// that other users chose with
+// [github.com/protolambda/webui/visible.Text] or
+// [github.com/protolambda/webui/visible.Code].
 //
 // [Dialog], the form fields ([Field], [Textarea], [Select], [Checkbox],
 // [Radio]) and [DetailsDropdown] fail with [ErrNoName] when they would have
@@ -87,6 +97,15 @@
 // rendering of the form and unique in the page:
 //
 //	bs.BtnPrimary(button.Type(button.TypeSubmit), attr.ID("note-save"))(text.Text("Save"))
+//
+// The form itself stays a plain HTML form: method="post" and an action
+// beside hx-post to the same URL, and the CSRF field
+// ([github.com/protolambda/webui/session.CSRFInput]). Without htmx (script
+// blocked or not loaded yet) it posts like any form, and the server answers
+// with the whole page; with htmx, only the form is swapped. A form with
+// hx-post and no method falls back to a GET of the page's URL, with the
+// fields, the CSRF token too, in the query string. The htmx form example of
+// [BtnPrimary] shows the whole form.
 //
 // # Components
 //

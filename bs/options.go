@@ -14,11 +14,16 @@ var (
 	// derive further ids from an id and use it in CSS selectors and id
 	// lists, where spaces and punctuation would refer to other elements.
 	// See [ValidID].
-	ErrInvalidID = errors.New("invalid id: want an ASCII letter followed by ASCII letters, digits, '-' or '_'")
+	//
+	// An invalid id is an invalid option: errors wrapping ErrInvalidID also
+	// match [ErrInvalidOption], so one errors.Is check for ErrInvalidOption
+	// catches both.
+	ErrInvalidID error = invalidID{}
 
 	// ErrInvalidOption indicates an option value outside its closed set
-	// (such as an unknown [Variant] or [ModalSize]), or a combination of
-	// component fields that cannot render correctly.
+	// (such as an unknown [Variant] or [ModalSize]), an id that is not a
+	// token ([ErrInvalidID]), or a combination of component fields that
+	// cannot render correctly.
 	ErrInvalidOption = errors.New("invalid option")
 
 	// ErrNoName indicates a component that would render without an
@@ -26,6 +31,18 @@ var (
 	// without a label.
 	ErrNoName = errors.New("missing accessible name")
 )
+
+// invalidID is the type of [ErrInvalidID]: an error that also matches
+// [ErrInvalidOption].
+type invalidID struct{}
+
+func (invalidID) Error() string {
+	return "invalid id: want an ASCII letter followed by ASCII letters, digits, '-' or '_'"
+}
+
+// Is reports whether target is [ErrInvalidOption], which an invalid id is
+// a kind of.
+func (invalidID) Is(target error) bool { return target == ErrInvalidOption }
 
 // ValidID reports whether id is safe to use as a component id: an ASCII
 // letter followed by ASCII letters, digits, '-' or '_'. Such an id needs no

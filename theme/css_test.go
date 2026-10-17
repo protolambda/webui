@@ -855,6 +855,49 @@ func TestTokens(gt *testing.T) {
 	}
 }
 
+// TestControlBorderScope pins what --webui-control-border colors, as the package documentation (# Tuning) and the
+// token's comment in webui.css list it: fields, the secondary and dark buttons (filled and outline), the floating
+// layers and the progress tracks. The other buttons keep a border in their theme color. A new use of the token fails
+// here, so that the documentation follows.
+func TestControlBorderScope(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	s := load(t)
+	uses := make(map[string]bool)
+	for _, r := range s.theme.rules {
+		for _, d := range r.decls {
+			if !strings.Contains(d.value, "var(--webui-control-border)") || strings.HasPrefix(d.prop, "--webui-") {
+				continue
+			}
+			for _, sel := range r.selectors {
+				sel = strings.TrimPrefix(strings.TrimPrefix(sel, darkScope), darkDefault)
+				uses[sel] = true
+			}
+		}
+	}
+	t.Must(be.DeepEqual([]string{
+		".btn-dark", ".btn-outline-dark", ".btn-outline-secondary", ".btn-secondary",
+		".dropdown-menu",
+		".form-check-input", ".form-control", ".form-select", ".input-group-text",
+		".modal", ".progress", ".progress-stacked", ".toast",
+	}, sortedKeys(uses)))
+	for _, v := range buttonVariants {
+		for _, cls := range []string{".btn-" + v, ".btn-outline-" + v} {
+			got, _ := s.theme.lookup(darkScope+cls, "--bs-btn-border-color")
+			want := v == "secondary" || v == "dark"
+			t.Mustf(be.Equal(want, got == "var(--webui-control-border)"), "%s { --bs-btn-border-color: %s }", cls, got)
+		}
+	}
+	// The documented scope, in the Go package documentation and in the token's comment.
+	goDoc, err := os.ReadFile("theme.go")
+	t.Must(be.NoError(err))
+	t.Must(be.Substring(strings.Join(strings.Fields(strings.ReplaceAll(string(goDoc), "//", "")), " "),
+		"--webui-control-border: the border of fields, of the secondary and dark buttons (filled and outline), "+
+			"of floating layers (dropdown menus, modals, toasts) and of progress tracks."))
+	t.Must(be.Substring(strings.Join(strings.Fields(strings.ReplaceAll(s.src, "*", "")), " "),
+		"/ The border of a control (fields, check boxes, input group text, the secondary and dark buttons, filled and "+
+			"outline), of a floating layer (dropdown menu, modal, toast) and of a progress track."))
+}
+
 // TestThemeFile checks the encoding and the shape of the file, and that both stylesheets parse into a plausible
 // number of rules, so that the other tests cannot pass on an empty parse.
 func TestThemeFile(gt *testing.T) {

@@ -1,7 +1,10 @@
 package bs_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/protolambda/chord/core"
 	"github.com/protolambda/chord/core/attr"
@@ -305,6 +308,17 @@ func ExampleValidID() {
 	// note-7 true
 	// 7th-note false
 	// my note false
+}
+
+// An invalid id fails the render with ErrInvalidID, which is also an
+// invalid option: one check for ErrInvalidOption catches both.
+func ExampleErrInvalidID() {
+	err := core.Render(context.Background(), bs.Dialog{ID: "my note", Title: text.Text("Note")}, new(strings.Builder))
+	fmt.Println(errors.Is(err, bs.ErrInvalidID), errors.Is(err, bs.ErrInvalidOption))
+	fmt.Println(err)
+	// Output:
+	// true true
+	// render: at [0]: bs.Dialog: invalid id: want an ASCII letter followed by ASCII letters, digits, '-' or '_'
 }
 
 // Combined utilities

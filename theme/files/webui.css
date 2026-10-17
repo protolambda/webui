@@ -73,8 +73,9 @@ html[data-bs-theme="dark"] {
 }
 
 [data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *) {
-  /* The border of a control (fields, outline buttons), of a floating layer (dropdown menu, modal, toast) and of a
-   * progress track. */
+  /* The border of a control (fields, check boxes, input group text, the secondary and dark buttons, filled and
+   * outline), of a floating layer (dropdown menu, modal, toast) and of a progress track. The other buttons have a
+   * border in their theme color. */
   --webui-control-border: var(--bs-border-color);
 
   /* The keyboard focus: one outline for every focusable element (see "Focus" below). */

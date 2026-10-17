@@ -55,6 +55,13 @@ import (
 //
 // Place dialogs outside every form, e.g. in the dialogs region of the page
 // layout: forms do not nest, and a dialog often holds a form of its own.
+//
+// While the dialog is open, the page behind it is inert, and an htmx answer
+// does not close it. An htmx form in a dialog therefore needs an alerts
+// region (a live region) at the top of the dialog's body for its error
+// answers (see the TargetFor field of web.Errors), and a successful answer
+// closes the dialog by replacing or removing it out of band (see
+// page.DialogsOOB and page.FocusTarget), or by redirecting.
 type Dialog struct {
 	ID         string       // required id: a token, see ValidID
 	Title      elem.Node    // .modal-title content, the dialog's accessible name

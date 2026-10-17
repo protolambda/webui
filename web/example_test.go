@@ -130,9 +130,10 @@ func ExampleErrors_Handle() {
 }
 
 // An htmx request gets the alert, retargeted to the page's alerts region,
-// with the real status; unknown errors get a fixed message. HX-Reselect
-// unset keeps an hx-select of the page from filtering the alert out, and
-// HX-Push-Url false keeps the URL.
+// with the real status; unknown errors get a fixed message. htmx scrolls
+// the region into view (show:top), HX-Reselect unset keeps an hx-select of
+// the page from filtering the alert out, and HX-Push-Url false keeps the
+// URL.
 func ExampleErrors_Handle_htmx() {
 	save := web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
 		return errors.New("store: disk full at /var/lib/tasks")
@@ -141,7 +142,7 @@ func ExampleErrors_Handle_htmx() {
 	// Output:
 	// 500
 	// HX-Retarget: #alerts
-	// HX-Reswap: innerHTML
+	// HX-Reswap: innerHTML show:top
 	// HX-Reselect: unset
 	// HX-Push-Url: false
 	// <div class="alert alert-danger" role="alert">The request failed. The server log has details.</div>

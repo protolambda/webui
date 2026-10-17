@@ -83,7 +83,10 @@ func TestErrorFragment(gt *testing.T) {
 	res := cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPost, "/tasks/7", nil), "https://app.example/tasks"))
 	t.Must(res.Status(http.StatusConflict))
 	t.Must(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
-	t.Must(res.Header("HX-Reswap", ct.Exact("innerHTML")))
+	// htmx scrolls the alerts region into view, as the control that failed
+	// may be far below it.
+	t.Must(res.Header("HX-Reswap", ct.Exact("innerHTML show:top")))
+	t.Must(be.Equal(hx2.SwapInnerHTML+" show:top", web.ErrorReswap))
 	// An hx-select that the page puts on the trigger would filter the
 	// alert out: the answer turns it off.
 	t.Must(res.Header("HX-Reselect", ct.Exact("unset")))
@@ -448,6 +451,7 @@ func TestErrorHooks(gt *testing.T) {
 	errs := web.Errors{
 		Home:   "/app/",
 		Target: "#errors",
+		Reswap: hx2.SwapAfterBegin,
 		Document: func(r *http.Request, v web.ErrorView) elem.Node {
 			seen = append(seen, v)
 			l := v.Layout()
@@ -468,6 +472,7 @@ func TestErrorHooks(gt *testing.T) {
 
 	res := cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPost, "/tasks/7/edit", nil), ""))
 	t.Must(res.Header("HX-Retarget", ct.Exact("#errors")))
+	t.Must(res.Header("HX-Reswap", ct.Exact("afterbegin")))
 	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger" role="alert">403 Forbidden: Only the owner can do this.</div>`)))
 
 	want := web.ErrorView{Status: 403, Title: "403 Forbidden", Message: "Only the owner can do this.", Home: "/app/"}
@@ -583,7 +588,7 @@ func TestNotFoundAnswers(gt *testing.T) {
 	htmx := cthttp.Serve(h, r)
 	t.Must(htmx.Status(http.StatusNotFound))
 	t.Must(htmx.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
-	t.Must(htmx.Header("HX-Reswap", ct.Exact("innerHTML")))
+	t.Must(htmx.Header("HX-Reswap", ct.Exact(web.ErrorReswap)))
 	t.Must(htmx.Header("HX-Reselect", ct.Exact("unset")))
 	t.Must(htmx.Header("HX-Push-Url", ct.Exact("false")))
 	t.Must(htmx.HTMLFragment("div").Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusNotFound)))

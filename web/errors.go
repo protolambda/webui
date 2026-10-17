@@ -43,6 +43,14 @@ const (
 // DefaultHomeLabel is the text of the link back on error pages.
 const DefaultHomeLabel = "Go to the start page"
 
+// ErrorReswap is the HX-Reswap of htmx error answers unless
+// [Errors.Reswap] sets another: the alert replaces the content of the
+// alerts region, and htmx then scrolls the region to the top of the
+// window (the show:top modifier of hx-swap), so that the alert is seen
+// also when the control that failed is further down the page, as it often
+// is on a phone.
+const ErrorReswap = hx2.SwapInnerHTML + " show:top"
+
 // Errors is an error policy: how handler errors are logged and answered.
 // The zero value is a complete policy with webui's defaults. An Errors is a
 // value; it is safe for concurrent use as long as its fields are not
@@ -71,16 +79,25 @@ const DefaultHomeLabel = "Go to the start page"
 // a [page.Document] with the policy's Assets and HTMX configuration around
 // [ErrorView.Layout]. An htmx request ([IsHTMX]) gets the alert of
 // [ErrorView.Alert] (or the Fragment hook) with HX-Retarget set to the
-// alerts region of the page ([page.AlertsID]), HX-Reswap innerHTML,
-// HX-Reselect unset and HX-Push-Url false, keeping the real status: webui's
-// htmx configuration (hx2.Config) swaps 4xx and 5xx responses, so the
-// message shows without script, and the URL does not change. HX-Reselect
-// unset turns off an hx-select that the triggering element has or
-// inherits (such as a boosted body with hx-select="#main"), which would
-// otherwise filter the alert out and empty the alerts region. Pages that
-// make htmx requests must contain the alerts region ([page.Layout] renders
-// it): without it htmx reports a target error and shows nothing. Both
-// answers carry Vary: HX-Request and Cache-Control: no-store.
+// alerts region of the page ([page.AlertsID]), HX-Reswap [ErrorReswap]
+// (innerHTML show:top), HX-Reselect unset and HX-Push-Url false, keeping
+// the real status: webui's htmx configuration (hx2.Config) swaps 4xx and
+// 5xx responses, so the message shows without script, htmx scrolls it into
+// view, and the URL does not change. HX-Reselect unset turns off an
+// hx-select that the triggering element has or inherits (such as a boosted
+// body with hx-select="#main"), which would otherwise filter the alert out
+// and empty the alerts region. Pages that make htmx requests must contain
+// the alerts region ([page.Layout] renders it): without it htmx reports a
+// target error and shows nothing. The element that made the request is
+// not swapped: a form keeps what was typed into it, and the focus stays
+// where it was. Both answers carry Vary: HX-Request and Cache-Control:
+// no-store.
+//
+// With show:top, htmx scrolls the alerts region to the very top of the
+// window, also when it was in view already. A page whose navbar stays in
+// place at the top (sticky-top or fixed-top) should give the region a
+// scroll-margin-top of the navbar's height in its stylesheet, or the
+// navbar covers the alert. See [Errors.Reswap] to swap without scrolling.
 //
 // A boosted request (HX-Boosted) gets the alert too, although a
 // successful one gets a full page (see [Choose]): the user stays on the
@@ -142,6 +159,13 @@ type Errors struct {
 	// Target is the CSS selector that htmx error answers are swapped into.
 	// Empty means "#" + page.AlertsID.
 	Target string
+	// Reswap is the HX-Reswap of htmx error answers: how htmx swaps the
+	// answer into Target, with the syntax of hx-swap. Empty means
+	// [ErrorReswap], which scrolls Target into view. A Target that is
+	// always in view, such as a container of toasts in a fixed position,
+	// can do without the scroll: hx2.SwapInnerHTML, or hx2.SwapAfterBegin
+	// to keep the earlier alerts below the new one.
+	Reswap string
 }
 
 // ErrorView is the view model of an error answer, given to the Document
@@ -385,8 +409,12 @@ func (e Errors) answer(w http.ResponseWriter, r *http.Request, a answer) {
 		if target == "" {
 			target = "#" + page.AlertsID
 		}
+		reswap := e.Reswap
+		if reswap == "" {
+			reswap = ErrorReswap
+		}
 		hx2.SetRetarget(h, target)
-		hx2.SetReswap(h, hx2.SwapInnerHTML)
+		hx2.SetReswap(h, reswap)
 		// Swap the whole alert, whatever hx-select the trigger has or
 		// inherits: a selection would empty the alerts region.
 		hx2.SetReselect(h, "unset")

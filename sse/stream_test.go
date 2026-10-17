@@ -126,16 +126,16 @@ func TestSendRejectsBeforeWriting(gt *testing.T) {
 	}
 	w := newFakeWriter()
 	s := sse.New(w)
-	check(s.Send(t.Context(), "", elem.Raw("x")), sse.ErrEventName)
-	check(s.Send(t.Context(), "a\nb", elem.Raw("x")), sse.ErrEventName)
-	check(s.SendText("a b", "x"), sse.ErrEventName)
+	check(s.Send(t.Context(), "", elem.Raw("x")), sse.ErrInvalidEventName)
+	check(s.Send(t.Context(), "a\nb", elem.Raw("x")), sse.ErrInvalidEventName)
+	check(s.SendText("a b", "x"), sse.ErrInvalidEventName)
 	check(s.Send(t.Context(), "ok", failingNode{errRender}), errRender)
 	check(s.Send(t.Context(), "ok", nil), elem.ErrNilNode)
-	check(s.Send(t.Context(), "ok", elem.Raw("x"), sse.ID("a\rb")), sse.ErrField)
-	check(s.SendText("ok", "x", sse.ID("a\x00")), sse.ErrField)
-	check(s.SendText("ok", "x", sse.Retry(-time.Millisecond)), sse.ErrField)
-	check(s.Comment("a\nb"), sse.ErrField)
-	check(s.Comment("a\rb"), sse.ErrField)
+	check(s.Send(t.Context(), "ok", elem.Raw("x"), sse.ID("a\rb")), sse.ErrInvalidField)
+	check(s.SendText("ok", "x", sse.ID("a\x00")), sse.ErrInvalidField)
+	check(s.SendText("ok", "x", sse.Retry(-time.Millisecond)), sse.ErrInvalidField)
+	check(s.Comment("a\nb"), sse.ErrInvalidField)
+	check(s.Comment("a\rb"), sse.ErrInvalidField)
 	t.Must(be.False(s.Started()))
 	t.Must(be.Empty(w.Ops()))
 	t.Must(be.Equal(0, w.Status()))
@@ -199,12 +199,12 @@ func TestCheckEventName(gt *testing.T) {
 		"a[1]", "a\"b", "a'b", "a/b", "a\\b", "a(b)", "a{b}", "a;b", "a=b", "<a>", "é", "日本",
 		strings.Repeat("x", sse.MaxEventNameLen+1),
 	} {
-		t.Must(be.Annotate(be.ErrorIs(sse.CheckEventName(name), sse.ErrEventName), "name %q", name))
+		t.Must(be.Annotate(be.ErrorIs(sse.CheckEventName(name), sse.ErrInvalidEventName), "name %q", name))
 	}
 	// The message explains without repeating the name.
 	for _, name := range []string{"item 7f3a9c", "item\n7f3a9c", "7f3a9c" + strings.Repeat("x", sse.MaxEventNameLen)} {
 		err := sse.CheckEventName(name)
-		t.Must(be.ErrorIs(err, sse.ErrEventName))
+		t.Must(be.ErrorIs(err, sse.ErrInvalidEventName))
 		t.Must(be.False(strings.Contains(err.Error(), "7f3a9c")))
 	}
 }

@@ -594,5 +594,5 @@ func TestKindString(gt *testing.T) {
 	for _, k := range []asset.Kind{asset.KindOther, asset.KindStylesheet, asset.KindScript, asset.KindFont, asset.KindImage, asset.KindModule, asset.Kind(42)} {
 		got = append(got, k.String())
 	}
-	t.Must(be.True(slices.Equal([]string{"other", "stylesheet", "script", "font", "image", "module", "kind(42)"}, got)))
+	t.Must(be.True(slices.Equal([]string{"other", "stylesheet", "script", "font", "image", "module", "Kind(42)"}, got)))
 }

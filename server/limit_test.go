@@ -147,6 +147,27 @@ func TestLimitConnsExemptions(gt *testing.T) {
 	t.Must(be.Equal("192.0.2.7/32", group))
 }
 
+// A nil Logger means slog.Default at the time of the record, as for
+// Options.Logger. The test replaces the default logger, so it is serial.
+func TestLimitConnsDefaultLogger(gt *testing.T) {
+	t := devtest.SerialT(gt)
+	logger, records := newCapture()
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	fake := newFakeListener(errListenerDone)
+	ln := server.LimitConns(fake, server.ConnLimit{PerAddr: 1})
+	slog.SetDefault(logger)
+	refused := newFakeConn(tcpAddr("192.0.2.7:2"))
+	got := acceptAll(t, ln, fake, newFakeConn(tcpAddr("192.0.2.7:1")), refused)
+	slog.SetDefault(prev)
+	t.Must(be.Len(got, 1))
+	t.Must(be.Equal(1, refused.Closes()))
+	recs := records()
+	t.Must(be.Len(recs, 1))
+	t.Must(be.Equal(slog.LevelDebug, recs[0].Level))
+	t.Must(be.Substring(recs[0].Message, "too many open connections"))
+}
+
 func TestLimitConnsOtherAddressTypes(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	fake := newFakeListener(errListenerDone)

@@ -59,10 +59,16 @@ var (
 	ErrFile = errors.New("form: file parts are not accepted")
 )
 
+// ErrInvalidLimits reports a [Limits] value with a negative field. It is a
+// configuration error, never returned by [Read]: see [Limits.Validate].
+var ErrInvalidLimits = errors.New("form: invalid limits")
+
 // Limits bound a form as it is read; see the package documentation for
 // what each bound guarantees. A zero field means its default
-// ([DefaultBody], [DefaultField], [DefaultFields]); a negative field is a
-// programming error and makes [Read] panic.
+// ([DefaultBody], [DefaultField], [DefaultFields]). A negative field is a
+// programming error: [Limits.Validate] reports it, and [Read] panics on it.
+// Validate limits that come from configuration once, at startup, so that a
+// bad value fails there and not as a panic on every form post.
 //
 // Mind the units: Body and Field are sizes in bytes, Fields is a count.
 // Both kinds accept untyped constants, so Limits{Fields: 64 << 10} compiles
@@ -82,11 +88,26 @@ type Limits struct {
 	Fields int
 }
 
+// Validate returns nil when l can bound a form, and otherwise an error
+// wrapping [ErrInvalidLimits] that names the negative field. Every
+// non-negative value is valid; zero fields mean their defaults.
+func (l Limits) Validate() error {
+	switch {
+	case l.Body < 0:
+		return fmt.Errorf("%w: negative Body", ErrInvalidLimits)
+	case l.Field < 0:
+		return fmt.Errorf("%w: negative Field", ErrInvalidLimits)
+	case l.Fields < 0:
+		return fmt.Errorf("%w: negative Fields", ErrInvalidLimits)
+	}
+	return nil
+}
+
 // withDefaults returns l with zero fields replaced by the defaults. It
-// panics on negative fields.
+// panics with the error of [Limits.Validate] on negative fields.
 func (l Limits) withDefaults() Limits {
-	if l.Body < 0 || l.Field < 0 || l.Fields < 0 {
-		panic("form: negative limit")
+	if err := l.Validate(); err != nil {
+		panic(err)
 	}
 	if l.Body == 0 {
 		l.Body = DefaultBody

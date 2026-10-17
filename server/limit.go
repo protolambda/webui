@@ -28,8 +28,9 @@ type ConnLimit struct {
 	// accepted connection, possibly concurrently, and must be fast.
 	Exempt func(peer netip.Addr) bool
 
-	// Logger, if not nil, receives a debug record for every refused
-	// connection, with the address group.
+	// Logger receives a debug record for every refused connection, with
+	// the address group. Nil means [slog.Default] at the time of each
+	// record, as for [Options.Logger].
 	Logger *slog.Logger
 }
 
@@ -113,11 +114,13 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		}
 		group := AddrPrefix(peer)
 		if !l.acquire(group) {
-			if l.cfg.Logger != nil {
-				l.cfg.Logger.LogAttrs(context.Background(), slog.LevelDebug,
-					"refused a connection: its address has too many open connections",
-					slog.String("group", group.String()), slog.Int("limit", l.cfg.PerAddr))
+			logger := l.cfg.Logger
+			if logger == nil {
+				logger = slog.Default()
 			}
+			logger.LogAttrs(context.Background(), slog.LevelDebug,
+				"refused a connection: its address has too many open connections",
+				slog.String("group", group.String()), slog.Int("limit", l.cfg.PerAddr))
 			_ = c.Close()
 			continue
 		}

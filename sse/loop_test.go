@@ -774,10 +774,10 @@ func TestLoopConfig(gt *testing.T) {
 			c.loop(&l)
 			w := newFakeWriter()
 			err := l.Run(gt.Context(), sse.New(w, sse.WithWriteWindow(c.window)))
-			t.Must(be.Annotate(be.ErrorIs(err, sse.ErrConfig), "case %s", name))
+			t.Must(be.Annotate(be.ErrorIs(err, sse.ErrInvalidConfig), "case %s", name))
 			t.Must(be.Annotate(be.Empty(w.Ops()), "case %s", name))
 			// Validate checks the whole loop, as Run does.
-			t.Must(be.Annotate(be.ErrorIs(l.Validate(c.window), sse.ErrConfig), "case %s", name))
+			t.Must(be.Annotate(be.ErrorIs(l.Validate(c.window), sse.ErrInvalidConfig), "case %s", name))
 		}
 		t.Must(be.NoError(valid.Validate(0)))
 		t.Must(be.NoError(valid.Validate(5 * time.Second)))
@@ -801,10 +801,10 @@ func TestTimingValidate(gt *testing.T) {
 	t.Must(be.NoError(sse.Timing{}.Validate(9 * time.Second))) // derived: 6s
 	t.Must(be.NoError(sse.Timing{KeepAlive: 29 * time.Second}.Validate(0)))
 	t.Must(be.NoError(sse.Timing{Interval: time.Hour, Lifetime: time.Minute}.Validate(0)))
-	t.Must(be.ErrorIs(sse.Timing{KeepAlive: 30 * time.Second}.Validate(0), sse.ErrConfig))
-	t.Must(be.ErrorIs(sse.Timing{KeepAlive: 9 * time.Second}.Validate(9*time.Second), sse.ErrConfig))
-	t.Must(be.ErrorIs(sse.Timing{Interval: -time.Second}.Validate(0), sse.ErrConfig))
-	t.Must(be.ErrorIs(sse.Timing{}.Validate(time.Nanosecond), sse.ErrConfig))
+	t.Must(be.ErrorIs(sse.Timing{KeepAlive: 30 * time.Second}.Validate(0), sse.ErrInvalidConfig))
+	t.Must(be.ErrorIs(sse.Timing{KeepAlive: 9 * time.Second}.Validate(9*time.Second), sse.ErrInvalidConfig))
+	t.Must(be.ErrorIs(sse.Timing{Interval: -time.Second}.Validate(0), sse.ErrInvalidConfig))
+	t.Must(be.ErrorIs(sse.Timing{}.Validate(time.Nanosecond), sse.ErrInvalidConfig))
 	// Deriving the keep-alive interval from a huge window does not
 	// overflow.
 	for _, window := range []time.Duration{math.MaxInt64, math.MaxInt64/2 + 1, 200 * 365 * 24 * time.Hour} {
@@ -821,5 +821,5 @@ func TestReasonString(gt *testing.T) {
 		sse.ReasonDone.String(), sse.ReasonLifetime.String(), sse.ReasonClosed.String(),
 		sse.ReasonFailed.String(), sse.Reason(0).String(), sse.Reason(200).String(),
 	}
-	t.Must(be.Equal("done lifetime closed failed reason(0) reason(200)", strings.Join(got, " ")))
+	t.Must(be.Equal("done lifetime closed failed Reason(0) Reason(200)", strings.Join(got, " ")))
 }

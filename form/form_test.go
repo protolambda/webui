@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -473,9 +474,34 @@ func TestReadDefaultLimits(gt *testing.T) {
 func TestReadNegativeLimitsPanic(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, limits := range []form.Limits{{Body: -1}, {Field: -1}, {Fields: -1}} {
-		t.Must(be.Panic(func() {
+		var recovered any
+		func() {
+			defer func() { recovered = recover() }()
 			_, _ = readString(t, form.URLEncoded, "a=1", limits)
-		}))
+		}()
+		err, ok := recovered.(error)
+		t.Mustf(be.True(ok), "panic value of %+v: %v", limits, recovered)
+		t.Must(be.ErrorIs(err, form.ErrInvalidLimits))
+	}
+}
+
+func TestLimitsValidate(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, l := range []form.Limits{
+		{},
+		{Body: 1, Field: 1, Fields: 1},
+		{Body: math.MaxInt64, Field: math.MaxInt64, Fields: math.MaxInt},
+	} {
+		t.Mustf(be.NoError(l.Validate()), "%+v", l)
+	}
+	for field, l := range map[string]form.Limits{
+		"Body":   {Body: -1},
+		"Field":  {Field: math.MinInt64},
+		"Fields": {Fields: -1, Body: 1},
+	} {
+		err := l.Validate()
+		t.Must(be.ErrorIs(err, form.ErrInvalidLimits))
+		t.Must(be.Equal("form: invalid limits: negative "+field, err.Error()))
 	}
 }
 

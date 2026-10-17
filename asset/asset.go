@@ -72,11 +72,11 @@ import (
 // or file name, an unknown content type, a duplicate file, a file missing
 // from the file system (the error also wraps [fs.ErrNotExist]), or a kind
 // that does not fit the content type.
-var ErrInvalid = errors.New("invalid asset set")
+var ErrInvalid = errors.New("asset: invalid set")
 
 // ErrIntegrity indicates a file whose content does not match its pinned
 // integrity value.
-var ErrIntegrity = errors.New("asset integrity mismatch")
+var ErrIntegrity = errors.New("asset: integrity mismatch")
 
 // Kind is what a file is to a page, which decides how [Set] renders it.
 type Kind uint8
@@ -106,6 +106,8 @@ const (
 	KindModule
 )
 
+// String returns the lowercase name of the kind, such as "stylesheet", or
+// "Kind(n)" for other values.
 func (k Kind) String() string {
 	switch k {
 	case KindOther:
@@ -121,7 +123,7 @@ func (k Kind) String() string {
 	case KindModule:
 		return "module"
 	default:
-		return fmt.Sprintf("kind(%d)", uint8(k))
+		return fmt.Sprintf("Kind(%d)", uint8(k))
 	}
 }
 
@@ -309,18 +311,18 @@ func load(fsys fs.FS, f File) (*entry, error) {
 		return nil, fmt.Errorf("%w: file %q: %w", ErrInvalid, f.Name, err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read asset %q: %w", f.Name, err)
+		return nil, fmt.Errorf("asset: read %q: %w", f.Name, err)
 	}
 	sum := sha512.Sum384(data)
 	integrity := "sha384-" + base64.StdEncoding.EncodeToString(sum[:])
 	if f.Integrity != "" {
-		if err := checkIntegrity(f.Integrity, data); err != nil {
-			return nil, fmt.Errorf("file %q: %w", f.Name, err)
+		if err := checkIntegrity(f.Name, f.Integrity, data); err != nil {
+			return nil, err
 		}
 	}
 	gz, err := compress(data)
 	if err != nil {
-		return nil, fmt.Errorf("compress asset %q: %w", f.Name, err)
+		return nil, fmt.Errorf("asset: compress %q: %w", f.Name, err)
 	}
 	// Only worth a second representation when it saves at least an eighth.
 	if len(gz) >= len(data)-len(data)/8 {
@@ -375,11 +377,12 @@ func checkKind(kind Kind, contentType string) error {
 	return nil
 }
 
-// checkIntegrity checks data against a pinned subresource-integrity value.
-func checkIntegrity(pinned string, data []byte) error {
+// checkIntegrity checks data, the content of the file name, against a
+// pinned subresource-integrity value.
+func checkIntegrity(name, pinned string, data []byte) error {
 	alg, want, ok := strings.Cut(pinned, "-")
 	if !ok {
-		return fmt.Errorf("%w: malformed pinned integrity %q", ErrInvalid, pinned)
+		return fmt.Errorf("%w: file %q: malformed pinned integrity %q", ErrInvalid, name, pinned)
 	}
 	var got []byte
 	switch alg {
@@ -393,10 +396,10 @@ func checkIntegrity(pinned string, data []byte) error {
 		sum := sha512.Sum512(data)
 		got = sum[:]
 	default:
-		return fmt.Errorf("%w: unsupported integrity algorithm %q", ErrInvalid, alg)
+		return fmt.Errorf("%w: file %q: unsupported integrity algorithm %q", ErrInvalid, name, alg)
 	}
 	if base64.StdEncoding.EncodeToString(got) != want {
-		return fmt.Errorf("%w: content is %s-%s, pinned %s", ErrIntegrity, alg, base64.StdEncoding.EncodeToString(got), pinned)
+		return fmt.Errorf("%w: file %q: content is %s-%s, pinned %s", ErrIntegrity, name, alg, base64.StdEncoding.EncodeToString(got), pinned)
 	}
 	return nil
 }

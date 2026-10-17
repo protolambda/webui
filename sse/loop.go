@@ -20,8 +20,8 @@ const (
 	DefaultLifetime = 30 * time.Minute
 )
 
-// ErrConfig reports an invalid [Loop] or [Timing].
-var ErrConfig = errors.New("sse: invalid configuration")
+// ErrInvalidConfig reports an invalid [Loop] or [Timing].
+var ErrInvalidConfig = errors.New("sse: invalid configuration")
 
 // keepAliveText is the text of the comments a loop sends while idle.
 const keepAliveText = "keep-alive"
@@ -48,7 +48,7 @@ type Timing struct {
 	Lifetime time.Duration
 }
 
-// Validate returns an error wrapping [ErrConfig] when a duration is
+// Validate returns an error wrapping [ErrInvalidConfig] when a duration is
 // negative or the keep-alive interval is not shorter than writeWindow.
 // A writeWindow of zero or less means [DefaultWriteWindow], as in
 // [WithWriteWindow].
@@ -63,7 +63,7 @@ func (t Timing) resolve(writeWindow time.Duration) (Timing, error) {
 		writeWindow = DefaultWriteWindow
 	}
 	if t.Interval < 0 || t.KeepAlive < 0 || t.Lifetime < 0 {
-		return t, fmt.Errorf("%w: negative duration", ErrConfig)
+		return t, fmt.Errorf("%w: negative duration", ErrInvalidConfig)
 	}
 	if t.Interval == 0 {
 		t.Interval = DefaultInterval
@@ -80,7 +80,7 @@ func (t Timing) resolve(writeWindow time.Duration) (Timing, error) {
 		}
 	}
 	if t.KeepAlive <= 0 || t.KeepAlive >= writeWindow {
-		return t, fmt.Errorf("%w: keep-alive interval %v is not shorter than the write window %v", ErrConfig, t.KeepAlive, writeWindow)
+		return t, fmt.Errorf("%w: keep-alive interval %v is not shorter than the write window %v", ErrInvalidConfig, t.KeepAlive, writeWindow)
 	}
 	return t, nil
 }
@@ -99,7 +99,8 @@ const (
 	ReasonFailed
 )
 
-// String returns a lowercase name of the reason.
+// String returns the lowercase name of the reason ("done", "lifetime",
+// "closed", "failed"), or "Reason(n)" for other values.
 func (r Reason) String() string {
 	switch r {
 	case ReasonDone:
@@ -111,7 +112,7 @@ func (r Reason) String() string {
 	case ReasonFailed:
 		return "failed"
 	default:
-		return fmt.Sprintf("reason(%d)", uint8(r))
+		return fmt.Sprintf("Reason(%d)", uint8(r))
 	}
 }
 
@@ -192,8 +193,8 @@ type Loop struct {
 	Stop <-chan struct{}
 }
 
-// Validate returns an error wrapping [ErrConfig] when Update or End is
-// missing, when the Timing is invalid for writeWindow (see
+// Validate returns an error wrapping [ErrInvalidConfig] when Update or End
+// is missing, when the Timing is invalid for writeWindow (see
 // [Timing.Validate]; a writeWindow of zero or less means
 // [DefaultWriteWindow]), or when Every is negative or positive but
 // shorter than the resolved Timing.Interval. [Loop.Run] makes the same
@@ -206,17 +207,17 @@ func (l Loop) Validate(writeWindow time.Duration) error {
 // check validates the loop and returns its resolved timing.
 func (l Loop) check(writeWindow time.Duration) (Timing, error) {
 	if l.Update == nil || l.End == nil {
-		return Timing{}, fmt.Errorf("%w: Loop needs Update and End", ErrConfig)
+		return Timing{}, fmt.Errorf("%w: Loop needs Update and End", ErrInvalidConfig)
 	}
 	t, err := l.Timing.resolve(writeWindow)
 	if err != nil {
 		return t, err
 	}
 	if l.Every < 0 {
-		return t, fmt.Errorf("%w: negative periodic update interval", ErrConfig)
+		return t, fmt.Errorf("%w: negative periodic update interval", ErrInvalidConfig)
 	}
 	if l.Every > 0 && l.Every < t.Interval {
-		return t, fmt.Errorf("%w: periodic update interval %v is shorter than the update interval %v", ErrConfig, l.Every, t.Interval)
+		return t, fmt.Errorf("%w: periodic update interval %v is shorter than the update interval %v", ErrInvalidConfig, l.Every, t.Interval)
 	}
 	return t, nil
 }
@@ -226,8 +227,8 @@ func (l Loop) check(writeWindow time.Duration) (Timing, error) {
 // render context of the updates and the end fragment.
 //
 // Run validates the loop before it writes anything (see [Loop.Validate]):
-// an invalid loop returns an error wrapping [ErrConfig] with the response
-// untouched. A stream that already ended returns [ErrEnded]. A response
+// an invalid loop returns an error wrapping [ErrInvalidConfig] with the
+// response untouched. A stream that already ended returns [ErrEnded]. A response
 // writer that cannot flush returns an error wrapping
 // [http.ErrNotSupported], also with nothing written, so the handler can
 // still answer with an error (see [Stream]).

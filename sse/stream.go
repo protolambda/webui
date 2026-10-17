@@ -31,12 +31,14 @@ const (
 )
 
 var (
-	// ErrEventName reports an event name that [CheckEventName] rejects.
-	ErrEventName = errors.New("sse: invalid event name")
+	// ErrInvalidEventName reports an event name that [CheckEventName]
+	// rejects.
+	ErrInvalidEventName = errors.New("sse: invalid event name")
 
-	// ErrField reports a field value that the event stream format cannot
-	// carry: a comment or ID with a line break, or a negative retry delay.
-	ErrField = errors.New("sse: invalid field")
+	// ErrInvalidField reports a field value that the event stream format
+	// cannot carry: a comment or ID with a line break, or a negative retry
+	// delay.
+	ErrInvalidField = errors.New("sse: invalid field")
 
 	// ErrEnded reports a write to a stream after [Stream.End].
 	ErrEnded = errors.New("sse: stream ended")
@@ -52,17 +54,23 @@ var (
 	ErrWrite = errors.New("sse: write failed")
 )
 
-// Option configures a [Stream].
-type Option func(*Stream)
+// Option configures a [Stream] in [New]. Options only set configuration:
+// they cannot write to the stream.
+type Option func(*streamConfig)
+
+// streamConfig is what the options of [New] set.
+type streamConfig struct {
+	window time.Duration
+}
 
 // WithWriteWindow sets how long each write of the stream may take: every
 // write first sets the connection's write deadline to now plus d. Values of
 // zero or less select [DefaultWriteWindow]. Keep-alive comments must come
 // more often than d (see [Timing]).
 func WithWriteWindow(d time.Duration) Option {
-	return func(s *Stream) {
+	return func(c *streamConfig) {
 		if d > 0 {
-			s.window = d
+			c.window = d
 		}
 	}
 }
@@ -111,11 +119,11 @@ type Stream struct {
 
 // New returns a stream that writes to w. It writes nothing yet.
 func New(w http.ResponseWriter, opts ...Option) *Stream {
-	s := &Stream{w: w, rc: http.NewResponseController(w), window: DefaultWriteWindow}
+	c := streamConfig{window: DefaultWriteWindow}
 	for _, opt := range opts {
-		opt(s)
+		opt(&c)
 	}
-	return s
+	return &Stream{w: w, rc: http.NewResponseController(w), window: c.window}
 }
 
 // WriteWindow returns how long each write may take.
@@ -142,8 +150,8 @@ func (s *Stream) Start() error {
 // fields, which the browser joins with LF.
 //
 // Nothing is written when the event name or a field is invalid (wrapping
-// [ErrEventName] or [ErrField]) or when node fails to render (wrapping the
-// render error). ctx is the render context. Send returns [ErrEnded] after
+// [ErrInvalidEventName] or [ErrInvalidField]) or when node fails to render
+// (wrapping the render error). ctx is the render context. Send returns [ErrEnded] after
 // [Stream.End], and an error wrapping [ErrWrite] when the connection fails
 // (see [Stream] for writers that cannot flush).
 func (s *Stream) Send(ctx context.Context, event string, node elem.Node, fields ...Field) error {
@@ -180,7 +188,7 @@ func (s *Stream) SendText(event, text string, fields ...Field) error {
 // a bare colon. Comments keep idle connections open through proxies and
 // keep a write deadline from passing; [Loop] sends "keep-alive" comments.
 //
-// It returns an error wrapping [ErrField] when text contains CR or LF,
+// It returns an error wrapping [ErrInvalidField] when text contains CR or LF,
 // [ErrEnded] after [Stream.End], and an error wrapping [ErrWrite] when the
 // connection fails.
 func (s *Stream) Comment(text string) error {
@@ -188,7 +196,7 @@ func (s *Stream) Comment(text string) error {
 		return ErrEnded
 	}
 	if strings.ContainsAny(text, "\r\n") {
-		return fmt.Errorf("%w: comment contains a line break", ErrField)
+		return fmt.Errorf("%w: comment contains a line break", ErrInvalidField)
 	}
 	defer s.frame.reset()
 	s.frame.grow(len(": \n\n") + len(text))
@@ -414,26 +422,27 @@ type Field struct {
 // ID: an EventSource sends it in the Last-Event-ID header when it
 // reconnects. An empty id resets it. Streams of whole fragments need no IDs;
 // this package does not read Last-Event-ID. An id with CR, LF or NUL makes
-// the send fail with [ErrField].
+// the send fail with [ErrInvalidField].
 func ID(id string) Field {
 	if strings.ContainsAny(id, "\r\n\x00") {
-		return Field{err: fmt.Errorf("%w: id contains CR, LF or NUL", ErrField)}
+		return Field{err: fmt.Errorf("%w: id contains CR, LF or NUL", ErrInvalidField)}
 	}
 	return Field{name: "id", value: id}
 }
 
 // Retry returns the retry field of an event, which sets how long the
 // browser waits before it reconnects after the connection closes, in whole
-// milliseconds. A negative d makes the send fail with [ErrField].
+// milliseconds. A negative d makes the send fail with [ErrInvalidField].
 func Retry(d time.Duration) Field {
 	if d < 0 {
-		return Field{err: fmt.Errorf("%w: negative retry delay", ErrField)}
+		return Field{err: fmt.Errorf("%w: negative retry delay", ErrInvalidField)}
 	}
 	return Field{name: "retry", value: strconv.FormatInt(d.Milliseconds(), 10)}
 }
 
 // CheckEventName returns nil if name can name an event, and otherwise an
-// error wrapping [ErrEventName] that says why (without repeating the name).
+// error wrapping [ErrInvalidEventName] that says why (without repeating the
+// name).
 //
 // A name has 1 to [MaxEventNameLen] bytes of ASCII letters, digits, '-',
 // '_', '.' and ':', and is neither "open" nor "error". The character set is
@@ -444,18 +453,18 @@ func Retry(d time.Duration) Field {
 // reconnect. Line breaks would end the event field early.
 func CheckEventName(name string) error {
 	if name == "" {
-		return fmt.Errorf("%w: empty", ErrEventName)
+		return fmt.Errorf("%w: empty", ErrInvalidEventName)
 	}
 	if len(name) > MaxEventNameLen {
-		return fmt.Errorf("%w: longer than %d bytes", ErrEventName, MaxEventNameLen)
+		return fmt.Errorf("%w: longer than %d bytes", ErrInvalidEventName, MaxEventNameLen)
 	}
 	for i := 0; i < len(name); i++ {
 		if !eventNameByte(name[i]) {
-			return fmt.Errorf("%w: byte %d is not a letter, digit, '-', '_', '.' or ':'", ErrEventName, i)
+			return fmt.Errorf("%w: byte %d is not a letter, digit, '-', '_', '.' or ':'", ErrInvalidEventName, i)
 		}
 	}
 	if name == "open" || name == "error" {
-		return fmt.Errorf("%w: reserved for connection events", ErrEventName)
+		return fmt.Errorf("%w: reserved for connection events", ErrInvalidEventName)
 	}
 	return nil
 }

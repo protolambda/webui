@@ -9,10 +9,11 @@ import (
 	"github.com/protolambda/chord/core/attr"
 
 	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/internal/urlpath"
 )
 
-// ErrURL reports a stream URL that [Region] or [Connect] rejects.
-var ErrURL = errors.New("sse: invalid stream URL")
+// ErrInvalidURL reports a stream URL that [Region] or [Connect] rejects.
+var ErrInvalidURL = errors.New("sse: invalid stream URL")
 
 // Region returns the attributes of a live region's container:
 //
@@ -24,11 +25,15 @@ var ErrURL = errors.New("sse: invalid stream URL")
 // htmx extensions on an ancestor (hx-ext is inherited): a second hx-ext on
 // the container fails to render.
 //
-// url must be a same-origin path: it starts with one '/', and has no
-// backslash, space or control character (URL parsers drop tabs and line
-// breaks, and read a backslash as a slash, which could turn the path into
-// another host). Otherwise the attributes fail to render with an error
-// wrapping [ErrURL]. Use [hx2.SSEConnect] directly for anything else.
+// url must be a same-origin path, with an optional query and fragment: it
+// starts with one '/', and consists of printable ASCII other than space
+// and backslash (URL parsers drop tabs and line breaks, and read a
+// backslash as a slash, which could turn the path into another host).
+// Percent-encode other characters, for example with [net/url.PathEscape]
+// or [net/url.QueryEscape]; percent escapes must be complete. This is the
+// rule of web.SafeNext. Otherwise the attributes fail to render with an
+// error wrapping [ErrInvalidURL]. Use [hx2.SSEConnect] directly for
+// anything else.
 func Region(url string) attr.Node {
 	if err := checkURL(url); err != nil {
 		return failed{err}
@@ -54,7 +59,7 @@ func Connect(url string) attr.Node {
 // the data of each named event replaces the element's content (or what its
 // hx-target and hx-swap select). With more events, the attribute lists them
 // all. A name that [CheckEventName] rejects makes the attribute fail to
-// render with an error wrapping [ErrEventName].
+// render with an error wrapping [ErrInvalidEventName].
 //
 // Put aria-live="polite" (or role="status") on targets whose changes people
 // should hear, and leave it off targets that change every second.
@@ -73,18 +78,19 @@ func Swap(event string, more ...string) attr.Node {
 	return hx2.SSESwap(event + "," + strings.Join(more, ","))
 }
 
-// checkURL accepts same-origin paths.
+// checkURL accepts same-origin paths, with the rule of web.SafeNext and
+// page links (internal/urlpath), and says why it refuses others without
+// repeating the URL, which may carry a token.
 func checkURL(url string) error {
-	if url == "" || url[0] != '/' {
-		return fmt.Errorf("%w: not a path starting with '/'", ErrURL)
-	}
-	if len(url) > 1 && url[1] == '/' {
-		return fmt.Errorf("%w: starts with '//', which names another host", ErrURL)
-	}
-	for i := 0; i < len(url); i++ {
-		if c := url[i]; c <= ' ' || c == 0x7f || c == '\\' {
-			return fmt.Errorf("%w: byte %d is a backslash, space or control character", ErrURL, i)
-		}
+	switch {
+	case url == "" || url[0] != '/':
+		return fmt.Errorf("%w: not a path starting with '/'", ErrInvalidURL)
+	case len(url) > 1 && url[1] == '/':
+		return fmt.Errorf("%w: starts with '//', which names another host", ErrInvalidURL)
+	case !urlpath.Printable(url):
+		return fmt.Errorf("%w: not printable ASCII without spaces or backslashes", ErrInvalidURL)
+	case !urlpath.Local(url):
+		return fmt.Errorf("%w: not a valid path, query and fragment", ErrInvalidURL)
 	}
 	return nil
 }

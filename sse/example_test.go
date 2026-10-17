@@ -280,7 +280,7 @@ func ExampleSwap() {
 // Region accepts same-origin paths only.
 func ExampleRegion_invalidURL() {
 	err := core.Render(context.Background(), div.Div(sse.Region("//other.example/live"))(), new(discard))
-	fmt.Println(errors.Is(err, sse.ErrURL))
+	fmt.Println(errors.Is(err, sse.ErrInvalidURL))
 	fmt.Println(err)
 	// Output:
 	// true

@@ -48,19 +48,19 @@ func TestRegionRejectsURLs(gt *testing.T) {
 	for _, url := range []string{
 		"", "live", "//other.example/live", "/\\other.example", "https://other.example/live",
 		"javascript:alert(1)", "/\t/other.example", "/\n/other.example", "/a\rb", "/a b", "/a\\b",
-		" /live", "/a\x00", "/a\x7f",
+		" /live", "/a\x00", "/a\x7f", "/日本", "/\xff", "/a%zz", "/x?y=日",
 	} {
 		for _, n := range []attr.Node{sse.Region(url), sse.Connect(url)} {
 			_, err := renderString(t.Context(), n)
-			t.Must(be.Annotate(be.ErrorIs(err, sse.ErrURL), "url %q", url))
+			t.Must(be.Annotate(be.ErrorIs(err, sse.ErrInvalidURL), "url %q", url))
 		}
 	}
 	// The error does not repeat the URL, which may carry a token.
 	_, err := renderString(t.Context(), sse.Region("/live?token=7f3a9c\n"))
-	t.Must(be.ErrorIs(err, sse.ErrURL))
+	t.Must(be.ErrorIs(err, sse.ErrInvalidURL))
 	t.Must(be.False(strings.Contains(err.Error(), "7f3a9c")))
 
-	for _, url := range []string{"/", "/live", "/a/b?c=d&e=%20#f", "/日本"} {
+	for _, url := range []string{"/", "/live", "/a/b?c=d&e=%20#f", "/%E6%97%A5%E6%9C%AC"} {
 		_, err := renderString(t.Context(), sse.Region(url))
 		t.Must(be.Annotate(be.NoError(err), "url %q", url))
 	}
@@ -77,6 +77,6 @@ func TestSwap(gt *testing.T) {
 
 	for _, events := range [][]string{{""}, {"a,b"}, {"open"}, {"a", "b c"}, {"a", ""}, {"a", "error"}} {
 		_, err := renderString(t.Context(), sse.Swap(events[0], events[1:]...))
-		t.Must(be.Annotate(be.ErrorIs(err, sse.ErrEventName), "events %q", events))
+		t.Must(be.Annotate(be.ErrorIs(err, sse.ErrInvalidEventName), "events %q", events))
 	}
 }

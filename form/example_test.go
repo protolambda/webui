@@ -123,3 +123,15 @@ func ExampleRead_limits() {
 	// 400 false form: malformed form: bad percent escape
 	// 400 false form: too many fields: more than 3
 }
+
+// Limits loaded from configuration are checked once at startup: a
+// negative limit would otherwise make every form read panic.
+func ExampleLimits_Validate() {
+	for _, l := range []form.Limits{{}, {Body: 64 << 10, Fields: 50}, {Fields: -1}} {
+		fmt.Println(l.Validate())
+	}
+	// Output:
+	// <nil>
+	// <nil>
+	// form: invalid limits: negative Fields
+}

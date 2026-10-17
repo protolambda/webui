@@ -16,6 +16,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthttp"
@@ -37,8 +39,9 @@ type HTMXRequest struct {
 	// needs [PageURL].
 	Path string
 	// URLParams reports that the parameters go in the query of the URL and
-	// the request has no body: the method is one of the
-	// methodsThatUseUrlParams of the htmx configuration (see [HTMXData]).
+	// the request has no body: the method, as htmx compares it (a
+	// formmethod as written, see [HTMXData]), is one of the
+	// methodsThatUseUrlParams of the htmx configuration.
 	URLParams bool
 	// Multipart reports a multipart/form-data body: hx-encoding is
 	// "multipart/form-data" on the element or an ancestor, or the element
@@ -55,14 +58,34 @@ type HTMXRequest struct {
 	// sent as HX-Target; "" sends none.
 	Target string
 	// Header holds the headers of the hx-headers of the element and its
-	// ancestors, merged as htmx merges them. It leaves out the headers that
-	// htmx sets itself and those that browsers do not let scripts set
-	// (Origin, Cookie, Sec-*, ...). Nil means none.
+	// ancestors, merged as htmx merges them, with the values that the
+	// browser sends: without leading and trailing white space, and with
+	// characters up to U+00FF as one byte each (Latin-1, which
+	// hx2.RequestHeaders decodes). A value that the browser rejects (other
+	// characters, or a NUL, CR or LF inside) is percent-encoded, with the
+	// name's -URI-AutoEncoded header, as htmx then sends it. It leaves out
+	// the headers that htmx sets itself and those that browsers do not let
+	// scripts set (Origin, Cookie, Sec-*, ..., and X-HTTP-Method,
+	// X-HTTP-Method-Override and X-Method-Override when they name CONNECT,
+	// TRACE or TRACK). Nil means none.
 	Header http.Header
 
 	// unresolved is the hx-target that HTMXData could not resolve within
 	// the subject, which Request then needs HXTarget for.
 	unresolved string
+	// verb is the method as htmx compares it (see htmxVerb).
+	verb string
+}
+
+// htmxVerb returns the method as htmx compares it with "get" and the
+// methodsThatUseUrlParams: a submitter's formmethod as the page writes it
+// ("GET" is not "get"), else the lower-cased Method, also when Method was
+// changed to another method after HTMXData.
+func (r HTMXRequest) htmxVerb() string {
+	if r.verb != "" && strings.EqualFold(r.verb, r.Method) {
+		return r.verb
+	}
+	return strings.ToLower(r.Method)
 }
 
 // Values returns the text fields of the request.
@@ -99,9 +122,27 @@ func firstRequestAttr(e ct.Node) (verb, attr, path string, ok bool) {
 // with a data- prefix). submitter, for a form element only, is the submit
 // button that submits it (nil for none, as form.requestSubmit()): its
 // formaction and formmethod replace the form's request URL and method, and
-// its name and value are sent. edits replace the values of the named
-// controls, as a user would enter them, before hx-vals and hx-params
-// apply; editing a name that is no control of the request is an error.
+// its name and value are sent. htmx compares the formmethod as written:
+// formmethod="GET" is not "get", so the form's fields go in a body, which
+// a GET request does not send, with a urlencoded Content-Type, and
+// formmethod="DELETE" is not the "delete" of methodsThatUseUrlParams.
+// edits replace the values of the named controls, as a user would enter
+// them, before hx-vals and hx-params apply; editing a name that is no
+// control of the request is an error.
+//
+// A submitter that htmx would not use for the form's request is an error:
+//
+//   - one with its own request attribute (hx-delete, ...), whose click
+//     htmx handles (no hx-trigger, or one with a click event, and not
+//     inside hx-disable): htmx sends that request instead, and cancels the
+//     submission; pass the submitter as elt, with a nil submitter;
+//   - one that htmx does not track as the submitter, when it has a name,
+//     formaction or formmethod that would then be left out: htmx tracks
+//     the submit buttons inside a form element (any form, also when the
+//     form attribute names another), and outside of forms only those whose
+//     type attribute is exactly "submit" (not absent, not "SUBMIT") and
+//     that have a form attribute, outside hx-disable; a footer button
+//     <button form="f"> needs type="submit".
 //
 // It follows htmx's algorithm for the parameters:
 //
@@ -121,16 +162,20 @@ func firstRequestAttr(e ct.Node) (verb, attr, path string, ok bool) {
 //   - the fields of the form replace those of the same name of the element
 //     and the includes; then the values of the merged hx-vals of the
 //     element and its ancestors (see [PostFormsCarryCSRF]; strings as they
-//     are, arrays as one field per item, objects as JSON) replace those of
-//     the same name, and the nearest hx-params filters the result.
+//     are, arrays as one field per item, objects and null as JavaScript's
+//     JSON.stringify writes them) replace those of the same name, and the
+//     nearest hx-params filters the result.
 //
 // The parameters go in the URL when the method is one of the
 // methodsThatUseUrlParams of the configuration that the subject runs
-// under, as [NoTokenLeaks] reads it: a complete document's first
-// htmx-config meta element, else htmx's default (GET and DELETE); for a
-// fragment, the zero hx2.Config of the page around it (GET only;
-// [PageHTMXConfig] sets another for [Client.SubmitHTMX] and
-// [Browser.SubmitHTMX], or set URLParams).
+// under, as [NoTokenLeaks] reads it, compared case-sensitively as htmx
+// does: a complete document's first htmx-config meta element, else
+// htmx's default (get and delete); for a fragment, the zero hx2.Config of
+// the page around it (get only; [PageHTMXConfig] sets another for
+// [Client.SubmitHTMX] and [Browser.SubmitHTMX], or set URLParams).
+//
+// An hx-headers member whose name is not a valid header name is an error:
+// the browser rejects it, and htmx sends no request.
 //
 // The target is the element that the nearest hx-target selects, else the
 // element itself. Selectors are resolved within the subject when they are
@@ -142,7 +187,9 @@ func firstRequestAttr(e ct.Node) (verb, attr, path string, ok bool) {
 // the fragment or a selector with combinators, is left to
 // [HTMXRequest.Request], which then needs [HXTarget]; one that selects
 // nothing in a document is an error, as htmx then sends no request. An
-// hx-include that it cannot resolve is an error.
+// hx-include that it cannot resolve is an error. So is, when the request
+// is built ([HTMXRequest.Request]), a request URL of another origin than
+// the page's.
 //
 // HTMXData does not run what needs a user, script or an extension:
 // hx-confirm, hx-prompt, hx-vars, js: values, hx-on, constraint
@@ -178,7 +225,7 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 		return HTMXRequest{}, fmt.Errorf("%w: %s has several htmx request attributes", ErrFormData, elt)
 	case inside(e, "template") != nil:
 		return HTMXRequest{}, fmt.Errorf("%w: %s is template content, which htmx does not process", ErrFormData, elt)
-	case Closest(e, func(n ct.Node) bool { _, _, ok := hxAttrOf(n, "hx-disable"); return ok }) != nil:
+	case underHXDisable(e):
 		return HTMXRequest{}, fmt.Errorf("%w: %s is inside hx-disable, which htmx does not process", ErrFormData, elt)
 	case listedTags[e.Tag()] && disabledControl(e):
 		return HTMXRequest{}, fmt.Errorf("%w: %s is disabled", ErrFormData, elt)
@@ -202,13 +249,27 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 		case disabledControl(sub):
 			return HTMXRequest{}, fmt.Errorf("%w: %s is disabled", ErrFormData, submitter)
 		}
+		if _, attr, _, ok := firstRequestAttr(sub); ok && htmxHandlesClick(sub) {
+			return HTMXRequest{}, fmt.Errorf("%w: %s has its own %s, which htmx sends instead of the form's request when it is clicked; pass it as elt with a nil submitter", ErrFormData, submitter, attr)
+		}
+		if !htmxTracksSubmitter(sub) {
+			if hasAttr(sub, "name") || hasAttr(sub, "formaction") || hasAttr(sub, "formmethod") {
+				return HTMXRequest{}, fmt.Errorf(`%w: htmx does not track %s as the submitter of the form, so it would send the form's request without its name, value, formaction and formmethod: outside of form elements, htmx tracks only submit buttons with a form attribute and a type attribute of exactly "submit"`, ErrFormData, submitter)
+			}
+			// It changes nothing: the form's request without a submitter.
+			sub = nil
+		}
+	}
+	if sub != nil {
 		if a, ok := attrOf(sub, "formaction"); ok {
 			path = a
 		}
 		if m, ok := attrOf(sub, "formmethod"); ok {
-			if m = strings.ToLower(m); !slices.Contains(htmxVerbs, m) {
+			if !slices.Contains(htmxVerbs, strings.ToLower(m)) {
 				return HTMXRequest{}, fmt.Errorf("%w: %s has formmethod %q, for which htmx sends no request", ErrFormData, submitter, m)
 			}
+			// htmx keeps the formmethod as written and compares it
+			// case-sensitively.
 			verb = m
 		}
 	}
@@ -218,6 +279,7 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 		Path:      path,
 		URLParams: htmxURLMethods(root, fragmentMethods)[verb],
 		Multipart: htmxMultipart(e),
+		verb:      verb,
 	}
 	r.Target, r.unresolved, err = sc.target(e)
 	if err != nil {
@@ -284,8 +346,63 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 	}
 	fields = overrideFields(fields, htmxValsFields(e))
 	r.Fields = filterParams(fields, e)
-	r.Header = htmxHeaders(e, r)
+	if r.Header, err = htmxHeaders(e, r); err != nil {
+		return HTMXRequest{}, fmt.Errorf("%w: %s: %w", ErrFormData, elt, err)
+	}
 	return r, nil
+}
+
+// underHXDisable reports whether n is inside hx-disable (also with a data-
+// prefix), where htmx processes no element.
+func underHXDisable(n ct.Node) bool {
+	return Closest(n, func(p ct.Node) bool { _, _, ok := hxAttrOf(p, "hx-disable"); return ok }) != nil
+}
+
+// htmxHandlesClick reports whether htmx handles a click of n, an element
+// with a request attribute: n is not inside hx-disable, and its own
+// hx-trigger (htmx does not inherit it) is absent or empty, a button's
+// default trigger "click", or lists a click event. For a submit button,
+// htmx then sends n's own request and cancels the submission of its form.
+func htmxHandlesClick(n ct.Node) bool {
+	if underHXDisable(n) {
+		return false
+	}
+	v, _ := attrOf(n, "hx-trigger")
+	if v == "" {
+		v, _ = attrOf(n, "data-hx-trigger")
+	}
+	triggers := splitSelectors(v)
+	if len(triggers) == 0 {
+		return true
+	}
+	for _, trig := range triggers {
+		event, _, _ := strings.Cut(strings.Fields(trig)[0], "[")
+		if event == "click" {
+			return true
+		}
+	}
+	return false
+}
+
+// htmxTracksSubmitter reports whether htmx 2 records the submit button n
+// as the submitter of its form (lastButtonClicked). htmx records it from
+// click and focusin listeners on every form element and on every element
+// whose type attribute is exactly "submit" and that has a form (or
+// data-form) attribute, outside hx-disable; the listener resolves the
+// button's form owner. A click on n reaches such a listener when n or an
+// ancestor has one.
+func htmxTracksSubmitter(n ct.Node) bool {
+	for p := n; p != nil; p = p.Parent() {
+		if p.Kind() != ct.KindElement {
+			continue
+		}
+		t, _ := attrOf(p, "type")
+		listens := p.Tag() == "form" || t == "submit" && (hasAttr(p, "form") || hasAttr(p, "data-form"))
+		if listens && !underHXDisable(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // requestAttrCount counts the htmx request attributes of e.
@@ -732,8 +849,8 @@ func mergeHTMXObject(e ct.Node, name string, into *jsObject) bool {
 
 // htmxValsFields returns the fields of the merged hx-vals of e, as htmx
 // converts them to form data: one field per item of an array, objects and
-// null as JSON, other values as strings. "unset" on any of the elements
-// drops them all.
+// null as JSON.stringify writes them, other values as strings. "unset" on
+// any of the elements drops them all.
 func htmxValsFields(e ct.Node) []Part {
 	var obj jsObject
 	if !mergeHTMXObject(e, "hx-vals", &obj) {
@@ -752,16 +869,190 @@ func htmxValsFields(e ct.Node) []Part {
 				out = append(out, Part{Name: k, Value: jsString(item)})
 			}
 		case len(v) > 0 && v[0] == '{', isJSONNull(v):
-			var b bytes.Buffer
-			if json.Compact(&b, v) != nil {
+			s, ok := jsonStringify(v)
+			if !ok {
 				continue
 			}
-			out = append(out, Part{Name: k, Value: b.String()})
+			out = append(out, Part{Name: k, Value: s})
 		default:
 			out = append(out, Part{Name: k, Value: jsString(v)})
 		}
 	}
 	return out
+}
+
+// jsonStringify returns what JavaScript's JSON.stringify writes for the
+// value that JSON.parse reads from the JSON text v: object members in
+// enumeration order (see [jsObject]), a repeated name once with its last
+// value; numbers as JavaScript writes them, non-finite ones as null;
+// strings with only quotes, backslashes, control characters and lone
+// surrogates escaped. Member names are decoded as Go decodes them, so a
+// lone surrogate in a name becomes U+FFFD. ok is false for malformed
+// JSON.
+func jsonStringify(v json.RawMessage) (string, bool) {
+	var b strings.Builder
+	if !writeJSON(&b, v) {
+		return "", false
+	}
+	return b.String(), true
+}
+
+func writeJSON(b *strings.Builder, v json.RawMessage) bool {
+	v = bytes.TrimSpace(v)
+	if len(v) == 0 {
+		return false
+	}
+	switch v[0] {
+	case '{':
+		obj, ok := parseJSObject(string(v))
+		if !ok {
+			return false
+		}
+		b.WriteByte('{')
+		for i, k := range obj.ordered() {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			writeJSString(b, utf16.Encode([]rune(k)))
+			b.WriteByte(':')
+			if !writeJSON(b, obj.vals[k]) {
+				return false
+			}
+		}
+		b.WriteByte('}')
+	case '[':
+		var items []json.RawMessage
+		if json.Unmarshal(v, &items) != nil {
+			return false
+		}
+		b.WriteByte('[')
+		for i, item := range items {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			if !writeJSON(b, item) {
+				return false
+			}
+		}
+		b.WriteByte(']')
+	case '"':
+		units, ok := jsonStringUnits(v)
+		if !ok {
+			return false
+		}
+		writeJSString(b, units)
+	case 't', 'f', 'n':
+		switch s := string(v); s {
+		case "true", "false", "null":
+			b.WriteString(s)
+		default:
+			return false
+		}
+	default:
+		if !json.Valid(v) {
+			return false
+		}
+		switch s := jsNumber(string(v)); s {
+		case "Infinity", "-Infinity":
+			// JSON.parse reads an overflowing number as an infinity, which
+			// JSON.stringify writes as null.
+			b.WriteString("null")
+		default:
+			b.WriteString(s)
+		}
+	}
+	return true
+}
+
+// jsonStringUnits decodes the JSON string token v into UTF-16 code units,
+// as JSON.parse does, keeping lone surrogates of \u escapes.
+func jsonStringUnits(v []byte) ([]uint16, bool) {
+	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
+		return nil, false
+	}
+	s := string(v[1 : len(v)-1])
+	var out []uint16
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '"' || c < 0x20:
+			return nil, false
+		case c != '\\':
+			r, size := utf8.DecodeRuneInString(s[i:])
+			out = utf16.AppendRune(out, r)
+			i += size
+			continue
+		}
+		if i+1 >= len(s) {
+			return nil, false
+		}
+		switch e := s[i+1]; e {
+		case '"', '\\', '/':
+			out = append(out, uint16(e))
+		case 'b':
+			out = append(out, '\b')
+		case 'f':
+			out = append(out, '\f')
+		case 'n':
+			out = append(out, '\n')
+		case 'r':
+			out = append(out, '\r')
+		case 't':
+			out = append(out, '\t')
+		case 'u':
+			if i+6 > len(s) {
+				return nil, false
+			}
+			u, err := strconv.ParseUint(s[i+2:i+6], 16, 16)
+			if err != nil {
+				return nil, false
+			}
+			out = append(out, uint16(u))
+			i += 6
+			continue
+		default:
+			return nil, false
+		}
+		i += 2
+	}
+	return out, true
+}
+
+// writeJSString writes the UTF-16 string s quoted as JSON.stringify
+// quotes it.
+func writeJSString(b *strings.Builder, s []uint16) {
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		u := s[i]
+		switch {
+		case u == '"':
+			b.WriteString(`\"`)
+		case u == '\\':
+			b.WriteString(`\\`)
+		case u == '\b':
+			b.WriteString(`\b`)
+		case u == '\f':
+			b.WriteString(`\f`)
+		case u == '\n':
+			b.WriteString(`\n`)
+		case u == '\r':
+			b.WriteString(`\r`)
+		case u == '\t':
+			b.WriteString(`\t`)
+		case u < 0x20:
+			fmt.Fprintf(b, `\u%04x`, u)
+		case utf16.IsSurrogate(rune(u)):
+			if u < 0xDC00 && i+1 < len(s) && 0xDC00 <= s[i+1] && s[i+1] <= 0xDFFF {
+				b.WriteRune(utf16.DecodeRune(rune(u), rune(s[i+1])))
+				i++
+				continue
+			}
+			fmt.Fprintf(b, `\u%04x`, u)
+		default:
+			b.WriteRune(rune(u))
+		}
+	}
+	b.WriteByte('"')
 }
 
 // jsString converts a JSON value to a string as JavaScript's String does.
@@ -819,27 +1110,83 @@ func jsNumber(s string) string {
 }
 
 // forbiddenHeader reports whether browsers keep scripts from setting the
-// request header (the forbidden request-header names of the Fetch
-// standard).
-func forbiddenHeader(name string) bool {
-	switch strings.ToLower(name) {
-	case "accept-charset", "accept-encoding", "access-control-request-headers",
-		"access-control-request-method", "connection", "content-length", "cookie",
-		"cookie2", "date", "dnt", "expect", "host", "keep-alive", "origin", "referer",
-		"set-cookie", "te", "trailer", "transfer-encoding", "upgrade", "via",
-		"x-http-method", "x-http-method-override", "x-method-override":
-		return true
-	}
+// request header name to value, a valid header value (the forbidden
+// request-headers of the Fetch standard, and Chromium's
+// Access-Control-Request-Private-Network): the method-override headers
+// only when one of the comma-separated values is CONNECT, TRACE or TRACK.
+func forbiddenHeader(name, value string) bool {
 	l := strings.ToLower(name)
+	switch l {
+	case "accept-charset", "accept-encoding", "access-control-request-headers",
+		"access-control-request-method", "access-control-request-private-network",
+		"connection", "content-length", "cookie", "cookie2", "date", "dnt", "expect",
+		"host", "keep-alive", "origin", "referer", "set-cookie", "te", "trailer",
+		"transfer-encoding", "upgrade", "via":
+		return true
+	case "x-http-method", "x-http-method-override", "x-method-override":
+		for _, m := range splitHeaderValues(value) {
+			if asciiEqualFold(m, "CONNECT") || asciiEqualFold(m, "TRACE") || asciiEqualFold(m, "TRACK") {
+				return true
+			}
+		}
+		return false
+	}
 	return strings.HasPrefix(l, "proxy-") || strings.HasPrefix(l, "sec-")
+}
+
+// splitHeaderValues splits a header value as Fetch's "get, decode, and
+// split" does: at the commas outside quoted strings, which stay as
+// written, trimming spaces and tabs.
+func splitHeaderValues(v string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case '"':
+			for i++; i < len(v) && v[i] != '"'; i++ {
+				if v[i] == '\\' {
+					i++
+				}
+			}
+		case ',':
+			out = append(out, strings.Trim(v[start:i], " \t"))
+			start = i + 1
+		}
+	}
+	return append(out, strings.Trim(v[start:], " \t"))
+}
+
+// asciiEqualFold reports whether a and b are equal under ASCII case
+// folding (header values are bytes, not UTF-8).
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 // htmxHeaders returns the headers of the merged hx-headers of e, leaving
 // out the ones that htmx sets itself for r and the ones that scripts may
-// not set. A value that is not a valid header value (control characters,
-// characters beyond Latin-1) is sent encoded, with the name's
-// -URI-AutoEncoded header, as htmx does when the browser rejects it.
-func htmxHeaders(e ct.Node, r HTMXRequest) http.Header {
+// not set, as the browser sends them when htmx sets them with
+// setRequestHeader: null values are skipped; a name that is not a valid
+// header name is an error, since the browser throws and htmx sends no
+// request; a value is trimmed and sent as Latin-1 bytes, and one that the
+// browser rejects (characters beyond Latin-1, or NUL, CR or LF inside) is
+// sent percent-encoded, with the name's -URI-AutoEncoded header, as htmx
+// sends it then.
+func htmxHeaders(e ct.Node, r HTMXRequest) (http.Header, error) {
 	var obj jsObject
 	set := func(k string) { obj.set(k, json.RawMessage(`"set"`)) }
 	set(hx2.HeaderRequest)
@@ -856,27 +1203,41 @@ func htmxHeaders(e ct.Node, r HTMXRequest) http.Header {
 	builtin := len(obj.keys)
 	mergeHTMXObject(e, "hx-headers", &obj)
 	if len(obj.keys) == builtin {
-		return nil
+		return nil, nil
 	}
 	h := make(http.Header)
+	// add is the browser's setRequestHeader for a valid name and value: it
+	// drops a forbidden header silently.
+	add := func(name, value string) {
+		if !forbiddenHeader(name, value) {
+			h.Add(name, value)
+		}
+	}
 	for _, k := range obj.keys[builtin:] {
 		v := obj.vals[k]
-		if isJSONNull(v) || forbiddenHeader(k) || !validHeaderName(k) {
+		if isJSONNull(v) {
+			// htmx sets no header for null.
 			continue
 		}
-		if k == "Content-Type" && r.Method != http.MethodGet && !r.Multipart {
+		if !validHeaderName(k) {
+			return nil, fmt.Errorf("the hx-headers name %q is not a valid header name, so htmx sends no request", k)
+		}
+		if k == "Content-Type" && r.htmxVerb() != "get" && !r.Multipart {
 			// htmx sets it after merging hx-headers.
 			continue
 		}
 		s := jsString(v)
-		if validHeaderValue(s) {
-			h.Add(k, s)
+		if b, ok := headerBytes(s); ok {
+			add(k, b)
 		} else {
-			h.Add(k, encodeURIComponent(s))
-			h.Add(k+"-URI-AutoEncoded", "true")
+			add(k, encodeURIComponent(s))
+			add(k+"-URI-AutoEncoded", "true")
 		}
 	}
-	return h
+	if len(h) == 0 {
+		return nil, nil
+	}
+	return h, nil
 }
 
 func validHeaderName(k string) bool {
@@ -892,15 +1253,21 @@ func validHeaderName(k string) bool {
 	return true
 }
 
-// validHeaderValue reports whether a script may send s as a header value:
-// Latin-1 without NUL, CR or LF.
-func validHeaderValue(s string) bool {
+// headerBytes returns the bytes that a browser sends for the header value
+// s that a script sets: s without leading and trailing HTTP white space
+// (space, tab, CR, LF), each character as one byte (Latin-1). ok is false
+// when the browser rejects the value: a character beyond U+00FF, or a NUL,
+// CR or LF inside.
+func headerBytes(s string) (string, bool) {
+	s = strings.Trim(s, " \t\r\n")
+	b := make([]byte, 0, len(s))
 	for _, c := range s {
 		if c > 0xFF || c == 0 || c == '\r' || c == '\n' {
-			return false
+			return "", false
 		}
+		b = append(b, byte(c))
 	}
-	return true
+	return string(b), true
 }
 
 // encodeURIComponent percent-encodes s as JavaScript's
@@ -1137,8 +1504,9 @@ func sibling(e ct.Node, dir int) ct.Node {
 }
 
 // build returns the method, URL, body and the options of the htmx request,
-// given the settings of the caller's options.
-func (r HTMXRequest) build(rs reqSettings) (method, target string, body Body, pre []ReqOption, err error) {
+// given the base URL that the request goes to and the settings of the
+// caller's options.
+func (r HTMXRequest) build(base *url.URL, rs reqSettings) (method, target string, body Body, pre []ReqOption, err error) {
 	method = strings.ToUpper(r.Method)
 	if !slices.Contains(htmxVerbs, strings.ToLower(method)) {
 		return "", "", Body{}, nil, fmt.Errorf("%w: htmx sends no %q requests", ErrFormData, r.Method)
@@ -1163,6 +1531,11 @@ func (r HTMXRequest) build(rs reqSettings) (method, target string, body Body, pr
 		default:
 			return "", "", Body{}, nil, fmt.Errorf("%w: the request URL is relative to the page's URL; pass PageURL with it", ErrFormData)
 		}
+	}
+	if page, ok := sameOrigin(base, rs.page, path); !ok {
+		// Also when the configuration allows cross-origin requests, the
+		// request would go to another server than the handler.
+		return "", "", Body{}, nil, fmt.Errorf("%w: the request URL %q is not of the page's origin %s: htmx refuses it (selfRequestsOnly), and otherwise sends it to another server", ErrFormData, r.Path, page)
 	}
 	switch {
 	case r.URLParams:
@@ -1193,7 +1566,9 @@ func (r HTMXRequest) build(rs reqSettings) (method, target string, body Body, pr
 	if r.Target != "" {
 		pre = append(pre, HXTarget(r.Target))
 	}
-	if body.kind == bodyNone && method != http.MethodGet && !r.Multipart {
+	if body.kind == bodyNone && r.htmxVerb() != "get" && !r.Multipart {
+		// htmx sets it for every verb but "get", also without a body, as
+		// for a formmethod="GET" whose body a GET request drops.
 		pre = append(pre, Header("Content-Type", "application/x-www-form-urlencoded"))
 	}
 	if r.Trigger != "" {
@@ -1221,11 +1596,15 @@ func (r HTMXRequest) build(rs reqSettings) (method, target string, body Body, pr
 // The parameters go in the query of the URL (after a query that it has)
 // or in the body (see [HTMXRequest.URLParams]). An empty or relative Path
 // is resolved against the [PageURL] among opts, which is also sent as
-// HX-Current-URL. An empty or relative Path without PageURL, or a target
-// that [HTMXData] could not resolve without [HXTarget], fails the test.
+// HX-Current-URL. An empty or relative Path without PageURL, a target
+// that [HTMXData] could not resolve without [HXTarget], or a Path of
+// another origin than the page (PageURL, else [BaseURL]; scheme, host and
+// port) fails the test: htmx refuses such a URL by default
+// (selfRequestsOnly), and where a configuration allows it, the request
+// goes to another server than the one under test.
 func (r HTMXRequest) Request(t TB, opts ...ReqOption) *http.Request {
 	t.Helper()
-	method, target, body, pre, err := r.build(settings(opts))
+	method, target, body, pre, err := r.build(defaultBase, settings(opts))
 	if err != nil {
 		fatalf(t, "%v", err)
 		return nil
@@ -1233,14 +1612,51 @@ func (r HTMXRequest) Request(t TB, opts ...ReqOption) *http.Request {
 	return Request(t, method, target, body, append(pre, opts...)...)
 }
 
+// sameOrigin reports whether the request URL path, resolved against the
+// page's URL (page resolved against base, else base), has the page's
+// origin, which it returns. A URL that does not parse is left to
+// buildRequest, which reports it.
+func sameOrigin(base *url.URL, page *string, path string) (string, bool) {
+	from := base
+	if page != nil {
+		p, err := url.Parse(*page)
+		if err != nil {
+			return "", true
+		}
+		from = base.ResolveReference(p)
+	}
+	ref, err := url.Parse(path)
+	if err != nil {
+		return "", true
+	}
+	o := urlOrigin(from)
+	return o, o == urlOrigin(from.ResolveReference(ref))
+}
+
+// urlOrigin returns the origin of u as browsers compare it: the scheme,
+// the lower-cased host and the port, without the default port of http
+// and https.
+func urlOrigin(u *url.URL) string {
+	host, port := strings.ToLower(u.Hostname()), u.Port()
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	switch {
+	case port == "", u.Scheme == "https" && port == "443", u.Scheme == "http" && port == "80":
+		return u.Scheme + "://" + host
+	}
+	return u.Scheme + "://" + host + ":" + port
+}
+
 // htmxSubmission computes the htmx request of elt and the parts of its
-// request; opts are the options of the request. A failure fails the test.
-func htmxSubmission(t TB, page *ct.Subject, elt, submitter *ct.Selection, edits url.Values, opts []ReqOption) (method, target string, body Body, pre []ReqOption, ok bool) {
+// request, which goes to base; opts are the options of the request. A
+// failure fails the test.
+func htmxSubmission(t TB, base *url.URL, page *ct.Subject, elt, submitter *ct.Selection, edits url.Values, opts []ReqOption) (method, target string, body Body, pre []ReqOption, ok bool) {
 	t.Helper()
 	rs := settings(opts)
 	r, err := htmxData(t.Context(), page, elt, submitter, edits, rs.urlMethods)
 	if err == nil {
-		method, target, body, pre, err = r.build(rs)
+		method, target, body, pre, err = r.build(base, rs)
 	}
 	if err != nil {
 		fatalf(t, "%v", prefixed(err))
@@ -1261,11 +1677,13 @@ func htmxSubmission(t TB, page *ct.Subject, elt, submitter *ct.Selection, edits 
 //
 // As with [Client.Submit], the request carries what htmx sends:
 // [Client.CSRF] is not added. A request that htmx would not send (see
-// [HTMXData] and [HTMXRequest.Request]) fails the test.
+// [HTMXData] and [HTMXRequest.Request]), such as one of a submitter that
+// sends its own request instead, or one to another origin, fails the
+// test.
 func (c *Client) SubmitHTMX(t TB, page *ct.Subject, elt, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
 	all := c.options(opts)
-	method, target, body, pre, ok := htmxSubmission(t, page, elt, submitter, edits, all)
+	method, target, body, pre, ok := htmxSubmission(t, defaultBase, page, elt, submitter, edits, all)
 	if !ok {
 		return nil
 	}
@@ -1281,7 +1699,7 @@ func (c *Client) SubmitHTMX(t TB, page *ct.Subject, elt, submitter *ct.Selection
 func (b *Browser) SubmitHTMX(t TB, page *ct.Subject, elt, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
 	all := append(append([]ReqOption(nil), b.Options...), opts...)
-	method, target, body, pre, ok := htmxSubmission(t, page, elt, submitter, edits, all)
+	method, target, body, pre, ok := htmxSubmission(t, b.base, page, elt, submitter, edits, all)
 	if !ok {
 		return nil
 	}

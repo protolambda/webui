@@ -346,8 +346,8 @@ var webuiURLMethods = sync.OnceValue(func() map[string]bool {
 })
 
 // configURLMethods returns the methodsThatUseUrlParams of an htmx
-// configuration, lower-cased. A config that does not encode panics with
-// the message prefix who: it is a mistake in the test.
+// configuration (see parseURLMethods). A config that does not encode
+// panics with the message prefix who: it is a mistake in the test.
 func configURLMethods(who string, c hx2.Config) map[string]bool {
 	content, err := c.JSON()
 	if err != nil {
@@ -362,8 +362,10 @@ func configURLMethods(who string, c hx2.Config) map[string]bool {
 }
 
 // parseURLMethods reads methodsThatUseUrlParams from the JSON of an
-// htmx-config meta element, lower-cased; false when the JSON is malformed
-// or lacks the key.
+// htmx-config meta element, as written: htmx compares the verb of a
+// request with them case-sensitively, and its verbs are lower-case
+// ("get"), unless a submitter's formmethod writes another case. It
+// returns false when the JSON is malformed or lacks the key.
 func parseURLMethods(content string) (map[string]bool, bool) {
 	var cfg struct {
 		Methods []string `json:"methodsThatUseUrlParams"`
@@ -373,7 +375,7 @@ func parseURLMethods(content string) (map[string]bool, bool) {
 	}
 	out := make(map[string]bool, len(cfg.Methods))
 	for _, x := range cfg.Methods {
-		out[strings.ToLower(x)] = true
+		out[x] = true
 	}
 	return out, true
 }
@@ -422,7 +424,8 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 //     ancestors have it (or, when token is not "", the token anywhere),
 //     unless the nearest hx-params drops it. The methods that put their
 //     parameters in the URL are the methodsThatUseUrlParams of the htmx
-//     configuration: in a complete document, of its first htmx-config
+//     configuration, compared case-sensitively as htmx does ("GET" does
+//     not name hx-get): in a complete document, of its first htmx-config
 //     meta element, else htmx's default (hx-get and hx-delete); in a
 //     fragment, of the page it is swapped into, which is the zero
 //     hx2.Config here (hx-get only) and [WithHTMXConfig] in [Rules];

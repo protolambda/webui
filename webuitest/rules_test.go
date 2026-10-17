@@ -296,6 +296,9 @@ func TestNoTokenLeaks(gt *testing.T) {
 		t.Must(be.Len(got, 2))
 		t.Must(be.Substring(got[1], "hx-post at"))
 		t.Must(be.Len(violations(t, page(`{"selfRequestsOnly":true}`), webuitest.NoTokenLeaks(testToken)), 1))
+		// htmx compares the verbs case-sensitively: "DELETE" is not the
+		// "delete" of hx-delete.
+		t.Must(be.Len(violations(t, page(`{"methodsThatUseUrlParams":["GET","DELETE"]}`), webuitest.NoTokenLeaks(testToken)), 0))
 	})
 	gt.Run("encoded token", func(gt *testing.T) {
 		checkRule(gt, webuitest.NoTokenLeaks("a b/c"), []ruleCase{

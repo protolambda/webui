@@ -36,6 +36,8 @@ type Submission struct {
 	// page's URL itself, and a reference without a leading slash ("done",
 	// "./x", "?page=2") is relative to it. Sending such an action needs
 	// the page's URL ([PageURL]); otherwise, set an absolute path or URL.
+	// An absolute URL of another origin is sent to the handler under test
+	// as it is, though a browser would send it to that origin.
 	Action string
 	// Enctype is [EnctypeURLEncoded], [EnctypeMultipart] or [EnctypeText].
 	Enctype string
@@ -56,6 +58,8 @@ type Submission struct {
 // submitter, for the check that Submit with HTMX sends that request.
 type htmxIntent struct {
 	method, path, attr string
+	// submitter reports that the request is the submitter's own.
+	submitter bool
 }
 
 // Values returns the text fields of the submission.
@@ -145,8 +149,12 @@ func (s Submission) target(opts []ReqOption) (method, target string, body Body, 
 	// Browsers strip leading and trailing ASCII white space from URLs.
 	action := trimURL(s.Action)
 	if hx := s.hx; rs.htmx && hx != nil && (hx.method != s.Method || trimURL(hx.path) != action) {
-		return "", "", Body{}, fmt.Errorf("%w: htmx sends %s %q for the %s of the form, not the form's %s %q; send it with SubmitHTMX",
-			ErrFormData, hx.method, hx.path, hx.attr, s.Method, s.Action)
+		of, how := "the form", "send it with SubmitHTMX"
+		if hx.submitter {
+			of, how = "the submitter", "send it with SubmitHTMX, with the submitter as the element and a nil submitter"
+		}
+		return "", "", Body{}, fmt.Errorf("%w: htmx sends %s %q for the %s of %s, not the form's %s %q; %s",
+			ErrFormData, hx.method, hx.path, hx.attr, of, s.Method, s.Action, how)
 	}
 	u, err := url.Parse(action)
 	if err != nil {
@@ -276,13 +284,17 @@ func FormData(ctx context.Context, page *ct.Subject, form, submitter *ct.Selecti
 
 // formHTMX returns the htmx request that replaces the submission of form f
 // by submitter sub (nil for none): the submitter's own, which htmx sends
-// when it is clicked, else the form's, with the formaction and formmethod
-// of the submitter, as htmx applies them. It is nil when neither makes an
-// htmx request.
+// when it is clicked (see htmxHandlesClick), else the form's, with the
+// formaction and formmethod of the submitter when htmx tracks it as the
+// form's submitter (see htmxTracksSubmitter), as htmx applies them. It is
+// nil when neither makes an htmx request.
 func formHTMX(f, sub ct.Node) *htmxIntent {
 	if sub != nil {
-		if verb, attr, path, ok := firstRequestAttr(sub); ok {
-			return &htmxIntent{method: strings.ToUpper(verb), path: path, attr: attr}
+		if verb, attr, path, ok := firstRequestAttr(sub); ok && htmxHandlesClick(sub) {
+			return &htmxIntent{method: strings.ToUpper(verb), path: path, attr: attr, submitter: true}
+		}
+		if !htmxTracksSubmitter(sub) {
+			sub = nil
 		}
 	}
 	verb, attr, path, ok := firstRequestAttr(f)

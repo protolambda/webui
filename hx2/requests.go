@@ -16,5 +16,8 @@ func Put(v string) attr.Node { return attr.Name("hx-put").Value(v) }
 // Patch sets the hx-patch attribute for HTTP PATCH requests.
 func Patch(v string) attr.Node { return attr.Name("hx-patch").Value(v) }
 
-// Delete sets the hx-delete attribute for HTTP DELETE requests.
+// Delete sets the hx-delete attribute for HTTP DELETE requests. htmx sends
+// the fields of the element's form too, as for every method but GET. With
+// the zero [Config], the parameters go in a form-encoded body; with
+// [Config.DeleteURLParams], in the URL query.
 func Delete(v string) attr.Node { return attr.Name("hx-delete").Value(v) }

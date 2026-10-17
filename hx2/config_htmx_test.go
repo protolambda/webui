@@ -51,10 +51,23 @@ func TestConfigKeysMatchPinnedHTMX(gt *testing.T) {
 	t.Must(be.NoError(err))
 	var m map[string]json.RawMessage
 	t.Must(be.NoError(json.Unmarshal([]byte(written), &m)))
-	t.Must(be.Equal(9, len(m)))
+	t.Must(be.Equal(11, len(m)))
 	for k := range m {
 		t.Must(be.Annotate(be.True(keys[k]), "key %s is not an htmx %s config key", k, theme.HTMXVersion))
 	}
+
+	// The htmx defaults that Config overrides with lists: settling style
+	// attributes (which a strict style-src blocks) and DELETE parameters in
+	// the URL. If a release changes them, re-check the overrides.
+	for _, def := range []string{
+		`attributesToSettle:["class","style","width","height"]`,
+		`methodsThatUseUrlParams:["get","delete"]`,
+	} {
+		t.Must(be.Annotate(be.Substring(literal, def), "htmx %s default", theme.HTMXVersion))
+	}
+	// htmx reads both lists when it uses them, not once at startup.
+	t.Must(be.Substring(script, `.config.methodsThatUseUrlParams.`))
+	t.Must(be.Substring(script, `.config.attributesToSettle.`))
 
 	// The response rules use the member names of htmx's own default rules.
 	const rulesKey = "responseHandling:"

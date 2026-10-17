@@ -33,11 +33,14 @@
 // secure configuration, and [Config.Meta] renders it as the
 // <meta name="htmx-config"> element of the head. It disables everything in
 // htmx that needs a weaker Content-Security-Policy (inline indicator styles,
-// eval) or keeps page content in the browser (the history cache), and makes
-// htmx swap 4xx and 5xx responses, so that server-rendered error fragments
-// show without script. htmx treats a swapped error like a success, so a
-// handler that retargets an error fragment also opts out of the history
-// update and of an inherited hx-select: see [DefaultResponseHandling].
+// eval, settling style attributes) or keeps page content in the browser
+// (the history cache), sends DELETE parameters in the body rather than the
+// URL, and makes htmx swap 4xx and 5xx responses, so that server-rendered
+// error fragments show without script. htmx treats a swapped error like a
+// success, so a handler that retargets an error fragment also opts out of
+// the history update and of an inherited hx-select: see
+// [DefaultResponseHandling]. A 422 answer to a form with problems swaps
+// without being logged as an error.
 //
 // # Scripting attributes
 //
@@ -92,7 +95,9 @@
 //   - Event binding uses [On] with hx-on:event syntax (kebab-case event names).
 //   - SSE and WebSocket moved to extensions, with the attributes above
 //     instead of hx-sse and hx-ws.
-//   - DELETE requests send parameters in the URL, not a form-encoded body.
+//   - DELETE requests send parameters in the URL, not a form-encoded body,
+//     by default; the zero [Config] keeps the htmx 1 behavior, a body (see
+//     [Config.DeleteURLParams]).
 //   - Requests to other origins are disabled by default.
 //
 // Reference: https://htmx.org/reference/

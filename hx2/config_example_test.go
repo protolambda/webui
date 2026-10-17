@@ -1,6 +1,7 @@
 package hx2_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,7 @@ import (
 // JSON text in the content attribute.
 func ExampleConfig_Meta() {
 	core.Dump(hx2.Config{}.Meta())
-	// Output: <meta name="htmx-config" content="{&#34;allowEval&#34;:false,&#34;allowScriptTags&#34;:false,&#34;historyCacheSize&#34;:0,&#34;historyRestoreAsHxRequest&#34;:false,&#34;includeIndicatorStyles&#34;:false,&#34;refreshOnHistoryMiss&#34;:true,&#34;responseHandling&#34;:[{&#34;code&#34;:&#34;204&#34;,&#34;swap&#34;:false},{&#34;code&#34;:&#34;[23]..&#34;,&#34;swap&#34;:true},{&#34;code&#34;:&#34;[45]..&#34;,&#34;swap&#34;:true,&#34;error&#34;:true},{&#34;code&#34;:&#34;...&#34;,&#34;swap&#34;:false}],&#34;selfRequestsOnly&#34;:true}"/>
+	// Output: <meta name="htmx-config" content="{&#34;allowEval&#34;:false,&#34;allowScriptTags&#34;:false,&#34;attributesToSettle&#34;:[&#34;class&#34;,&#34;width&#34;,&#34;height&#34;],&#34;historyCacheSize&#34;:0,&#34;historyRestoreAsHxRequest&#34;:false,&#34;includeIndicatorStyles&#34;:false,&#34;methodsThatUseUrlParams&#34;:[&#34;get&#34;],&#34;refreshOnHistoryMiss&#34;:true,&#34;responseHandling&#34;:[{&#34;code&#34;:&#34;204&#34;,&#34;swap&#34;:false},{&#34;code&#34;:&#34;[23]..&#34;,&#34;swap&#34;:true},{&#34;code&#34;:&#34;422&#34;,&#34;swap&#34;:true},{&#34;code&#34;:&#34;[45]..&#34;,&#34;swap&#34;:true,&#34;error&#34;:true},{&#34;code&#34;:&#34;...&#34;,&#34;swap&#34;:false}],&#34;selfRequestsOnly&#34;:true}"/>
 }
 
 func ExampleConfig_JSON() {
@@ -23,7 +24,7 @@ func ExampleConfig_JSON() {
 		panic(err)
 	}
 	fmt.Println(data)
-	// Output: {"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true},{"code":"...","swap":false}],"selfRequestsOnly":true}
+	// Output: {"allowEval":false,"allowScriptTags":false,"attributesToSettle":["class","width","height"],"historyCacheSize":0,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,"methodsThatUseUrlParams":["get"],"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":true,"error":true},{"code":"...","swap":false}],"selfRequestsOnly":true}
 }
 
 // Fields opt into htmx behaviors; Extra adds other htmx config keys, in
@@ -40,7 +41,27 @@ func ExampleConfig_JSON_optIn() {
 		panic(err)
 	}
 	fmt.Println(data)
-	// Output: {"allowEval":false,"allowScriptTags":false,"defaultSwapStyle":"outerHTML","historyCacheSize":5,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}],"selfRequestsOnly":true,"timeout":10000}
+	// Output: {"allowEval":false,"allowScriptTags":false,"attributesToSettle":["class","width","height"],"defaultSwapStyle":"outerHTML","historyCacheSize":5,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,"methodsThatUseUrlParams":["get"],"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}],"selfRequestsOnly":true,"timeout":10000}
+}
+
+// DeleteURLParams restores htmx 2's default of DELETE parameters in the URL
+// (no body), and AttributesToSettle replaces the attributes that htmx
+// settles. Settling "style" needs a style-src that allows inline styles.
+func ExampleConfig_JSON_htmxDefaults() {
+	cfg := hx2.Config{
+		DeleteURLParams:    true,
+		AttributesToSettle: []string{"class", "style", "width", "height"},
+	}
+	data, err := cfg.JSON()
+	if err != nil {
+		panic(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		panic(err)
+	}
+	fmt.Println(m["methodsThatUseUrlParams"], m["attributesToSettle"])
+	// Output: [get delete] [class style width height]
 }
 
 // Extra cannot override a key that a field controls.
@@ -63,9 +84,25 @@ func ExampleDefaultResponseHandling() {
 	// 404 swap=false error=true
 	// 204 swap=false error=false
 	// [23].. swap=true error=false
+	// 422 swap=true error=false
 	// [45].. swap=true error=true
 	// ... swap=false error=false
 	// <nil>
+}
+
+// A settled attribute can be added to webui's list, which leaves out
+// "style".
+func ExampleDefaultAttributesToSettle() {
+	settle := append(hx2.DefaultAttributesToSettle(), "data-state")
+	fmt.Println(settle)
+	_, err := hx2.Config{AttributesToSettle: settle}.JSON()
+	fmt.Println(err)
+	_, err = hx2.Config{AttributesToSettle: []string{"class width"}}.JSON()
+	fmt.Println(err)
+	// Output:
+	// [class width height data-state]
+	// <nil>
+	// invalid htmx config: attribute to settle 0: "class width" is not an attribute name
 }
 
 // A handler that answers a failed htmx request with an alert fragment for

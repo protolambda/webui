@@ -42,12 +42,23 @@ var ErrInvalidConfig = errors.New("invalid htmx config")
 //     a handler that answers htmx requests with fragments answers them with
 //     full pages;
 //   - only requests URLs of the page's own origin (selfRequestsOnly true);
+//   - puts request parameters in the URL for GET requests only
+//     (methodsThatUseUrlParams ["get"]): DELETE requests carry them in the
+//     body, as POST, PUT and PATCH requests do, so an hx-delete does not put
+//     the CSRF field of its form in a URL (see [Config.DeleteURLParams]);
+//   - settles only the class, width and height attributes of swapped
+//     elements (attributesToSettle), never style: htmx writes settled
+//     attributes with setAttribute, and a style attribute written that way
+//     violates a style-src without 'unsafe-inline' (see
+//     [Config.AttributesToSettle]);
 //   - swaps the responses of [DefaultResponseHandling]: 2xx responses except
 //     204, and also 4xx and 5xx responses, so a server-rendered error fragment
 //     shows without client-side script. A swapped error is handled like a
 //     success, history updates and an inherited hx-select included, so a
 //     handler that sends such a fragment also sends HX-Push-Url: false and
-//     HX-Reselect: unset (see [DefaultResponseHandling]).
+//     HX-Reselect: unset (see [DefaultResponseHandling]). Every 4xx and 5xx
+//     status but 422 counts as an error, which htmx logs to the browser
+//     console.
 //
 // Each of these keys is written explicitly, so the page does not depend on
 // the defaults of a particular htmx release. The keys and their meanings
@@ -56,7 +67,8 @@ var ErrInvalidConfig = errors.New("invalid htmx config")
 // the theme moves to another release.
 //
 // A Config is a plain value; it is safe for concurrent use as long as no
-// goroutine modifies its ResponseHandling or Extra while another reads it.
+// goroutine modifies its ResponseHandling, AttributesToSettle or Extra
+// while another reads it.
 type Config struct {
 	// IndicatorStyles lets htmx inject its inline <style> for request
 	// indicators (includeIndicatorStyles). That needs a style-src that allows
@@ -113,11 +125,47 @@ type Config struct {
 	// (selfRequestsOnly false). The connect-src of the page still applies.
 	AllowCrossOrigin bool
 
+	// DeleteURLParams makes htmx put the parameters of DELETE requests in
+	// the URL query and send no body (methodsThatUseUrlParams ["get",
+	// "delete"]), as htmx 2 does by default.
+	//
+	// Without it, a DELETE request carries its parameters in the body, as a
+	// POST request does and as htmx 1 did. htmx sends the fields of the
+	// element's form with every request but GET, so with DeleteURLParams an
+	// hx-delete button in a form puts all of the form's fields, its CSRF
+	// token included, in the URL, where server and proxy logs keep it.
+	//
+	// [net/http.Request.ParseForm] reads the body only for POST, PUT and
+	// PATCH requests, so a handler of DELETE requests reads their bodies
+	// itself, for example with webui's form package, which reads the body
+	// whatever the method and never reads the URL query.
+	DeleteURLParams bool
+
+	// AttributesToSettle, when not empty, replaces the attributes that htmx
+	// settles (attributesToSettle), [DefaultAttributesToSettle]. When htmx
+	// swaps in an element with the tag and id of an element of the target,
+	// it first gives the new element the old element's values of these
+	// attributes, then its own after the settle delay, so CSS transitions
+	// can animate the change. htmx matches the names exactly: the names of
+	// HTML attributes are lower case, while SVG keeps the case of some, such
+	// as viewBox. Each name must be of ASCII letters, digits, '-', '_', '.'
+	// and ':'.
+	//
+	// htmx writes the values with setAttribute. A "style" attribute written
+	// that way is an inline style, which a style-src (or style-src-attr)
+	// without 'unsafe-inline' blocks and reports, even when it is empty, so
+	// webui leaves "style" out of the default, unlike htmx: scripts such as
+	// browser extensions, test drivers and Bootstrap's JavaScript leave style
+	// attributes on elements that a later swap replaces.
+	AttributesToSettle []string
+
 	// NoErrorSwap makes htmx ignore the bodies of 4xx and 5xx responses, as
-	// htmx does by default: the "[45].." rule of [DefaultResponseHandling]
-	// does not swap. Without it, a swapped error updates the browser history
-	// and applies the inherited hx-select like a success does, as described
-	// at DefaultResponseHandling. It cannot be combined with ResponseHandling.
+	// htmx does by default: the response handling is htmx's default, which is
+	// [DefaultResponseHandling] without the 422 rule and with a "[45].." rule
+	// that does not swap. Without it, a swapped error updates the browser
+	// history and applies the inherited hx-select like a success does, as
+	// described at DefaultResponseHandling. It cannot be combined with
+	// ResponseHandling.
 	NoErrorSwap bool
 
 	// ResponseHandling, when not empty, replaces [DefaultResponseHandling]
@@ -134,7 +182,7 @@ type Config struct {
 	DefaultSwapStyle string
 
 	// Extra holds additional htmx config keys, e.g. "timeout" or
-	// "attributesToSettle", written in sorted key order with the keys above.
+	// "defaultSettleDelay", written in sorted key order with the keys above.
 	// Values are encoded with encoding/json. Keys are not checked against the
 	// htmx config, so a misspelled key is silently ignored by htmx. A key that
 	// a field of Config controls, such as "allowEval", is an error: use the
@@ -183,14 +231,28 @@ type ResponseRule struct {
 //
 //	{"code":"204","swap":false}
 //	{"code":"[23]..","swap":true}
+//	{"code":"422","swap":true}
 //	{"code":"[45]..","swap":true,"error":true}
 //	{"code":"...","swap":false}
 //
-// htmx's own default differs only in not swapping 4xx and 5xx responses (see
-// [Config.NoErrorSwap]); the last rule spells out what htmx does without a
-// matching rule. Swapping errors lets a handler answer a failed htmx request
-// with a fragment that shows the error, keeping the real status code. A 204
-// response swaps nothing, which suits polling that found no change.
+// htmx's own default differs in not swapping 4xx and 5xx responses and in
+// having no 422 rule (see [Config.NoErrorSwap]); the last rule spells out
+// what htmx does without a matching rule. Swapping errors lets a handler
+// answer a failed htmx request with a fragment that shows the error, keeping
+// the real status code. A 204 response swaps nothing, which suits polling
+// that found no change.
+//
+// A 422 (Unprocessable Content) response is the usual answer to a form with
+// problems: an expected outcome of user input that the server explains in
+// the swapped fragment, not a failure. So it swaps without the error flag.
+// For a response with the error flag, htmx logs "Response Status Error
+// Code ..." as an error to the browser console, fires htmx:responseError,
+// and reports the request as failed in the details of its events; for every
+// validation answer, that would bury real errors in noise and fail browser
+// checks that watch the console. Without the flag, the detail of
+// htmx:afterRequest reports a 422 response as successful: a listener that
+// needs to tell validation answers apart reads the status of detail.xhr.
+// Every other 4xx and 5xx status stays an error.
 //
 // htmx handles a swapped error response like a successful one, whatever its
 // status. It updates the browser history for boosted elements, elements
@@ -214,9 +276,29 @@ func DefaultResponseHandling() []ResponseRule {
 	return []ResponseRule{
 		{Code: "204", Swap: false},
 		{Code: "[23]..", Swap: true},
+		{Code: "422", Swap: true},
 		{Code: "[45]..", Swap: true, Error: true},
 		{Code: "...", Swap: false},
 	}
+}
+
+// htmxResponseHandling returns htmx's default response handling rules, with
+// the rule that htmx applies when no rule matches spelled out.
+func htmxResponseHandling() []ResponseRule {
+	return []ResponseRule{
+		{Code: "204", Swap: false},
+		{Code: "[23]..", Swap: true},
+		{Code: "[45]..", Swap: false, Error: true},
+		{Code: "...", Swap: false},
+	}
+}
+
+// DefaultAttributesToSettle returns the attributes that webui's htmx
+// configuration settles: "class", "width" and "height". htmx's own default
+// also has "style" (see [Config.AttributesToSettle]). Each call returns a
+// new slice, which the caller may modify, for example to add a name.
+func DefaultAttributesToSettle() []string {
+	return []string{"class", "width", "height"}
 }
 
 // Config keys that Config fields control. Extra must not contain them.
@@ -228,6 +310,8 @@ const (
 	keyRefreshOnHistoryMiss      = "refreshOnHistoryMiss"
 	keyHistoryRestoreAsHxRequest = "historyRestoreAsHxRequest"
 	keySelfRequestsOnly          = "selfRequestsOnly"
+	keyMethodsThatUseURLParams   = "methodsThatUseUrlParams"
+	keyAttributesToSettle        = "attributesToSettle"
 	keyResponseHandling          = "responseHandling"
 	keyDefaultSwapStyle          = "defaultSwapStyle"
 )
@@ -235,7 +319,8 @@ const (
 // JSON returns the htmx configuration as JSON text: one object with the keys
 // in sorted order, so that the same Config always gives the same text.
 // It fails with [ErrInvalidConfig] when HistoryCacheSize is negative,
-// DefaultSwapStyle is not one of the swap styles it lists, NoErrorSwap is
+// DefaultSwapStyle is not one of the swap styles it lists, an
+// AttributesToSettle name is not of the form it describes, NoErrorSwap is
 // combined with ResponseHandling, a response rule has a Code not of the
 // form that [ResponseRule.Code] describes, or an Extra key is empty,
 // controlled by a Config field, or has a value that encoding/json cannot
@@ -244,11 +329,25 @@ func (c Config) JSON() (string, error) {
 	if c.HistoryCacheSize < 0 {
 		return "", fmt.Errorf("%w: negative history cache size %d", ErrInvalidConfig, c.HistoryCacheSize)
 	}
+	settle := c.AttributesToSettle
+	if len(settle) == 0 {
+		settle = DefaultAttributesToSettle()
+	}
+	for i, name := range settle {
+		if !attributeName(name) {
+			return "", fmt.Errorf("%w: attribute to settle %d: %q is not an attribute name",
+				ErrInvalidConfig, i, name)
+		}
+	}
+	urlMethods := []string{"get"}
+	if c.DeleteURLParams {
+		urlMethods = append(urlMethods, "delete")
+	}
 	rules := c.ResponseHandling
 	if len(rules) == 0 {
 		rules = DefaultResponseHandling()
 		if c.NoErrorSwap {
-			rules[2].Swap = false
+			rules = htmxResponseHandling()
 		}
 	} else if c.NoErrorSwap {
 		return "", fmt.Errorf("%w: NoErrorSwap combined with ResponseHandling", ErrInvalidConfig)
@@ -270,6 +369,8 @@ func (c Config) JSON() (string, error) {
 		keyRefreshOnHistoryMiss:      !c.NoRefreshOnHistoryMiss,
 		keyHistoryRestoreAsHxRequest: c.HistoryRestoreAsHXRequest,
 		keySelfRequestsOnly:          !c.AllowCrossOrigin,
+		keyMethodsThatUseURLParams:   urlMethods,
+		keyAttributesToSettle:        settle,
 		keyResponseHandling:          rules,
 	}
 	if c.DefaultSwapStyle != "" {
@@ -370,3 +471,20 @@ func responseCode(code string) bool {
 }
 
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
+
+// attributeName reports whether name is a non-empty attribute name of the
+// form that [Config.AttributesToSettle] describes, which excludes the
+// spaces, quotes and other characters that no attribute name has.
+func attributeName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', isDigit(c), c == '-', c == '_', c == '.', c == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}

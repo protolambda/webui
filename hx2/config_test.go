@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -35,9 +36,11 @@ func configValues(t devtest.T, c hx2.Config) map[string]any {
 	return m
 }
 
-const zeroConfigJSON = `{"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,` +
-	`"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,"refreshOnHistoryMiss":true,` +
-	`"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},` +
+const zeroConfigJSON = `{"allowEval":false,"allowScriptTags":false,` +
+	`"attributesToSettle":["class","width","height"],"historyCacheSize":0,` +
+	`"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,` +
+	`"methodsThatUseUrlParams":["get"],"refreshOnHistoryMiss":true,` +
+	`"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},` +
 	`{"code":"[45]..","swap":true,"error":true},{"code":"...","swap":false}],"selfRequestsOnly":true}`
 
 // The zero value writes every security-relevant key explicitly, with the
@@ -56,9 +59,55 @@ func TestConfigZeroValue(gt *testing.T) {
 	t.Must(be.Equal(true, m["refreshOnHistoryMiss"].(bool)))
 	t.Must(be.Equal(false, m["historyRestoreAsHxRequest"].(bool)))
 	t.Must(be.Equal(true, m["selfRequestsOnly"].(bool)))
+	t.Must(be.DeepEqual[any]([]any{"get"}, m["methodsThatUseUrlParams"]))
+	t.Must(be.DeepEqual[any]([]any{"class", "width", "height"}, m["attributesToSettle"]))
 	_, ok := m["defaultSwapStyle"]
 	t.Must(be.False(ok))
-	t.Must(be.Equal(8, len(m)))
+	t.Must(be.Equal(10, len(m)))
+}
+
+// A 422 answer to a form with problems swaps without the error flag, so
+// htmx does not log it as an error; every other 4xx and 5xx status swaps
+// as an error. As in htmx, the first rule whose code, a regular expression
+// with the same meaning in Go and JavaScript, matches the status wins.
+func TestDefaultResponseHandlingStatuses(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	rules := hx2.DefaultResponseHandling()
+	match := func(status string) hx2.ResponseRule {
+		for _, r := range rules {
+			if regexp.MustCompile(r.Code).MatchString(status) {
+				return r
+			}
+		}
+		t.Fatalf("no rule for %s", status)
+		return hx2.ResponseRule{}
+	}
+	cases := []struct {
+		status        string
+		swap, isError bool
+	}{
+		{"200", true, false},
+		{"201", true, false},
+		{"204", false, false},
+		{"303", true, false},
+		{"400", true, true},
+		{"403", true, true},
+		{"404", true, true},
+		{"409", true, true},
+		{"421", true, true},
+		{"422", true, false},
+		{"423", true, true},
+		{"429", true, true},
+		{"500", true, true},
+		{"503", true, true},
+		{"100", false, false},
+		{"600", false, false},
+	}
+	for _, c := range cases {
+		r := match(c.status)
+		t.Must(be.Annotate(be.Equal(c.swap, r.Swap), "status %s swap", c.status))
+		t.Must(be.Annotate(be.Equal(c.isError, r.Error), "status %s error", c.status))
+	}
 }
 
 // Every field flips its key, and only its key.
@@ -78,6 +127,8 @@ func TestConfigFields(gt *testing.T) {
 		{"NoRefreshOnHistoryMiss", hx2.Config{NoRefreshOnHistoryMiss: true}, "refreshOnHistoryMiss", false},
 		{"HistoryRestoreAsHXRequest", hx2.Config{HistoryRestoreAsHXRequest: true}, "historyRestoreAsHxRequest", true},
 		{"AllowCrossOrigin", hx2.Config{AllowCrossOrigin: true}, "selfRequestsOnly", false},
+		{"DeleteURLParams", hx2.Config{DeleteURLParams: true}, "methodsThatUseUrlParams", []any{"get", "delete"}},
+		{"AttributesToSettle", hx2.Config{AttributesToSettle: []string{"class", "style"}}, "attributesToSettle", []any{"class", "style"}},
 		{"DefaultSwapStyle", hx2.Config{DefaultSwapStyle: hx2.SwapOuterHTML}, "defaultSwapStyle", "outerHTML"},
 	}
 	for _, c := range cases {
@@ -96,6 +147,7 @@ func TestConfigFields(gt *testing.T) {
 func TestConfigResponseHandling(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 
+	// NoErrorSwap gives htmx's own default rules, without the 422 rule.
 	data, err := hx2.Config{NoErrorSwap: true}.JSON()
 	t.Must(be.NoError(err))
 	t.Must(be.Substring(data, `"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},`+
@@ -127,12 +179,42 @@ func TestConfigResponseHandling(gt *testing.T) {
 func TestDefaultResponseHandlingIsFresh(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	rules := hx2.DefaultResponseHandling()
-	rules[2].Swap = false
+	for i := range rules {
+		rules[i].Swap = !rules[i].Swap
+	}
 	rules[0].Code = "x"
+	settle := hx2.DefaultAttributesToSettle()
+	settle[0] = "style"
 	data, err := hx2.Config{}.JSON()
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(zeroConfigJSON, data))
-	t.Must(be.Equal(true, hx2.DefaultResponseHandling()[2].Swap))
+	t.Must(be.Equal(true, hx2.DefaultResponseHandling()[1].Swap))
+	t.Must(be.Equal("204", hx2.DefaultResponseHandling()[0].Code))
+	t.Must(be.DeepEqual([]string{"class", "width", "height"}, hx2.DefaultAttributesToSettle()))
+}
+
+// AttributesToSettle replaces the default list when not empty; names must
+// be attribute names.
+func TestConfigAttributesToSettle(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	// An empty, non-nil list means the default.
+	data, err := hx2.Config{AttributesToSettle: []string{}}.JSON()
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(zeroConfigJSON, data))
+
+	names := append(hx2.DefaultAttributesToSettle(), "data-state", "aria-expanded", "xlink:href", "viewBox", "x_y.z", "h1")
+	got := configValues(t, hx2.Config{AttributesToSettle: names})
+	want := make([]any, len(names))
+	for i, n := range names {
+		want[i] = n
+	}
+	t.Must(be.DeepEqual[any](want, got["attributesToSettle"]))
+
+	for _, name := range []string{"", " class", "class ", "a b", "a\tb", "a=b", `a"`, "a'", "a>", "a/", "naïve", "\x00"} {
+		data, err := hx2.Config{AttributesToSettle: []string{"class", name}}.JSON()
+		t.Must(be.Annotate(be.ErrorIs(err, hx2.ErrInvalidConfig), "name %q", name))
+		t.Must(be.Equal("", data))
+	}
 }
 
 func TestConfigDefaultSwapStyle(gt *testing.T) {
@@ -155,19 +237,21 @@ func TestConfigDefaultSwapStyle(gt *testing.T) {
 func TestConfigExtra(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	cfg := hx2.Config{Extra: map[string]any{
-		"timeout":        5000,
-		"scrollBehavior": "smooth",
-		"attributesToSettle": []string{
-			"class",
-		},
-		"zzz": nil,
+		"timeout":            5000,
+		"scrollBehavior":     "smooth",
+		"defaultSettleDelay": 0,
+		"disableSelector":    []string{"[data-off]"},
+		"zzz":                nil,
 	}}
 	data, err := cfg.JSON()
 	t.Must(be.NoError(err))
-	t.Must(be.Equal(`{"allowEval":false,"allowScriptTags":false,"attributesToSettle":["class"],`+
+	t.Must(be.Equal(`{"allowEval":false,"allowScriptTags":false,"attributesToSettle":["class","width","height"],`+
+		`"defaultSettleDelay":0,"disableSelector":["[data-off]"],`+
 		`"historyCacheSize":0,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,`+
+		`"methodsThatUseUrlParams":["get"],`+
 		`"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},`+
-		`{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true},{"code":"...","swap":false}],`+
+		`{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":true,"error":true},`+
+		`{"code":"...","swap":false}],`+
 		`"scrollBehavior":"smooth","selfRequestsOnly":true,"timeout":5000,"zzz":null}`, data))
 }
 
@@ -221,6 +305,8 @@ func TestConfigInvalid(gt *testing.T) {
 		{"min int history cache", hx2.Config{HistoryCacheSize: math.MinInt}},
 		{"NoErrorSwap with rules", hx2.Config{NoErrorSwap: true, ResponseHandling: hx2.DefaultResponseHandling()}},
 		{"rule without code", hx2.Config{ResponseHandling: []hx2.ResponseRule{{Swap: true}}}},
+		{"empty attribute to settle", hx2.Config{AttributesToSettle: []string{""}}},
+		{"spaced attribute to settle", hx2.Config{AttributesToSettle: []string{"class", "width height"}}},
 		{"empty extra key", hx2.Config{Extra: map[string]any{"": 1}}},
 		{"extra channel", hx2.Config{Extra: map[string]any{"x": make(chan int)}}},
 		{"extra func", hx2.Config{Extra: map[string]any{"x": func() {}}}},
@@ -232,7 +318,7 @@ func TestConfigInvalid(gt *testing.T) {
 	for _, k := range []string{
 		"includeIndicatorStyles", "allowEval", "allowScriptTags", "historyCacheSize",
 		"refreshOnHistoryMiss", "historyRestoreAsHxRequest", "selfRequestsOnly",
-		"responseHandling", "defaultSwapStyle",
+		"methodsThatUseUrlParams", "attributesToSettle", "responseHandling", "defaultSwapStyle",
 	} {
 		cases = append(cases, struct {
 			name string
@@ -304,13 +390,15 @@ func TestConfigMetaSnapshot(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	extra := map[string]any{"timeout": 1}
 	rules := hx2.DefaultResponseHandling()
-	cfg := hx2.Config{Extra: extra, ResponseHandling: rules}
+	settle := hx2.DefaultAttributesToSettle()
+	cfg := hx2.Config{Extra: extra, ResponseHandling: rules, AttributesToSettle: settle}
 	node := cfg.Meta()
 	before, err := renderNode(t.Context(), node)
 	t.Must(be.NoError(err))
 	extra["timeout"] = 2
 	extra["allowEval"] = true
 	rules[0].Swap = true
+	settle[0] = "style"
 	after, err := renderNode(t.Context(), node)
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(before, after))

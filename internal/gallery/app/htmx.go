@@ -25,6 +25,7 @@ import (
 	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/session"
+	"github.com/protolambda/webui/visible"
 	"github.com/protolambda/webui/web"
 )
 
@@ -35,14 +36,24 @@ const (
 	taskCountID     = "task-count"
 	addTaskID       = "add-task"
 	failFormID      = "fail-form"
+	plainFormID     = "plain-error-form"
 	searchResultsID = "search-results"
 )
+
+// plainErrorText is the plain-text body of plainError. It looks like
+// markup on purpose: htmx would insert it into the page as HTML.
+const plainErrorText = "<strong>Markup in a plain-text error</strong>, which htmx would insert into the page."
+
+// changedSwap is the hx-swap of the requests whose answers report their
+// outcome in the alerts region, out of band: the swap scrolls the region
+// to the top of the window, so that the notice is seen.
+const changedSwap = hx2.SwapOuterHTML + " " + page.ShowAlerts
 
 // errDemoFailure is the cause of the request that fails on purpose.
 var errDemoFailure = errors.New("gallery: the demo request fails on purpose")
 
 func (a *App) htmx(w http.ResponseWriter, r *http.Request) error {
-	token, err := a.formToken(w, r)
+	token, err := a.forms.PageToken(w, r)
 	if err != nil {
 		return err
 	}
@@ -64,14 +75,17 @@ func (a *App) htmxPage(r *http.Request, token string, f filter, q string) elem.N
 		Main: elem.Bundle{
 			para("Every control here also works without script: links and forms fall back to full pages, which the same handlers render (web.Choose)."),
 			demo("swaps", "Fragment and out-of-band swaps",
-				para("The filter links swap the task list and push the URL. Adding or deleting a task swaps the list too, and updates the count in the header, the filter, the form and the alerts out of band."),
+				para("The filter links swap the task list and push the URL. Adding or deleting a task swaps the list too, and updates the count in the header, the filter, the form and the alerts out of band; the swap scrolls to the alerts region (page.ShowAlerts), so that the notice is seen. After a delete, the focus moves to the list's caption, since the button that had it is gone (page.FocusTarget)."),
+				para("Task titles show through visible.Text: a title with a direction override or an invisible character shows escaped, with a marker.", attr.Class("small text-body-secondary")),
 				taskFilter(f, false),
-				a.taskList(token, f),
+				a.taskList(token, f, false),
 				addTaskForm(token, false),
 			),
 			demo("errors", "Error answers",
 				para("This request fails on purpose. The server answers htmx with an alert, HX-Retarget and HX-Reswap, so the message shows in the alerts region at the top, scrolled into view, with the real status (409)."),
 				failForm(token, false),
+				para("This one goes to a handler outside the error policy, which answers with http.Error: a plain-text 400 whose text looks like markup. htmx would insert it as HTML; web.Errors.Intercept replaces it with the policy's alert for the status. Without htmx, the browser shows the plain text as it is.", attr.Class("mt-3")),
+				plainErrorForm(token, false),
 			),
 			demo("search", "Search as you type",
 				form.Form(form.Method(form.MethodGet), form.Action("/htmx/search"), aria.Role("search"), attr.Class("mb-3"))(
@@ -132,18 +146,26 @@ func taskFilter(current filter, oob bool) elem.Node {
 }
 
 // taskList renders the task list, the target of the swaps: each task has a
-// delete form, which asks for confirmation with htmx.
-func (a *App) taskList(token string, f filter) elem.Node {
+// delete form, which asks for confirmation with htmx. focus marks the
+// caption as the focus target of the answer (page.FocusTarget), for the
+// answer to a delete, whose button had the focus.
+func (a *App) taskList(token string, f filter, focus bool) elem.Node {
 	del := func(t task) elem.Node {
 		action := "/htmx/tasks/" + strconv.Itoa(t.ID) + "/delete"
-		return postForm(action, token,
+		// The label names the task with its escaped title: a label
+		// cannot show the marker of visible.Text.
+		title, _ := visible.EscapeText(t.Title)
+		return session.PostForm(action, token,
 			hx2.Post(action), hx2.Confirm("Delete this task?"),
-			hx2.Target("#"+taskListID), hx2.Swap(hx2.SwapOuterHTML),
+			hx2.Target("#"+taskListID), hx2.Swap(changedSwap),
 		)(
-			bs.BtnOutlineDanger(button.Type(button.TypeSubmit), ba.BtnSM(), aria.Label("Delete "+t.Title))(bi.Trash),
+			bs.BtnOutlineDanger(button.Type(button.TypeSubmit), ba.BtnSM(), aria.Label("Delete "+title))(bi.Trash),
 		)
 	}
-	caption := "Tasks: " + string(f)
+	var caption elem.Node = text.Text("Tasks: " + string(f))
+	if focus {
+		caption = text.Span(page.FocusTarget())(caption)
+	}
 	return div.Div(attr.ID(taskListID))(taskTable(caption, a.tasks.list(f), del))
 }
 
@@ -154,12 +176,12 @@ func (a *App) taskList(token string, f filter) elem.Node {
 func addTaskForm(token string, oob bool) elem.Node {
 	attrs := []attr.Node{
 		attr.ID(addTaskID), form.Novalidate(),
-		hx2.Post("/htmx/tasks"), hx2.Target("#" + taskListID), hx2.Swap(hx2.SwapOuterHTML),
+		hx2.Post("/htmx/tasks"), hx2.Target("#" + taskListID), hx2.Swap(changedSwap),
 	}
 	if oob {
 		attrs = append(attrs, hx2.SwapOOB("true"))
 	}
-	return postForm("/htmx/tasks", token, attrs...)(
+	return session.PostForm("/htmx/tasks", token, attrs...)(
 		bs.Field{
 			ID: "new-task", Name: "title", Label: text.Text("New task"), Required: true, Attrs: input.Maxlength("80"),
 			After: []elem.Node{submit(bs.VariantPrimary, "Add", attr.ID(addTaskID+"-submit"))},
@@ -174,42 +196,66 @@ func failForm(token string, oob bool) elem.Node {
 	if oob {
 		attrs = append(attrs, hx2.SwapOOB("true"))
 	}
-	return postForm("/htmx/fail", token, attrs...)(
+	return session.PostForm("/htmx/fail", token, attrs...)(
 		bs.BtnOutlineWarning(button.Type(button.TypeSubmit), attr.ID(failFormID+"-submit"))(bi.ExclamationTriangle, text.Text(" Send a failing request")),
 	)
 }
 
+// plainErrorForm renders the form of the request that a handler outside
+// the error policy answers (plainError); oob renders it for an out-of-band
+// swap, with a renewed token.
+func plainErrorForm(token string, oob bool) elem.Node {
+	attrs := []attr.Node{attr.ID(plainFormID), hx2.Post("/htmx/plain-error")}
+	if oob {
+		attrs = append(attrs, hx2.SwapOOB("true"))
+	}
+	return session.PostForm("/htmx/plain-error", token, attrs...)(
+		bs.BtnOutlineWarning(button.Type(button.TypeSubmit), attr.ID(plainFormID+"-submit"))(bi.FileEarmarkText, text.Text(" Get a plain-text error")),
+	)
+}
+
+// plainError stands for code outside the error policy, such as a handler
+// of another package: it answers with http.Error, a plain-text 400, and
+// changes nothing, so it reads no form. web.Errors.Intercept, in the
+// gallery's middleware, replaces the answer to htmx with the policy's
+// alert; other requests get the text, which browsers show as text
+// (text/plain, nosniff).
+func plainError(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, plainErrorText, http.StatusBadRequest)
+}
+
 // htmxTasks answers the filter links: the list for htmx, with the filter
 // marked out of band; the page for others. The list's delete forms carry
-// the token of the page's forms (fragmentToken); when the page's
+// the token of the page's forms (session.Forms.FragmentToken); when the page's
 // pre-authentication cookie was gone and a new one had to be issued, the
 // fragment also renews the page's other forms out of band, as the new
 // cookie refuses their tokens.
 func (a *App) htmxTasks(w http.ResponseWriter, r *http.Request) error {
 	f := parseFilter(r.URL.Query().Get("filter"))
 	if !web.WantsFragment(r) {
-		token, err := a.formToken(w, r)
+		token, err := a.forms.PageToken(w, r)
 		if err != nil {
 			return err
 		}
 		return web.Choose(w, r, http.StatusOK, nil, a.htmxPage(r, token, f, ""))
 	}
-	token, renewed, err := a.fragmentToken(w, r)
+	token, renewed, err := a.forms.FragmentToken(w, r)
 	if err != nil {
 		return err
 	}
-	fragment := elem.Bundle{a.taskList(token, f), taskFilter(f, true)}
+	fragment := elem.Bundle{a.taskList(token, f, false), taskFilter(f, true)}
 	if renewed {
-		fragment = append(fragment, addTaskForm(token, true), failForm(token, true))
+		fragment = append(fragment, addTaskForm(token, true), failForm(token, true), plainErrorForm(token, true))
 	}
 	return web.Choose(w, r, http.StatusOK, fragment, nil)
 }
 
 // changedList is the htmx answer to an added or deleted task: the list,
-// and out of band the filter, the count, a fresh form and a notice.
-func (a *App) changedList(token string, notice elem.Node) elem.Node {
+// and out of band the filter, the count, a fresh form and a notice. focus
+// gives the focus to the list (see taskList).
+func (a *App) changedList(token string, notice elem.Node, focus bool) elem.Node {
 	return elem.Bundle{
-		a.taskList(token, filterAll),
+		a.taskList(token, filterAll, focus),
 		taskFilter(filterAll, true),
 		a.taskCount(true),
 		addTaskForm(token, true),
@@ -218,7 +264,7 @@ func (a *App) changedList(token string, notice elem.Node) elem.Node {
 }
 
 func (a *App) htmxAddTask(w http.ResponseWriter, r *http.Request) error {
-	f, err := a.readForm(w, r)
+	f, err := a.forms.Read(w, r)
 	if err != nil {
 		return err
 	}
@@ -234,11 +280,11 @@ func (a *App) htmxAddTask(w http.ResponseWriter, r *http.Request) error {
 		notices.Redirect(w, r, "/htmx", "task-added")
 		return nil
 	}
-	return web.Render(w, r, http.StatusOK, a.changedList(f.String(session.CSRFField), page.Notice("", text.Text("Task added."))))
+	return web.Render(w, r, http.StatusOK, a.changedList(f.String(session.CSRFField), page.Notice("", text.Text("Task added.")), false))
 }
 
 func (a *App) htmxDeleteTask(w http.ResponseWriter, r *http.Request) error {
-	f, err := a.readForm(w, r)
+	f, err := a.forms.Read(w, r)
 	if err != nil {
 		return err
 	}
@@ -251,12 +297,12 @@ func (a *App) htmxDeleteTask(w http.ResponseWriter, r *http.Request) error {
 		notices.Redirect(w, r, "/htmx", "task-deleted")
 		return nil
 	}
-	return web.Render(w, r, http.StatusOK, a.changedList(f.String(session.CSRFField), page.Notice(bs.VariantInfo, text.Text("Task deleted."))))
+	return web.Render(w, r, http.StatusOK, a.changedList(f.String(session.CSRFField), page.Notice(bs.VariantInfo, text.Text("Task deleted.")), true))
 }
 
 // htmxFail is the request that fails on purpose, after the CSRF check.
 func (a *App) htmxFail(w http.ResponseWriter, r *http.Request) error {
-	f, err := a.readForm(w, r)
+	f, err := a.forms.Read(w, r)
 	if err != nil {
 		return err
 	}
@@ -292,7 +338,7 @@ func (a *App) searchResults(q string) elem.Node {
 	}
 	items := make([]elem.Node, 0, len(found))
 	for _, t := range found {
-		items = append(items, bs.ListGroupItem()(text.Text(t.Title)))
+		items = append(items, bs.ListGroupItem()(visible.Text(t.Title)))
 	}
 	return elem.Bundle{
 		text.P(attr.Class("small text-body-secondary"))(text.Text(fmt.Sprintf("%d found:", len(found)))),

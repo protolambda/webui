@@ -11,6 +11,7 @@ import (
 	"github.com/protolambda/mustbe/be"
 
 	"github.com/protolambda/webui/internal/gallery/app"
+	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/session"
 	"github.com/protolambda/webui/web"
 	"github.com/protolambda/webui/webuitest"
@@ -176,6 +177,9 @@ func TestPreAuthForms(gt *testing.T) {
 	t.Must(webuitest.NoCookies(res))
 }
 
+// anyElement matches every element.
+var anyElement = ct.Custom("any element", func(ct.Node) (bool, error) { return true, nil })
+
 func TestDialogForms(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	g := newGallery(t, app.Options{})
@@ -219,6 +223,70 @@ func TestDialogForms(gt *testing.T) {
 		t.Must(frag.Find(ct.ID("project-name-error")).Texts("Give the project a name of 1 to 60 characters, on one line."))
 	})
 
+	t.Run("dialog alerts", func(t devtest.T) {
+		// The rename dialog has an alerts region of its own, first in its
+		// body, rendered empty with the page.
+		p := dialogs(t)
+		body := p.Find(ct.ID("rename-project")).Find(ct.Class("modal-body"))
+		t.Must(body.Find(ct.Tag("div")).First().Matches(ct.ID("rename-alerts"), ct.Attr("aria-live", "polite")))
+		t.Must(p.Find(ct.ID("rename-alerts")).Texts(""))
+		t.Must(p.Find(ct.ID("rename-alerts")).Find(anyElement).None())
+
+		// A forged or missing token on the htmx rename gets the policy's
+		// alert in that region: the page behind the open dialog is inert.
+		for name, token := range map[string][]string{"forged": {"forged-token"}, "missing": nil} {
+			p := dialogs(t)
+			form, button := rename(p)
+			res := c.SubmitHTMX(t, p, form, button, url.Values{"name": {"Forged"}, session.CSRFField: token})
+			t.Mustf(res.Status(http.StatusForbidden), "%s", name)
+			t.Mustf(webuitest.HXRetarget(res, ct.Exact("#rename-alerts")), "%s", name)
+			t.Must(res.Header("HX-Reswap", ct.Exact(web.ErrorReswap)))
+			t.Must(c.Fragment(t, res, http.StatusForbidden, "div").Find(ct.Class("alert-danger")).Texts(web.MessageForged))
+		}
+		t.Must(dialogs(t).Find(ct.ID("project")).Find(ct.Tag("strong")).Texts("Website relaunch"))
+
+		// The same error on a request of the page goes to the page's
+		// alerts region, also with the dialog form's target but another
+		// trigger.
+		res := c.Post(t, "/dialogs/rename", webuitest.Form(url.Values{session.CSRFField: {"forged-token"}}),
+			webuitest.HTMX(), webuitest.HXTarget("rename-form"), webuitest.Header("HX-Trigger", "elsewhere"))
+		t.Must(webuitest.HXRetarget(res, ct.Exact("#alerts")))
+	})
+
+	t.Run("rename with htmx", func(t devtest.T) {
+		p := dialogs(t)
+		form, button := rename(p)
+		res := c.SubmitHTMX(t, p, form, button, url.Values{"name": {"Autumn plans"}})
+		t.Must(res.Status(http.StatusOK))
+		// The answer replaces the project section, not the form, and
+		// scrolls to the notice.
+		t.Must(webuitest.HXRetarget(res, ct.Exact("#project")))
+		t.Must(res.Header("HX-Reswap", ct.Exact("outerHTML "+page.ShowAlerts)))
+		frag := c.Fragment(t, res, http.StatusOK, "div")
+		section := frag.Find(ct.ID("project"), ct.HasAttr("hx-swap-oob").Not())
+		t.Must(section.Find(ct.Tag("strong")).Texts("Autumn plans"))
+		// The focus goes to the section's heading: the button that had it
+		// left with the dialog.
+		t.Must(frag.Find(ct.HasAttr("autofocus"), ct.HasAttr("tabindex")).Matches(ct.ID("project-title"), ct.Attr("tabindex", "-1")))
+		// The dialogs region, out of band, closes the open dialog: it
+		// holds every dialog of the page again, closed, with the new name
+		// and an empty alerts region.
+		region := frag.Find(ct.ID("dialogs"))
+		t.Must(region.Matches(ct.Attr("hx-swap-oob", "innerHTML")))
+		t.Must(region.Find(ct.Tag("dialog")).Count(3))
+		t.Must(region.Find(ct.Tag("dialog"), ct.HasAttr("open")).None())
+		t.Must(region.Find(ct.ID("project-name")).Matches(ct.Attr("value", "Autumn plans")))
+		t.Must(region.Find(ct.ID("rename-alerts")).Find(anyElement).None())
+		t.Must(frag.Find(ct.ID("alerts")).Matches(ct.Attr("hx-swap-oob", "innerHTML")))
+		t.Must(frag.Find(ct.ID("alerts")).Find(ct.Class("alert")).Texts("Project renamed."))
+		// Every opener on the page still names a dialog of the answer.
+		for _, id := range []string{"rename-project", "reset-project", "about-dialogs"} {
+			t.Mustf(p.Find(ct.Attr("commandfor", id), ct.Attr("command", "show-modal")).Count(1), "%s", id)
+			t.Mustf(region.Find(ct.ID(id)).Count(1), "%s", id)
+		}
+		t.Must(dialogs(t).Find(ct.ID("project")).Find(ct.Tag("strong")).Texts("Autumn plans"))
+	})
+
 	t.Run("rename and reset", func(t devtest.T) {
 		p := dialogs(t)
 		form, button := rename(p)
@@ -226,13 +294,13 @@ func TestDialogForms(gt *testing.T) {
 		t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/dialogs?notice=renamed")))
 		p = c.Page(t, c.Get(t, "/dialogs?notice=renamed"), http.StatusOK)
 		t.Must(p.Find(ct.ID("alerts")).Find(ct.Role("status")).Texts("Project renamed."))
-		t.Must(p.Find(ct.Tag("strong"), ct.Text("<b>Spring</b> cleaning")).Count(1))
+		t.Must(p.Find(ct.ID("project")).Find(ct.Tag("strong")).Texts("<b>Spring</b> cleaning"))
 		t.Must(p.Find(ct.Tag("b")).None())
 
 		reset := p.Find(ct.ID("reset-project"))
 		res = c.Submit(t, p, reset.Find(ct.Tag("form")), reset.Find(ct.Role("button", ct.Named("Reset"))), nil)
 		t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/dialogs?notice=reset")))
 		p = dialogs(t)
-		t.Must(p.Find(ct.Tag("strong"), ct.Text("Website relaunch")).Count(1))
+		t.Must(p.Find(ct.ID("project")).Find(ct.Tag("strong")).Texts("Website relaunch"))
 	})
 }

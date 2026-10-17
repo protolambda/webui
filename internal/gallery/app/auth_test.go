@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthttp"
@@ -14,6 +15,7 @@ import (
 	"github.com/protolambda/webui/internal/gallery/app"
 	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/session"
+	"github.com/protolambda/webui/visible"
 	"github.com/protolambda/webui/web"
 	"github.com/protolambda/webui/webuitest"
 )
@@ -73,14 +75,18 @@ func TestLogin(gt *testing.T) {
 
 	t.Run("login CSRF", func(t devtest.T) {
 		// A form token without its cookie, as another site could obtain
-		// one for itself, does not log anyone in.
+		// one for itself, does not log anyone in: the answer is the login
+		// form again, with a token of its own.
 		token := webuitest.CSRFToken(t, login.HTML())
 		other := b.Fork()
 		res := other.Post(t, "/login", webuitest.Form(url.Values{
 			session.CSRFField: {token}, "name": {"Mallory"}, "password": {app.DemoPassword},
 		}))
 		t.Must(res.Status(http.StatusForbidden))
-		t.Must(webuitest.NoCookies(res))
+		t.Must(be.DeepEqual([]string{"__Host-preauth"}, cookieNames(res)))
+		page := res.HTML()
+		t.Must(contract("")(page))
+		t.Must(be.NotEqual(token, webuitest.CSRFToken(t, page)))
 	})
 
 	res = logIn(t, b, "/login?next=%2Fnotes", "Ada", app.DemoPassword)
@@ -109,6 +115,13 @@ func TestLogin(gt *testing.T) {
 		p := b.Get(t, "/notes").HTML()
 		t.Must(p.Find(ct.ID("main")).Find(ct.Class("list-group-item")).Texts("Buy <milk>"))
 		t.Must(p.Find(ct.Tag("milk")).None())
+		// A note keeps its lines, each shown through visible.Text: a line
+		// break is no escape, an invisible character is.
+		t.Must(webuitest.Location(add("Call Bo\r\nat\u200Bnoon"), http.StatusSeeOther, ct.Exact("/notes?notice=note-added")))
+		item := b.Get(t, "/notes").HTML().Find(ct.ID("main")).Find(ct.Class("list-group-item")).Last()
+		t.Must(item.Find(ct.Tag("div")).Count(2))
+		t.Must(item.Find(ct.Tag("div")).First().Texts("Call Bo"))
+		t.Must(item.Find(ct.Class("badge")).Texts(visible.MarkerText))
 
 		res := add("   ")
 		t.Must(res.Status(http.StatusUnprocessableEntity))
@@ -142,6 +155,39 @@ func TestLogin(gt *testing.T) {
 	}
 }
 
+// TestLoginExpired submits a login form after its pre-authentication
+// token expired: the answer is the login form again, with a fresh token,
+// the name and the page to return to, but not the password, and the fresh
+// form logs in.
+func TestLoginExpired(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clock := newFakeClock()
+	g := newGallery(t, app.Options{Now: clock.Now})
+	b := webuitest.NewBrowser(t, g, webuitest.BrowserOptions{})
+	p := b.Get(t, "/login?next=%2Fnotes")
+	t.Must(p.Status(http.StatusOK))
+	page := p.HTML()
+	issued := webuitest.CSRFToken(t, page)
+
+	clock.Advance(session.DefaultPreAuthTTL + time.Second)
+	form := page.Find(ct.ID("main")).Find(ct.Tag("form"), ct.Attr("action", "/login"))
+	res := b.Submit(t, page, form, nil, url.Values{"name": {"Ada"}, "password": {app.DemoPassword}})
+	t.Must(res.Status(http.StatusForbidden))
+	t.Must(be.False(slices.Contains(cookieNames(res), "__Host-session")))
+	again := res.HTML()
+	t.Must(contract("")(again))
+	t.Must(again.Find(ct.ID("alerts")).Find(ct.Role("alert")).Texts("The login form expired. Enter your password again."))
+	t.Must(again.Find(ct.ID("login-name")).Matches(ct.Attr("value", "Ada")))
+	t.Must(again.Find(ct.ID("login-password"), ct.HasAttr("value")).None())
+	t.Must(again.Find(ct.Attr("name", web.NextParam)).Matches(ct.Attr("value", "/notes")))
+	t.Must(be.NotEqual(issued, webuitest.CSRFToken(t, again)))
+
+	form = again.Find(ct.ID("main")).Find(ct.Tag("form"), ct.Attr("action", "/login"))
+	res = b.Submit(t, again, form, nil, url.Values{"password": {app.DemoPassword}})
+	t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/notes?notice=signed-in")))
+	t.Must(g.logs.NotLogged(app.DemoPassword))
+}
+
 // TestInsecureCookies runs the login over plain http, as the gallery does
 // on a loopback address: the cookies lose Secure and the __Host- prefix.
 func TestInsecureCookies(gt *testing.T) {
@@ -151,5 +197,8 @@ func TestInsecureCookies(gt *testing.T) {
 	res := logIn(t, b, "/login", "Bo", app.DemoPassword)
 	t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/notes?notice=signed-in")))
 	t.Must(webuitest.Cookie(res, "session", webuitest.CookieWant{HttpOnly: true, SameSite: http.SameSiteLaxMode, Session: true, Path: "/"}))
-	t.Must(b.Get(t, "/notes").Status(http.StatusOK))
+	notes := b.Get(t, "/notes")
+	t.Must(notes.Status(http.StatusOK))
+	// A plain-http loopback site gets no HSTS.
+	t.Must(webuitest.SecurityHeaders(notes, webuitest.StrictPolicy()))
 }

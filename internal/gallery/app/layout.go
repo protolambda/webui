@@ -7,7 +7,6 @@ import (
 	"github.com/protolambda/chord/core/attr"
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/html/aria"
-	"github.com/protolambda/chord/html/form"
 	"github.com/protolambda/chord/html/form/button"
 	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/text"
@@ -19,6 +18,7 @@ import (
 	webform "github.com/protolambda/webui/form"
 	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/session"
+	"github.com/protolambda/webui/visible"
 	"github.com/protolambda/webui/web"
 )
 
@@ -29,7 +29,8 @@ const siteName = "webui gallery"
 // whose title is siteName alone.
 const titleSuffix = " · " + siteName
 
-// formLimits bound every form of the gallery: its fields are short texts.
+// formLimits bound every form of the gallery (session.Forms.Read, and the
+// login's form.Read): its fields are short texts.
 var formLimits = webform.Limits{Body: 32 << 10, Field: 4 << 10, Fields: 32}
 
 // notices are the outcomes that actions report after their redirect.
@@ -149,8 +150,8 @@ func (a *App) navbarEnd(r *http.Request) []elem.Node {
 	}
 	acc, _ := s.Data()
 	return []elem.Node{
-		text.Span(attr.Class("navbar-text small"))(text.Text("Signed in as "), text.Strong()(text.Text(acc.Name))),
-		postForm("/logout", s.CSRF())(
+		text.Span(attr.Class("navbar-text small"))(text.Text("Signed in as "), text.Strong()(visible.Text(acc.Name))),
+		session.PostForm("/logout", s.CSRF())(
 			bs.BtnOutlineSecondary(button.Type(button.TypeSubmit), ba.BtnSM())(bi.BoxArrowRight, text.Text(" Log out")),
 		),
 	}
@@ -160,15 +161,6 @@ func footer() elem.Node {
 	return text.P(attr.Class("small text-body-secondary mb-0"))(
 		text.Text("webui gallery. Every page works without application JavaScript; the demo data lives in memory and resets when the server restarts."),
 	)
-}
-
-// postForm renders a POST form to action that carries the CSRF token, with
-// more attributes and the children after the token.
-func postForm(action, token string, attrs ...attr.Node) elem.Scope {
-	return func(children ...elem.Node) elem.Node {
-		base := []attr.Node{form.Method(form.MethodPost), form.Action(action)}
-		return form.Form(append(base, attrs...)...)(append([]elem.Node{session.CSRFInput(token)}, children...)...)
-	}
 }
 
 // submit renders a submit button of a variant.
@@ -203,36 +195,6 @@ func errText(msg string) elem.Node {
 	return text.Text(msg)
 }
 
-// formToken returns the CSRF token for the forms of the whole page that
-// answers r: the session's token when the visitor is signed in, and
-// otherwise a pre-authentication token (session.PreAuth.Issue), whose
-// cookie it sets or renews on w. Fragments use fragmentToken.
-func (a *App) formToken(w http.ResponseWriter, r *http.Request) (string, error) {
-	if s, ok := session.FromContext[Account](r.Context()); ok {
-		return s.CSRF(), nil
-	}
-	return a.preauth.Issue(w, r)
-}
-
-// fragmentToken returns the CSRF token for the forms of an htmx fragment
-// that updates a page of r: the session's token when the visitor is
-// signed in, and otherwise the token of the pre-authentication cookie that
-// the page's forms carry (session.PreAuth.Token), which a fragment must not
-// renew under them. Only when r has no valid cookie (none, or an expired
-// one, which the page's forms fail with as well) does it issue a new
-// cookie on w, and report renewed: the fragment must then renew every form
-// of the page out of band, as the browser's new cookie refuses their
-// tokens.
-func (a *App) fragmentToken(w http.ResponseWriter, r *http.Request) (token string, renewed bool, err error) {
-	if s, ok := session.FromContext[Account](r.Context()); ok {
-		return s.CSRF(), false, nil
-	}
-	if token, ok := a.preauth.Token(r); ok {
-		return token, false, nil
-	}
-	return a.preauth.IssueRenewed(w, r)
-}
-
 // choosePage answers r like web.Choose, with a fragment that holds no
 // form, or the page that full renders for a form token. It asks for the
 // token only for the page, so that a fragment, such as the answer to a
@@ -241,31 +203,11 @@ func (a *App) choosePage(w http.ResponseWriter, r *http.Request, fragment elem.N
 	if web.WantsFragment(r) {
 		return web.Choose(w, r, http.StatusOK, fragment, nil)
 	}
-	token, err := a.formToken(w, r)
+	token, err := a.forms.PageToken(w, r)
 	if err != nil {
 		return err
 	}
 	return web.Choose(w, r, http.StatusOK, fragment, full(token))
-}
-
-// readForm reads the form of r within formLimits and checks its CSRF token,
-// as formToken issued it. The caller owns the values and zeroes them.
-func (a *App) readForm(w http.ResponseWriter, r *http.Request) (*webform.Values, error) {
-	f, err := webform.Read(w, r, formLimits)
-	if err != nil {
-		return nil, err
-	}
-	token := f.String(session.CSRFField)
-	if s, ok := session.FromContext[Account](r.Context()); ok {
-		err = s.CheckCSRF(token)
-	} else {
-		err = a.preauth.Verify(r, token)
-	}
-	if err != nil {
-		f.Zero()
-		return nil, err
-	}
-	return f, nil
 }
 
 // capitalize returns s with an upper-case first ASCII letter.

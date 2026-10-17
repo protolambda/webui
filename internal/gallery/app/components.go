@@ -18,6 +18,7 @@ import (
 	"github.com/protolambda/webui/bs"
 	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/page"
+	"github.com/protolambda/webui/visible"
 	"github.com/protolambda/webui/web"
 )
 
@@ -58,8 +59,8 @@ var componentPages = []componentPage{
 	},
 	componentsContent: {
 		Path: "/components/content", Label: "Content", Icon: bi.CardText,
-		Blurb:   "Cards, list groups, a data table with pagination, and breadcrumbs.",
-		Anchors: []anchor{{"cards", "Cards"}, {"lists", "List groups"}, {"table", "Table and pagination"}, {"breadcrumbs", "Breadcrumbs"}},
+		Blurb:   "Cards, list groups, a data table with pagination, breadcrumbs, and untrusted text.",
+		Anchors: []anchor{{"cards", "Cards"}, {"lists", "List groups"}, {"table", "Table and pagination"}, {"breadcrumbs", "Breadcrumbs"}, {"untrusted", "Untrusted text"}},
 	},
 	componentsFeedback: {
 		Path: "/components/feedback", Label: "Feedback", Icon: bi.Bell,
@@ -157,7 +158,7 @@ func (a *App) componentsControls(w http.ResponseWriter, r *http.Request) error {
 
 func (a *App) componentsContent(w http.ResponseWriter, r *http.Request) error {
 	return web.Render(w, r, http.StatusOK, a.page(r, a.componentsView(r, componentsContent,
-		cardsDemo(), listsDemo(), a.tableDemo(r), breadcrumbsDemo(),
+		cardsDemo(), listsDemo(), a.tableDemo(r), breadcrumbsDemo(), untrustedDemo(),
 	)))
 }
 
@@ -310,14 +311,15 @@ func (a *App) tableDemo(r *http.Request) elem.Node {
 	}
 
 	return demo("table", "Table and pagination",
-		taskTable(fmt.Sprintf("Tasks, page %d of %d", n, pages), shown, nil),
+		taskTable(text.Text(fmt.Sprintf("Tasks, page %d of %d", n, pages)), shown, nil),
 		bs.PaginationLabeled("Task pages")(pagination...),
 	)
 }
 
 // taskTable renders tasks as a DataTable; action, when set, renders the
-// cell of an extra actions column for each task.
-func taskTable(caption string, tasks []task, action func(task) elem.Node) elem.Node {
+// cell of an extra actions column for each task. Task titles are text that
+// visitors chose: they show through visible.Text.
+func taskTable(caption elem.Node, tasks []task, action func(task) elem.Node) elem.Node {
 	columns := []bs.Column{
 		{Header: text.Text("Task"), RowHeader: true},
 		{Header: text.Text("Priority")},
@@ -329,14 +331,14 @@ func taskTable(caption string, tasks []task, action func(task) elem.Node) elem.N
 	}
 	rows := make([]bs.TableRow, 0, len(tasks))
 	for _, t := range tasks {
-		cells := []elem.Node{text.Text(t.Title), priorityBadge(t.Priority), text.Text(strings.Join(t.Labels, ", ")), stateText(t.Done)}
+		cells := []elem.Node{visible.Text(t.Title), priorityBadge(t.Priority), text.Text(strings.Join(t.Labels, ", ")), stateText(t.Done)}
 		if action != nil {
 			cells = append(cells, action(t))
 		}
 		rows = append(rows, bs.TableRow{Cells: cells})
 	}
 	return bs.DataTable{
-		Caption: text.Text(caption),
+		Caption: caption,
 		Columns: columns,
 		Rows:    rows,
 		Empty:   text.Text("No tasks match."),
@@ -373,6 +375,46 @@ func breadcrumbsDemo() elem.Node {
 			bs.BreadcrumbItem()(link("/htmx", "Tasks")),
 			bs.BreadcrumbActive()(text.Text("Write the release notes")),
 		),
+	)
+}
+
+// untrustedSamples are values that other users could choose, written with
+// escapes in the source: each shows something other than what it is.
+var untrustedSamples = []struct{ Label, Value string }{
+	{"A right-to-left override", "invoice\u202Efdp.exe"},
+	{"A zero-width space", "ad\u200Bmin"},
+	{"Two spaces", "two  spaces"},
+	{"A no-break space", "Ada\u00A0Lovelace"},
+	{"An emoji sequence", "\U0001F469\u200D\U0001F4BB team"},
+	{"A look-alike letter", "\u0430dmin"},
+}
+
+// untrustedDemo shows untrusted text three ways: as plain text (escaped
+// against markup only, isolated in a bdi element so that an override does
+// not reorder the table), through visible.Text and through visible.Code.
+func untrustedDemo() elem.Node {
+	rows := make([]bs.TableRow, 0, len(untrustedSamples))
+	for _, s := range untrustedSamples {
+		rows = append(rows, bs.TableRow{Cells: []elem.Node{
+			text.Text(s.Label),
+			text.Bdi()(text.Text(s.Value)),
+			visible.Text(s.Value),
+			visible.Code(s.Value),
+		}})
+	}
+	return demo("untrusted", "Untrusted text",
+		para("HTML escaping keeps text that other users chose from becoming markup, but not from misleading a reader: a direction override reverses the text after it, and invisible or collapsing characters make two different names look the same. Package visible escapes what does not show as itself and adds a marker. visible.Text is for names and titles: it keeps emoji sequences and no-break spaces between words. visible.Code is strict, for values read character by character. Look-alike letters are visible letters, so neither escapes them."),
+		bs.DataTable{
+			Caption: text.Text("The same values, shown three ways"),
+			Columns: []bs.Column{
+				{Header: text.Text("Sample"), RowHeader: true},
+				{Header: text.Text("As text")},
+				{Header: text.Text("visible.Text")},
+				{Header: text.Text("visible.Code")},
+			},
+			Rows:  rows,
+			Small: true,
+		},
 	)
 }
 

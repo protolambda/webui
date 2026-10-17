@@ -13,10 +13,16 @@ import (
 	"github.com/protolambda/mustbe/be"
 
 	"github.com/protolambda/webui/internal/gallery/app"
+	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/session"
+	"github.com/protolambda/webui/visible"
 	"github.com/protolambda/webui/web"
 	"github.com/protolambda/webui/webuitest"
 )
+
+// pageShowAlerts is page.ShowAlerts, for tests whose variables are named
+// page.
+const pageShowAlerts = page.ShowAlerts
 
 // fakeClock is a clock that moves only when the test advances it.
 type fakeClock struct {
@@ -58,7 +64,10 @@ func TestHTMXErrors(gt *testing.T) {
 		t.Must(res.Header("Cache-Control", ct.Exact("no-store")))
 		t.Must(res.Header("Vary", ct.Contains("HX-Request")))
 		frag := c.Fragment(t, res, http.StatusConflict, "div")
-		t.Must(frag.Find(ct.Role("alert")).Texts(failed))
+		// The alerts region announces the alert, which has no role of its
+		// own (page.AlertsContent).
+		t.Must(frag.Find(ct.Class("alert-danger")).Texts(failed))
+		t.Must(frag.Find(ct.HasAttr("role")).None())
 		t.Must(frag.Find(ct.Tag("nav")).None())
 	})
 
@@ -79,7 +88,7 @@ func TestHTMXErrors(gt *testing.T) {
 
 		res = c.Post(t, "/htmx/tasks/9999/delete", webuitest.Form(nil), webuitest.HTMX())
 		t.Must(webuitest.HXRetarget(res, ct.Exact("#alerts")))
-		t.Must(c.Fragment(t, res, http.StatusNotFound, "div").Find(ct.Role("alert")).Texts(
+		t.Must(c.Fragment(t, res, http.StatusNotFound, "div").Find(ct.Class("alert-danger")).Texts(
 			"There is no such task. It may have been deleted already."))
 		res = c.Post(t, "/htmx/tasks/x/delete", webuitest.Form(nil), webuitest.HTMX())
 		t.Must(res.Status(http.StatusNotFound))
@@ -88,7 +97,7 @@ func TestHTMXErrors(gt *testing.T) {
 	t.Run("invalid task", func(t devtest.T) {
 		res := c.Post(t, "/htmx/tasks", webuitest.Form(url.Values{"title": {"\x00"}}), webuitest.HTMX())
 		t.Must(webuitest.HXRetarget(res, ct.Exact("#alerts")))
-		t.Must(c.Fragment(t, res, http.StatusUnprocessableEntity, "div").Find(ct.Role("alert")).Texts(
+		t.Must(c.Fragment(t, res, http.StatusUnprocessableEntity, "div").Find(ct.Class("alert-danger")).Texts(
 			"Give the task a title of 1 to 80 characters, on one line."))
 	})
 
@@ -134,8 +143,15 @@ func TestHTMXSwaps(gt *testing.T) {
 			t.Mustf(frag.Find(ct.ID(id), ct.HasAttr("hx-swap-oob")).Count(1), "%s", id)
 		}
 		t.Must(frag.Find(ct.ID("task-count")).Texts("6 open of 8"))
-		t.Must(frag.Find(ct.ID("alerts")).Find(ct.Role("status")).Texts("Task added."))
+		t.Must(frag.Find(ct.ID("alerts")).Find(ct.Class("alert")).Texts("Task added."))
+		t.Must(frag.Find(ct.ID("alerts")).Find(ct.HasAttr("role")).None())
 		t.Must(frag.Find(ct.ID("add-task")).Find(ct.ID("new-task"), ct.HasAttr("value")).None())
+		// The notice is out of band, so the forms' swap scrolls to the
+		// alerts region; htmx gives the focus back to the add button by
+		// its id, so the answer marks no focus target.
+		t.Must(page.Find(ct.ID("add-task")).Matches(ct.Attr("hx-swap", "outerHTML "+pageShowAlerts)))
+		t.Must(frag.Find(ct.ID("task-list")).Find(ct.Tag("form")).Each(ct.Attr("hx-swap", "outerHTML "+pageShowAlerts)))
+		t.Must(frag.Find(ct.HasAttr("autofocus")).None())
 
 		// Delete it with its own form, from the swapped list.
 		del := frag.Find(ct.Tag("form"), ct.HasDescendant(ct.Role("button", ct.Named("Delete Water the plants"))))
@@ -144,10 +160,34 @@ func TestHTMXSwaps(gt *testing.T) {
 		frag = c.Fragment(t, res, http.StatusOK, "div")
 		t.Must(frag.Find(ct.Role("rowheader", ct.Named("Water the plants"))).None())
 		t.Must(frag.Find(ct.ID("task-count")).Texts("5 open of 7"))
+		// The button that had the focus is gone: the list's caption takes
+		// it (page.FocusTarget).
+		t.Must(frag.Find(ct.HasAttr("autofocus")).Matches(ct.Attr("tabindex", "-1")))
+		t.Must(frag.Find(ct.Tag("caption")).Find(ct.HasAttr("autofocus")).Texts("Tasks: all"))
 
 		// Without htmx, the forms redirect with a notice.
 		res = c.Submit(t, page, page.Find(ct.ID("add-task")), nil, url.Values{"title": {"Plain"}})
 		t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/htmx?notice=task-added")))
+	})
+
+	t.Run("untrusted title", func(t devtest.T) {
+		// A title with a direction override shows escaped, with the
+		// marker of package visible, in the list, the search and the
+		// delete button's label.
+		page := c.Page(t, c.Get(t, "/htmx"), http.StatusOK)
+		const title = "invoice\u202Efdp.exe"
+		res := c.Submit(t, page, page.Find(ct.ID("add-task")), nil, url.Values{"title": {title}}, webuitest.HTMX(), webuitest.HXTarget("task-list"))
+		frag := c.Fragment(t, res, http.StatusOK, "div")
+		row := frag.Find(ct.ID("task-list")).Find(ct.Role("rowheader", ct.Named(`invoice\u202Efdp.exe escaped`)))
+		t.Must(row.Count(1))
+		t.Must(row.Find(ct.Tag("code")).Matches(ct.Attr("dir", "ltr")))
+		t.Must(row.Find(ct.Class("badge")).Texts(visible.MarkerText))
+		t.Must(frag.Find(ct.Role("button", ct.Named(`Delete invoice\u202Efdp.exe`))).Count(1))
+		t.Must(be.False(strings.Contains(res.BodyString(), "\u202E")))
+		res = c.Get(t, "/htmx/search?q=invoice", webuitest.HTMX())
+		t.Must(c.Fragment(t, res, http.StatusOK, "div").Find(ct.Class("list-group-item")).Find(ct.Class("badge")).Texts(visible.MarkerText))
+		del := frag.Find(ct.Tag("form"), ct.HasDescendant(ct.Role("button", ct.Named(`Delete invoice\u202Efdp.exe`))))
+		t.Must(c.Submit(t, frag, del, nil, nil, webuitest.HTMX()).Status(http.StatusOK))
 	})
 
 	t.Run("search", func(t devtest.T) {
@@ -293,7 +333,7 @@ func TestNavigation(gt *testing.T) {
 	crumbs := p.Find(ct.ID("page-header")).Find(ct.Tag("li"))
 	t.Must(crumbs.Texts("Gallery", "Components", "Content"))
 	t.Must(crumbs.Last().Matches(ct.Attr("aria-current", "page")))
-	t.Must(p.Find(ct.Tag("caption")).Texts("Tasks, page 2 of 3"))
+	t.Must(p.Find(ct.ID("table")).Find(ct.Tag("caption")).Texts("Tasks, page 2 of 3"))
 	t.Must(p.Find(ct.Role("navigation", ct.Named("Task pages"))).Find(ct.Attr("aria-current", "page")).Texts("2"))
 
 	// Pages outside sections have no sidebar, and mark their own link.
@@ -302,4 +342,38 @@ func TestNavigation(gt *testing.T) {
 	t.Must(navbarLink(p, "Components", ct.HasAttr("aria-current")).None())
 	t.Must(p.Find(ct.ID("sidebar")).None())
 	t.Must(p.Find(ct.Tag("footer")).Count(1))
+}
+
+// TestUntrustedTextDemo checks the untrusted text demo: plain text shows a
+// direction override as it is, isolated in a bdi element; visible.Text
+// and visible.Code escape it, with the marker. visible.Text keeps a no-break
+// space between words, which visible.Code escapes, and neither escapes a
+// look-alike letter.
+func TestUntrustedTextDemo(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	g := newGallery(t, app.Options{})
+	c := g.anonymous()
+	p := c.Page(t, c.Get(t, "/components/content"), http.StatusOK)
+	demo := p.Find(ct.ID("untrusted"))
+	t.Must(p.Find(ct.ID("sidebar")).Find(ct.Role("link", ct.Named("Untrusted text"))).Matches(ct.Attr("href", "#untrusted")))
+	row := func(label string) *ct.Selection {
+		return demo.Find(ct.Tag("tr"), ct.HasChild(ct.Role("rowheader", ct.Named(label))))
+	}
+	cell := func(label string, column int) *ct.Selection {
+		return row(label).Find(ct.Tag("td")).Nth(column)
+	}
+
+	override := "A right-to-left override"
+	t.Must(cell(override, 0).Find(ct.Tag("bdi")).Texts("invoice\u202Efdp.exe"))
+	for column := 1; column <= 2; column++ {
+		t.Mustf(cell(override, column).Find(ct.Tag("code")).Texts(`invoice\u202Efdp.exe`), "column %d", column)
+		t.Mustf(cell(override, column).Find(ct.Class("badge")).Texts(visible.MarkerText), "column %d", column)
+	}
+	noBreak := "A no-break space"
+	t.Must(cell(noBreak, 1).Find(ct.Tag("bdi")).Count(1))
+	t.Must(cell(noBreak, 1).Find(ct.Tag("code")).None())
+	t.Must(cell(noBreak, 1).Find(ct.Class("badge")).None())
+	t.Must(cell(noBreak, 2).Find(ct.Tag("code")).Texts(`Ada\u00A0Lovelace`))
+	lookalike := "A look-alike letter"
+	t.Must(row(lookalike).Find(ct.Class("badge")).None())
 }

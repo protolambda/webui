@@ -86,8 +86,8 @@ func plausibleEmail(v string) bool {
 		strings.Contains(strings.Trim(domain, "."), ".")
 }
 
-func (a *App) forms(w http.ResponseWriter, r *http.Request) error {
-	token, err := a.formToken(w, r)
+func (a *App) formsDemo(w http.ResponseWriter, r *http.Request) error {
+	token, err := a.forms.PageToken(w, r)
 	if err != nil {
 		return err
 	}
@@ -137,7 +137,7 @@ func taskForm(token string, in taskInput, p taskProblems) elem.Node {
 		})
 	}
 
-	return postForm("/forms", token,
+	return session.PostForm("/forms", token,
 		attr.ID("task-form"), form.Novalidate(),
 		hx2.Post("/forms"), hx2.Target("this"), hx2.Swap(hx2.SwapOuterHTML),
 	)(
@@ -200,7 +200,7 @@ func invalidIf(invalid bool) attr.Node {
 // redirected (Post/Redirect/Get); a form with problems is rendered again
 // with status 422, as a page or, for htmx, as the form alone.
 func (a *App) submitTask(w http.ResponseWriter, r *http.Request) error {
-	f, err := a.readForm(w, r)
+	f, err := a.forms.Read(w, r)
 	if err != nil {
 		return err
 	}

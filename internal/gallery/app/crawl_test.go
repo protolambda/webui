@@ -35,7 +35,7 @@ func TestCrawl(gt *testing.T) {
 		})
 		t.Must(report)
 		t.Must(report.Covers(append(pages, "/login?next=%2Fnotes", "/components/content?page=3")...))
-		t.Must(report.Uses(http.MethodPost, "/forms", "/dialogs/rename", "/dialogs/reset", "/htmx/tasks", "/htmx/fail", "/login"))
+		t.Must(report.Uses(http.MethodPost, "/forms", "/dialogs/rename", "/dialogs/reset", "/htmx/tasks", "/htmx/fail", "/htmx/plain-error", "/login"))
 		t.Must(report.Uses(http.MethodGet, "/live/clock", "/notes/live", "/htmx/poll", "/htmx/search", "/components/toast"))
 	})
 	t.Run("signed in", func(t devtest.T) {

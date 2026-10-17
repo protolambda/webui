@@ -135,15 +135,15 @@ func TestNotesLive(gt *testing.T) {
 		st.ExpectEnd(gt)
 
 		// Signed in: the count follows the notes of the session, until the
-		// session ends.
+		// session ends. The client attaches the session to the stream and
+		// to the form post alike.
 		s := session.NewDetached(app.Account{Name: "Ada"}, testCSRF)
-		req := webuitest.Get(gt, "/notes/live", webuitest.EventSource())
-		st = webuitest.ServeStream(gt, a, req.WithContext(session.WithSession(req.Context(), s)))
-		t.Must(be.Equal("0 notes", st.Expect(gt, "notes").Data))
-
 		c := &webuitest.Client{Handler: a, CSRF: testCSRF, Prepare: func(r *http.Request) *http.Request {
 			return r.WithContext(session.WithSession(r.Context(), s))
 		}}
+		st = c.Stream(gt, "/notes/live")
+		t.Must(be.Equal("0 notes", st.Expect(gt, "notes").Data))
+
 		res := c.Post(gt, "/notes", webuitest.Form(url.Values{"note": {"Call the plumber"}}))
 		t.Must(res.Status(http.StatusSeeOther))
 		t.Must(be.Equal("1 note", st.Expect(gt, "notes").Data))

@@ -6,41 +6,104 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/protolambda/chord/ct"
+	"github.com/protolambda/chord/ct/cthttp"
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
 
 	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/internal/gallery/app"
+	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/session"
+	"github.com/protolambda/webui/web"
 	"github.com/protolambda/webui/webuitest"
 )
 
+// httpsHeaders are the security headers that the gallery sends at an
+// https site that is not a loopback host, such as webuitest.BaseURL:
+// webui's defaults, with HSTS for a year (mw.HSTSFor).
+var httpsHeaders = mw.Headers{HSTS: mw.HSTS{MaxAge: mw.DefaultHSTSMaxAge}}
+
 // TestSecurityHeaders checks that every kind of answer carries webui's
-// strict security headers: pages, fragments, redirects, error pages, htmx
-// error fragments and assets.
+// strict security headers, with HSTS at an https site: pages, fragments,
+// redirects, error pages, htmx error fragments, the replaced answer of a
+// handler outside the error policy, cross-origin refusals and assets.
 func TestSecurityHeaders(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	g := newGallery(t, app.Options{})
 	c := g.anonymous()
+	policy := webuitest.PolicyFor(httpsHeaders)
 	targets := append(slices.Clone(pages), "/notes", "/no/such/page", "/htmx/tasks?filter=done")
 	for _, target := range targets {
-		t.Mustf(webuitest.SecurityHeaders(c.Get(t, target), webuitest.StrictPolicy()), "GET %s", target)
-		t.Mustf(webuitest.SecurityHeaders(c.Get(t, target, webuitest.HTMX()), webuitest.StrictPolicy()), "htmx GET %s", target)
+		t.Mustf(webuitest.SecurityHeaders(c.Get(t, target), policy), "GET %s", target)
+		t.Mustf(webuitest.SecurityHeaders(c.Get(t, target, webuitest.HTMX()), policy), "htmx GET %s", target)
 	}
-	t.Must(webuitest.SecurityHeaders(c.Post(t, "/htmx/fail", webuitest.Form(nil)), webuitest.StrictPolicy()))
+	t.Must(c.Get(t, "/").Header("Strict-Transport-Security", ct.Exact("max-age=31536000")))
+	t.Must(webuitest.SecurityHeaders(c.Post(t, "/htmx/fail", webuitest.Form(nil)), policy))
+	t.Must(webuitest.SecurityHeaders(c.Post(t, "/htmx/plain-error", webuitest.Form(nil), webuitest.HTMX()), policy))
+	t.Must(webuitest.SecurityHeaders(c.Post(t, "/htmx/fail", webuitest.Form(nil), webuitest.FetchSite("cross-site")), policy))
 	// Assets replace the default Cache-Control: their URLs change with
 	// their content.
 	for _, set := range []*asset.Set{plainAssets, jsAssets} {
 		for info := range set.Files() {
-			t.Mustf(webuitest.SecurityHeaders(c.Get(t, info.URL), webuitest.AssetPolicy()), "GET %s", info.URL)
+			t.Mustf(webuitest.SecurityHeaders(c.Get(t, info.URL), webuitest.AssetPolicyFor(httpsHeaders)), "GET %s", info.URL)
 		}
 	}
+	// The host check refuses without HSTS, so that a host name that the
+	// client chose is never pinned to https.
 	res := c.Get(t, "/", webuitest.Host("evil.example"))
 	t.Must(res.Status(http.StatusBadRequest))
 	t.Must(webuitest.SecurityHeaders(res, webuitest.StrictPolicy()))
+}
+
+// TestRefusalsAnswerThroughPolicy checks that the refusals of the
+// middleware reach htmx as the policy's alerts, never as plain text that
+// htmx would insert as markup: the same-origin policy answers through the
+// error policy (web.Errors.Answer), and web.Errors.Intercept replaces the
+// plain-text answers of the host check and of a handler outside the
+// policy. (The mux answers no 405: the catch-all route answers through
+// the policy with 404.)
+func TestRefusalsAnswerThroughPolicy(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	g := newGallery(t, app.Options{})
+	c := g.signedIn(newAccount("Ada"))
+	alert := func(t devtest.T, res *cthttp.Result, status int, message string) {
+		t.Helper()
+		t.Must(webuitest.HXRetarget(res, ct.Exact("#alerts")))
+		t.Must(res.Header("Content-Type", ct.Exact(web.ContentType)))
+		frag := c.Fragment(t, res, status, "div")
+		t.Must(frag.Find(ct.Class("alert-danger")).Texts(message))
+		t.Must(frag.Find(ct.Tag("strong")).None())
+	}
+
+	t.Run("cross-origin", func(t devtest.T) {
+		res := c.Post(t, "/htmx/fail", webuitest.Form(nil), webuitest.HTMX(), webuitest.FetchSite("cross-site"), webuitest.Origin(webuitest.ForeignOrigin))
+		alert(t, res, http.StatusForbidden, web.MessageForged)
+		// A plain request gets the gallery's error page.
+		page := c.Page(t, c.Post(t, "/htmx/fail", webuitest.Form(nil), webuitest.FetchSite("cross-site")), http.StatusForbidden)
+		t.Must(page.Find(ct.ID("alerts")).Find(ct.Role("alert")).Texts(web.MessageForged))
+		t.Must(page.Find(ct.ID("navbar")).Count(1))
+	})
+
+	t.Run("handler outside the policy", func(t devtest.T) {
+		p := c.Page(t, c.Get(t, "/htmx"), http.StatusOK)
+		res := c.SubmitHTMX(t, p, p.Find(ct.ID("plain-error-form")), nil, nil)
+		alert(t, res, http.StatusBadRequest, web.DefaultMessage(http.StatusBadRequest))
+		t.Must(be.False(strings.Contains(res.BodyString(), "Markup")))
+		// Without htmx, the plain text stays plain text.
+		res = c.Submit(t, p, p.Find(ct.ID("plain-error-form")), nil, nil)
+		t.Must(res.Status(http.StatusBadRequest))
+		t.Must(res.Header("Content-Type", ct.Prefix("text/plain")))
+		t.Must(res.Header("X-Content-Type-Options", ct.Exact("nosniff")))
+	})
+
+	t.Run("host check", func(t devtest.T) {
+		res := c.Get(t, "/htmx/poll", webuitest.HTMX(), webuitest.Host("evil.example"))
+		alert(t, res, http.StatusBadRequest, web.DefaultMessage(http.StatusBadRequest))
+	})
 }
 
 // TestRejectsCrossSite sends the cross-site probes of webuitest to every

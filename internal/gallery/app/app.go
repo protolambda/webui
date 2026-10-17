@@ -9,17 +9,24 @@
 //   - / and /components/...: the layout (navbar, sidebar, header, footer)
 //     and the Bootstrap components, in a section of pages that the sidebar
 //     lists, with toasts appended by out-of-band swaps;
-//   - /forms: fields with server-side validation, CSRF tokens,
-//     Post/Redirect/Get and notices, for plain and htmx requests;
+//   - /forms: fields with server-side validation, CSRF tokens
+//     (session.Forms), Post/Redirect/Get and notices, for plain and htmx
+//     requests;
 //   - /dialogs and /disclosure: dialogs, accordions and dropdowns that work
-//     without script;
-//   - /htmx: fragment swaps, out-of-band swaps, an error answer retargeted
-//     into the alerts region, a confirmed delete, a search and a poll;
+//     without script, and a dialog form whose htmx answers show its errors
+//     inside the dialog and close it on success;
+//   - /htmx: fragment swaps, out-of-band swaps, error answers retargeted
+//     into the alerts region (also a plain-text error that web.Errors
+//     Intercept replaces), a confirmed delete, a search and a poll;
 //   - /live: server-sent event streams that end with an end event;
 //   - /login, /logout and /notes: sessions, pre-authentication CSRF tokens
 //     and an authentication guard;
 //   - /bootstrap-js: the opt-in Bootstrap script with its components, from a
 //     second theme asset set.
+//
+// Text that visitors chose (task titles, notes, names) is shown through
+// package visible, so that direction overrides and invisible characters
+// show as escapes; /components/content has examples.
 //
 // The demo data (tasks, a project name) lives in memory, bounded, and resets
 // when the process restarts. Notes live in the session that wrote them.
@@ -117,6 +124,7 @@ type App struct {
 
 	sessions *session.Store[Account]
 	preauth  *session.PreAuth
+	forms    session.Forms[Account]
 	streams  *sse.Limiter
 
 	tasks       *taskList
@@ -195,21 +203,31 @@ func New(opts Options) (*App, error) {
 		jsAssets: jsAssets,
 		sessions: sessions,
 		preauth:  preauth,
-		streams:  sse.NewLimiter(streamsPerClient, streamsTotal),
-		tasks:    newTaskList(),
-		stop:     make(chan struct{}),
+		// Store stays nil: every route is behind the sessions' middleware,
+		// so the request context holds the session, the one that the
+		// handlers act for (session.FromContext).
+		forms:   session.Forms[Account]{PreAuth: preauth, Limits: formLimits},
+		streams: sse.NewLimiter(streamsPerClient, streamsTotal),
+		tasks:   newTaskList(),
+		stop:    make(chan struct{}),
 	}
 	a.project.set(defaultProject)
-	a.errs = web.Errors{Document: a.errorPage, Home: "/"}
+	a.errs = web.Errors{Document: a.errorPage, Home: "/", TargetFor: dialogAlertsTarget}
 	a.mux = a.routes()
+	// The recommended stack: Recover and Intercept right inside the request
+	// log, the refusals of the host check and the same-origin policy
+	// answered through the error policy, and the sessions innermost, so
+	// that refused requests never count as use of a session. HSTS is sent
+	// only when every site is https and none is a loopback host.
 	a.handler = mw.Chain(a.mux,
 		mw.LogRequests(mw.RequestLog{Logger: logger, Routes: a.mux}),
 		a.errs.Recover,
+		a.errs.Intercept,
 		mw.BodyDeadline(mw.DefaultBodyTimeout),
 		mw.WriteDeadline(mw.DefaultWriteTimeout),
-		mw.SecurityHeaders(mw.Headers{}),
+		mw.SecurityHeaders(mw.Headers{HSTS: mw.HSTSFor(opts.Sites...)}),
 		mw.HostCheck(opts.Sites...),
-		mw.SameOrigin(mw.OriginPolicy{Deny: a.errs.Handle(refuseCrossOrigin)}),
+		mw.SameOrigin(mw.OriginPolicy{Deny: a.errs.Answer(mw.ErrCrossOrigin)}),
 		mw.MaxBody(maxBody),
 		a.sessions.Middleware,
 	)
@@ -259,7 +277,7 @@ func (a *App) routes() *http.ServeMux {
 	handle("GET /components/toast", a.toast)
 	handle("GET /components/toast/dismiss", a.dismissToast)
 
-	handle("GET /forms", a.forms)
+	handle("GET /forms", a.formsDemo)
 	handle("POST /forms", a.submitTask)
 
 	handle("GET /dialogs", a.dialogs)
@@ -274,6 +292,8 @@ func (a *App) routes() *http.ServeMux {
 	handle("POST /htmx/tasks", a.htmxAddTask)
 	handle("POST /htmx/tasks/{id}/delete", a.htmxDeleteTask)
 	handle("POST /htmx/fail", a.htmxFail)
+	// A handler outside the error policy, on purpose: see plainError.
+	mux.HandleFunc("POST /htmx/plain-error", plainError)
 	handle("GET /htmx/search", a.htmxSearch)
 	handle("GET /htmx/poll", a.htmxPoll)
 
@@ -306,10 +326,4 @@ func passive(r *http.Request) bool {
 		return true
 	}
 	return false
-}
-
-// refuseCrossOrigin answers requests that mw.SameOrigin refuses, with the
-// error page of the gallery.
-func refuseCrossOrigin(http.ResponseWriter, *http.Request) error {
-	return mw.ErrCrossOrigin
 }

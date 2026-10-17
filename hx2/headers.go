@@ -67,15 +67,15 @@ const (
 
 // ErrInvalidHeader indicates a response header value that htmx cannot read
 // as intended, such as an event without a name.
-var ErrInvalidHeader = errors.New("invalid htmx header")
+var ErrInvalidHeader = errors.New("hx2: invalid htmx header")
 
 // RequestHeaders are the headers that htmx 2 adds to its requests.
 //
 // The client sets them, and anyone can forge them: use them to choose a
 // representation (for example a fragment instead of a full page), never to
 // make an authorization decision. A response that depends on them should say
-// so in its Vary header, e.g. Vary: HX-Request (see [AddVary]), so that
-// caches keep the representations apart.
+// so in its Vary header, e.g. Vary: HX-Request (see [AddVary] and
+// [AddVaryHeaders]), so that caches keep the representations apart.
 //
 // The string fields are decoded the way htmx encodes them. htmx sets headers
 // with XMLHttpRequest, which sends characters up to U+00FF as one byte each
@@ -130,25 +130,70 @@ func ParseRequestHeaders(h http.Header) RequestHeaders {
 }
 
 // AddVary adds HX-Request to the Vary header of h, usually the header of a
-// response before it is written. The existing Vary values are kept, and
-// nothing is added when one of them already names HX-Request (in any letter
-// case) or is "*", so calling it again is harmless. h must not be nil.
+// response before it is written. It is [AddVaryHeaders](h, HeaderRequest):
+// the existing Vary values are kept, and nothing is added when one of them
+// already names HX-Request (in any letter case) or is "*", so calling it
+// again is harmless. h must not be nil.
 //
 // Call it for every response whose content depends on whether the request
 // came from htmx, such as a fragment for htmx and a full page otherwise, so
 // that caches, the browser's own HTTP cache included, keep the two
 // representations apart: without it, going back to a URL can show a cached
-// fragment as the page.
+// fragment as the page. A response that also depends on HX-Boosted, such as
+// a fragment for htmx requests but the full page for boosted ones, names
+// both headers with [AddVaryHeaders].
 func AddVary(h http.Header) {
+	AddVaryHeaders(h, HeaderRequest)
+}
+
+// AddVaryHeaders adds names, the names of request headers that a response
+// depends on, to the Vary header of h, usually the header of a response
+// before it is written. Each name is added in order as a Vary value of its
+// own, unless a Vary value already names it (in any letter case) or is "*",
+// so calling it again, or with a name twice, is harmless; the existing
+// values are kept. h must not be nil.
+//
+// A response chosen by [RequestHeaders.Request] alone needs HX-Request
+// ([AddVary]). One that also depends on [RequestHeaders.Boosted], such as a
+// fragment for htmx requests but the full page for boosted ones, needs
+// both:
+//
+//	hx2.AddVaryHeaders(w.Header(), hx2.HeaderRequest, hx2.HeaderBoosted)
+//
+// This is the Vary of the fragment-or-page answers of
+// [github.com/protolambda/webui/web.Choose], whose
+// [github.com/protolambda/webui/web.WantsFragment] reads both headers.
+//
+// The names are meant to be constants of the program, such as the Header
+// constants of this package. AddVaryHeaders panics, before it changes h,
+// when a name is not a valid HTTP header name (a non-empty token), which
+// would corrupt the Vary list.
+func AddVaryHeaders(h http.Header, names ...string) {
+	for i, name := range names {
+		if !headerName(name) {
+			// The index, not the name: never echo a value that might not be
+			// the program's own.
+			panic(fmt.Sprintf("hx2: AddVaryHeaders: name %d is not a header name", i))
+		}
+	}
+	for _, name := range names {
+		if !varies(h, name) {
+			h.Add("Vary", name)
+		}
+	}
+}
+
+// varies reports whether a Vary value of h names name (in any letter case)
+// or is "*".
+func varies(h http.Header, name string) bool {
 	for _, line := range h.Values("Vary") {
 		for v := range strings.SplitSeq(line, ",") {
-			v = strings.TrimSpace(v)
-			if v == "*" || strings.EqualFold(v, HeaderRequest) {
-				return
+			if v = strings.TrimSpace(v); v == "*" || strings.EqualFold(v, name) {
+				return true
 			}
 		}
 	}
-	h.Add("Vary", HeaderRequest)
+	return false
 }
 
 // requestValue reads a string header that htmx sets: percent-decoded when

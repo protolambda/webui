@@ -334,3 +334,66 @@ func TestAddVary(gt *testing.T) {
 	t.Must(be.Equal(1, len(h)))
 	t.Must(be.Equal("HX-Request", strings.Join(h["Vary"], ",")))
 }
+
+func TestAddVaryHeaders(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	both := []string{hx2.HeaderRequest, hx2.HeaderBoosted}
+	cases := []struct {
+		name  string
+		have  []string
+		names []string
+		want  []string
+	}{
+		{"none", nil, both, []string{"HX-Request", "HX-Boosted"}},
+		{"no names", []string{"Origin"}, nil, []string{"Origin"}},
+		{"other", []string{"Accept-Encoding"}, both, []string{"Accept-Encoding", "HX-Request", "HX-Boosted"}},
+		{"one present", []string{"hx-request"}, both, []string{"hx-request", "HX-Boosted"}},
+		{"both present in list", []string{"HX-Boosted, Origin", " hx-request"}, both,
+			[]string{"HX-Boosted, Origin", " hx-request"}},
+		{"star", []string{"*"}, both, []string{"*"}},
+		{"name twice", nil, []string{"HX-Boosted", "hx-boosted"}, []string{"HX-Boosted"}},
+		{"order kept", nil, []string{hx2.HeaderBoosted, hx2.HeaderRequest}, []string{"HX-Boosted", "HX-Request"}},
+		{"similar names", []string{"HX-Boosted-Id"}, []string{hx2.HeaderBoosted}, []string{"HX-Boosted-Id", "HX-Boosted"}},
+		{"other headers", nil, []string{"Accept-Language", hx2.HeaderTarget}, []string{"Accept-Language", "HX-Target"}},
+		{"star as name", []string{"Origin"}, []string{"*", hx2.HeaderRequest}, []string{"Origin", "*"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			h := http.Header{}
+			h.Set("Content-Type", "text/html")
+			for _, v := range c.have {
+				h.Add("Vary", v)
+			}
+			hx2.AddVaryHeaders(h, c.names...)
+			t.Must(be.DeepEqual(c.want, h.Values("Vary")))
+			// Again: no change.
+			hx2.AddVaryHeaders(h, c.names...)
+			t.Must(be.DeepEqual(c.want, h.Values("Vary")))
+			t.Must(be.Equal("text/html", h.Get("Content-Type")))
+		})
+	}
+
+	// AddVary is AddVaryHeaders with HX-Request, and the two combine.
+	h := http.Header{}
+	hx2.AddVary(h)
+	hx2.AddVaryHeaders(h, both...)
+	hx2.AddVary(h)
+	t.Must(be.DeepEqual([]string{"HX-Request", "HX-Boosted"}, h.Values("Vary")))
+}
+
+// A name that is not a header name would corrupt the Vary list: it is a
+// programmer error, which panics before h changes, without echoing the name.
+func TestAddVaryHeadersInvalidName(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, name := range []string{"", "HX-Request, Origin", "HX Request", "HX-Request\r\nSet-Cookie: a=b", "Ünicode", "a:b"} {
+		h := http.Header{}
+		h.Set("Vary", "Origin")
+		msg := func() (v any) {
+			defer func() { v = recover() }()
+			hx2.AddVaryHeaders(h, hx2.HeaderRequest, name)
+			return nil
+		}()
+		t.Must(be.Equal[any]("hx2: AddVaryHeaders: name 1 is not a header name", msg))
+		t.Must(be.DeepEqual([]string{"Origin"}, h.Values("Vary")))
+	}
+}

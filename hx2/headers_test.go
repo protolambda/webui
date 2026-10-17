@@ -291,5 +291,5 @@ func ExampleSetLocation_replace() {
 	fmt.Println(err)
 	// Output:
 	// {"path":"/items?page=2","target":"#list","push":"false","replace":"/items?page=2"}
-	// invalid htmx header: HX-Location with both push and replace
+	// hx2: invalid htmx header: HX-Location with both push and replace
 }

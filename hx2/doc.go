@@ -42,6 +42,30 @@
 // [DefaultResponseHandling]. A 422 answer to a form with problems swaps
 // without being logged as an error.
 //
+// # Error responses are page markup
+//
+// htmx inserts every response that it swaps as HTML, whatever its
+// Content-Type, and processes the hx-* attributes in it, which send
+// requests without any script: a strict Content-Security-Policy does not
+// stop them. Because the zero [Config] swaps 4xx and 5xx responses too,
+// this covers error bodies, where Go code most often echoes the request. A
+// plain-text http.Error(w, err.Error(), http.StatusBadRequest) whose err
+// quotes the input (strconv, time.Parse and url.Parse errors do) is inert
+// in a browser tab but becomes part of the page when htmx swaps it, and an
+// injected element such as
+//
+//	<i hx-post="/archive" hx-include="[name=csrf]" hx-trigger="load"></i>
+//
+// then sends a same-origin request with the page's CSRF token. On routes
+// that htmx requests, never write unescaped request data into an error
+// body: answer errors with [github.com/protolambda/webui/web.Errors], whose
+// messages never contain request data; wrap handlers that write their own
+// error bodies with [github.com/protolambda/webui/web.Errors.Intercept],
+// which answers their non-HTML errors to htmx requests with the alert of
+// their status; or set [Config.NoErrorSwap] for pages whose htmx requests
+// reach handlers that neither covers. See the security note at
+// [DefaultResponseHandling].
+//
 // # Scripting attributes
 //
 // Some htmx features are JavaScript in attributes: [On] (hx-on:*), hx-vals
@@ -76,7 +100,10 @@
 // as the user wrote them. The client sets these headers: use them to choose
 // a representation, never for authorization. [AddVary] adds HX-Request to
 // the Vary header of a response that depends on them, so that caches keep
-// the representations apart.
+// the representations apart, and [AddVaryHeaders] adds other names too,
+// such as HX-Boosted for a response that boosted requests get in full:
+//
+//	hx2.AddVaryHeaders(w.Header(), hx2.HeaderRequest, hx2.HeaderBoosted)
 //
 // The Set functions write the response headers that htmx reads, on the header
 // of a response before it is written: [SetRedirect], [SetRefresh],

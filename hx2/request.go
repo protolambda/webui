@@ -12,7 +12,7 @@ import (
 
 // ErrInvalidValue indicates an attribute value that htmx cannot read as
 // intended, such as hx-vals that is not a JSON object.
-var ErrInvalidValue = errors.New("invalid htmx attribute value")
+var ErrInvalidValue = errors.New("hx2: invalid htmx attribute value")
 
 // Include sets the hx-include attribute to include additional elements in request.
 func Include(v string) attr.Node { return attr.Name("hx-include").Value(v) }

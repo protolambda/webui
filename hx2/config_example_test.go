@@ -68,7 +68,7 @@ func ExampleConfig_JSON_htmxDefaults() {
 func ExampleConfig_JSON_conflict() {
 	_, err := hx2.Config{Extra: map[string]any{"allowEval": true}}.JSON()
 	fmt.Println(err)
-	// Output: invalid htmx config: extra key "allowEval" is controlled by a Config field
+	// Output: hx2: invalid htmx config: extra key "allowEval" is controlled by a Config field
 }
 
 // Rules in front of the defaults take precedence: here a 404 response is
@@ -102,12 +102,14 @@ func ExampleDefaultAttributesToSettle() {
 	// Output:
 	// [class width height data-state]
 	// <nil>
-	// invalid htmx config: attribute to settle 0: "class width" is not an attribute name
+	// hx2: invalid htmx config: attribute to settle 0: "class width" is not an attribute name
 }
 
 // A handler that answers a failed htmx request with an alert fragment for
 // the page's alerts region. htmx swaps it like a success, so the handler
-// also turns off the inherited hx-select and the history update.
+// also turns off the inherited hx-select and the history update. The
+// message is a constant: htmx inserts the body as page markup, so it never
+// echoes request data.
 func ExampleDefaultResponseHandling_errorFragment() {
 	notFound := func(w http.ResponseWriter, r *http.Request) {
 		if hx2.ParseRequestHeaders(r.Header).Request {
@@ -153,8 +155,35 @@ func ExampleResponseRule() {
 	// Output:
 	// "422": <nil>
 	// "[45]..": <nil>
-	// "[45": invalid htmx config: response rule 0: code "[45" is not three digits, '.' or digit classes
-	// "20": invalid htmx config: response rule 0: code "20" is not three digits, '.' or digit classes
+	// "[45": hx2: invalid htmx config: response rule 0: code "[45" is not three digits, '.' or digit classes
+	// "20": hx2: invalid htmx config: response rule 0: code "20" is not three digits, '.' or digit classes
+}
+
+// With the zero Config htmx swaps 4xx and 5xx bodies into the page, where
+// they are markup whatever their Content-Type. NoErrorSwap restores htmx's
+// default of swapping none, for pages whose htmx requests reach handlers
+// that may echo request data into error bodies.
+func ExampleConfig_noErrorSwap() {
+	for _, cfg := range []hx2.Config{{}, {NoErrorSwap: true}} {
+		data, err := cfg.JSON()
+		if err != nil {
+			panic(err)
+		}
+		var v struct {
+			ResponseHandling []hx2.ResponseRule `json:"responseHandling"`
+		}
+		if err := json.Unmarshal([]byte(data), &v); err != nil {
+			panic(err)
+		}
+		for _, r := range v.ResponseHandling {
+			if r.Code == "[45].." {
+				fmt.Printf("NoErrorSwap %t: %s swap=%t error=%t\n", cfg.NoErrorSwap, r.Code, r.Swap, r.Error)
+			}
+		}
+	}
+	// Output:
+	// NoErrorSwap false: [45].. swap=true error=true
+	// NoErrorSwap true: [45].. swap=false error=true
 }
 
 func ExampleAddVary() {
@@ -164,4 +193,15 @@ func ExampleAddVary() {
 	hx2.AddVary(h) // already present: no change
 	fmt.Println(h.Values("Vary"))
 	// Output: [Accept-Encoding HX-Request]
+}
+
+// A response that is a fragment for htmx requests but the full page for
+// boosted ones depends on both HX-Request and HX-Boosted.
+func ExampleAddVaryHeaders() {
+	h := http.Header{}
+	h.Set("Vary", "Accept-Encoding, hx-request")
+	hx2.AddVaryHeaders(h, hx2.HeaderRequest, hx2.HeaderBoosted)
+	hx2.AddVaryHeaders(h, hx2.HeaderRequest, hx2.HeaderBoosted) // already present: no change
+	fmt.Println(h.Values("Vary"))
+	// Output: [Accept-Encoding, hx-request HX-Boosted]
 }

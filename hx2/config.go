@@ -13,7 +13,7 @@ import (
 // ErrInvalidConfig indicates a [Config] that cannot be written as an htmx
 // configuration, such as a negative history cache size or a [Config.Extra]
 // value that is not representable as JSON.
-var ErrInvalidConfig = errors.New("invalid htmx config")
+var ErrInvalidConfig = errors.New("hx2: invalid htmx config")
 
 // Config is the htmx configuration of a page. [Config.Meta] renders it as
 // <meta name="htmx-config" content="{...}">, which htmx reads once, when it
@@ -58,7 +58,13 @@ var ErrInvalidConfig = errors.New("invalid htmx config")
 //     handler that sends such a fragment also sends HX-Push-Url: false and
 //     HX-Reselect: unset (see [DefaultResponseHandling]). Every 4xx and 5xx
 //     status but 422 counts as an error, which htmx logs to the browser
-//     console.
+//     console. htmx inserts every swapped body as HTML, whatever its
+//     Content-Type, so an error body that echoes request data, such as a
+//     plain-text http.Error(w, err.Error(), 400), becomes markup in the
+//     page whose hx-* attributes act without script: never write
+//     unescaped request data into an error body on a route that htmx
+//     requests (see the security note at DefaultResponseHandling, and
+//     [Config.NoErrorSwap]).
 //
 // Each of these keys is written explicitly, so the page does not depend on
 // the defaults of a particular htmx release. The keys and their meanings
@@ -166,6 +172,19 @@ type Config struct {
 	// history and applies the inherited hx-select like a success does, as
 	// described at DefaultResponseHandling. It cannot be combined with
 	// ResponseHandling.
+	//
+	// Set it for a page whose htmx requests reach handlers that may write
+	// request data into error bodies, such as handlers of other packages
+	// that answer with http.Error(w, err.Error(), status): with webui's
+	// rules htmx inserts such a body as HTML, and hx-* attributes injected
+	// through it act without script, past a strict Content-Security-Policy
+	// (see the security note at DefaultResponseHandling). The price is that
+	// no error shows: htmx fires htmx:responseError, which only script
+	// displays, and the alerts of [github.com/protolambda/webui/web.Errors]
+	// are not swapped in either. Wrapping such handlers with
+	// [github.com/protolambda/webui/web.Errors.Intercept], which answers
+	// their non-HTML errors to htmx requests with the policy's alert, keeps
+	// error swapping safe instead.
 	NoErrorSwap bool
 
 	// ResponseHandling, when not empty, replaces [DefaultResponseHandling]
@@ -269,6 +288,43 @@ type ResponseRule struct {
 //	hx2.SetReswap(h, hx2.SwapInnerHTML)
 //	hx2.SetReselect(h, "unset") // swap the whole fragment, whatever hx-select
 //	hx2.SetPushURL(h, "false")  // no history update, push or replace
+//
+// Security: with these rules, every 4xx and 5xx body becomes page markup.
+// htmx inserts a swapped response as HTML whatever its Content-Type, and
+// processes the hx-* attributes in it. Those attributes send requests
+// without any script, so a strict Content-Security-Policy does not stop
+// them. Error bodies are where Go code most often echoes the request: a
+// plain-text error such as
+//
+//	http.Error(w, err.Error(), http.StatusBadRequest)
+//
+// whose err quotes the input, as the errors of strconv, time.Parse and
+// url.Parse do, is inert in a browser tab (text/plain, nosniff) but becomes
+// part of the page once htmx swaps it. A value that an attacker gets into
+// such a request, for example through a link that prefills a field of a
+// form that a load trigger submits, can then be an element such as
+//
+//	<i hx-post="/archive" hx-include="[name=csrf]" hx-trigger="load"></i>
+//
+// which sends a same-origin request carrying the page's CSRF token, so
+// same-origin checks and the CSRF check both pass. On every route that htmx
+// requests, an error body therefore never contains request data that is not
+// HTML-escaped:
+//
+//   - answer errors with [github.com/protolambda/webui/web.Errors], whose
+//     messages never contain request data;
+//   - wrap handlers that write their own error bodies, such as handlers of
+//     other packages that call http.Error, with
+//     [github.com/protolambda/webui/web.Errors.Intercept], which answers
+//     their 4xx and 5xx responses to htmx requests that set a Content-Type
+//     other than text/html, as http.Error does, with the alert of their
+//     status instead (see its documentation for what it lets through);
+//   - or set [Config.NoErrorSwap] for pages whose htmx requests reach
+//     handlers that neither covers.
+//
+// htmx's own default does not swap error bodies, so the hazard is specific
+// to these rules; a 2xx answer that htmx swaps is page markup under any
+// configuration, and must not echo request data unescaped either.
 //
 // Each call returns a new slice, which the caller may modify, for example to
 // add a rule in front.

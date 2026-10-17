@@ -141,7 +141,7 @@ func ExampleValsJSON() {
 // producing markup that htmx cannot read.
 func ExampleValsJSON_invalid() {
 	core.Dump(button.Button(hx2.Post("/tasks"), hx2.ValsJSON([]string{"not", "an", "object"})))
-	// Output: ERROR: render: at button[0]: attribute: invalid htmx attribute value: hx-vals is not a JSON object
+	// Output: ERROR: render: at button[0]: attribute: hx2: invalid htmx attribute value: hx-vals is not a JSON object
 }
 
 func ExampleHeadersJSON() {

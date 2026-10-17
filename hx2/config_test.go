@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -402,4 +403,39 @@ func TestConfigMetaSnapshot(gt *testing.T) {
 	after, err := renderNode(t.Context(), node)
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(before, after))
+}
+
+// NoErrorSwap is the opt-out for pages whose htmx requests reach handlers
+// that may echo request data into error bodies: htmx then swaps no 4xx or
+// 5xx body, 422 included, while the zero Config swaps them all. The rules
+// are read back from the JSON that htmx gets.
+func TestNoErrorSwapStatuses(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	rulesOf := func(c hx2.Config) []hx2.ResponseRule {
+		data, err := c.JSON()
+		t.Must(be.NoError(err))
+		var v struct {
+			ResponseHandling []hx2.ResponseRule `json:"responseHandling"`
+		}
+		t.Must(be.NoError(json.Unmarshal([]byte(data), &v)))
+		return v.ResponseHandling
+	}
+	swaps := func(rules []hx2.ResponseRule, status string) bool {
+		for _, r := range rules {
+			if regexp.MustCompile(r.Code).MatchString(status) {
+				return r.Swap
+			}
+		}
+		return false
+	}
+	zero, off := rulesOf(hx2.Config{}), rulesOf(hx2.Config{NoErrorSwap: true})
+	for code := 400; code < 600; code++ {
+		status := strconv.Itoa(code)
+		t.Must(be.Annotate(be.True(swaps(zero, status)), "zero Config, status %s", status))
+		t.Must(be.Annotate(be.False(swaps(off, status)), "NoErrorSwap, status %s", status))
+	}
+	for _, status := range []string{"200", "201", "303"} {
+		t.Must(be.Annotate(be.True(swaps(off, status)), "NoErrorSwap, status %s", status))
+	}
+	t.Must(be.False(swaps(off, "204")))
 }

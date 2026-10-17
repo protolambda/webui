@@ -251,6 +251,7 @@ type headerOp struct {
 
 type reqSettings struct {
 	htmx, historyRestore, eventSource bool
+	page                              *string
 	target, currentURL                *string
 	origin, referer, fetchSite        *string
 	noFetchMetadata                   bool
@@ -261,6 +262,16 @@ type reqSettings struct {
 }
 
 func ptr(s string) *string { return &s }
+
+// PageURL names the URL of the page that makes the request: a path (or an
+// absolute URL), resolved against the base URL. The request target is
+// resolved against it, as a browser resolves the URLs of a page, so a
+// target relative to the page ("done", "?page=2", or "" for the page
+// itself) works. [Client.Submit], [Browser.Submit] and
+// [Submission.Request] need it for a form whose action is relative to the
+// page or empty; without it, such a submission fails the test rather than
+// go to a URL that no browser would request.
+func PageURL(u string) ReqOption { return func(s *reqSettings) { s.page = ptr(u) } }
 
 // HTMX marks the request as an htmx request: HX-Request: true, and the
 // fetch metadata of a script request (Sec-Fetch-Mode: cors,
@@ -363,17 +374,29 @@ func safeMethod(m string) bool { return m == http.MethodGet || m == http.MethodH
 // receives (origin-form URL, RequestURI, RemoteAddr, TLS state); otherwise
 // it is a client request for an http.Client.
 func buildRequest(ctx context.Context, base *url.URL, method, target string, body Body, opts []ReqOption, server bool) (*http.Request, error) {
-	ref, err := url.Parse(target)
-	if err != nil {
-		return nil, fmt.Errorf("invalid request target %q: %w", target, err)
-	}
-	u := base.ResolveReference(ref)
-	u.Fragment, u.RawFragment = "", ""
 	var s reqSettings
 	for _, o := range opts {
 		if o != nil {
 			o(&s)
 		}
+	}
+	from := base
+	if s.page != nil {
+		p, err := url.Parse(*s.page)
+		if err != nil {
+			return nil, fmt.Errorf("invalid page URL %q: %w", *s.page, err)
+		}
+		from = base.ResolveReference(p)
+	}
+	ref, err := url.Parse(target)
+	if err != nil {
+		return nil, fmt.Errorf("invalid request target %q: %w", target, err)
+	}
+	u := from.ResolveReference(ref)
+	u.Fragment, u.RawFragment = "", ""
+	if u.Path == "" {
+		// A browser requests "/" for a URL without a path.
+		u.Path, u.RawPath = "/", ""
 	}
 	if s.logger != nil {
 		ctx = mw.WithLogger(ctx, s.logger)
@@ -493,7 +516,8 @@ func mustParseBase(raw string) *url.URL {
 
 // Request builds a request as a browser on [BaseURL] sends it, for a
 // handler: target is a path (or an absolute URL), resolved against
-// BaseURL, and the request is bound to t.Context(). It carries:
+// BaseURL (or against [PageURL]), and the request is bound to
+// t.Context(). It carries:
 //
 //   - Sec-Fetch-Site: same-origin, and the Sec-Fetch-Mode, Sec-Fetch-Dest
 //     and Sec-Fetch-User of a navigation (or of a script request for

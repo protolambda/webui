@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/protolambda/chord/ct"
+
+	"github.com/protolambda/webui/page"
 )
 
 // IconsHidden requires that every Bootstrap Icons glyph (an element with
@@ -318,13 +320,20 @@ func ExternalLinksSafe() ct.Rule {
 	})
 }
 
-// LayoutRegions checks the regions of webui's page layout in a full
-// document: one main element with id [MainID]; a region with id
-// [AlertsID] inside it that announces changes (aria-live, or role alert or
-// status); the page header ([HeaderID]), when present, inside main; and a
-// region with id [DialogsID] outside main and outside every form, which
-// holds every dialog element. Fragments are not checked. The rule is not
-// part of [Rules], since pages may use other layouts.
+// LayoutRegions checks the regions of webui's page layout (page.Layout) in
+// a full document:
+//
+//   - one main element with id [page.MainID];
+//   - a region with id [page.AlertsID] inside it that announces changes
+//     (aria-live, or role alert or status);
+//   - the page header ([page.HeaderID]), when present, inside main;
+//   - the navbar ([page.NavbarID]) and the sidebar ([page.SidebarID]), when
+//     present, nav elements outside main;
+//   - a region with id [page.DialogsID] outside main and outside every
+//     form, which holds every dialog element.
+//
+// Fragments are not checked. The rule is not part of [Rules], since pages
+// may use other layouts.
 func LayoutRegions() ct.Rule {
 	return ct.CustomRule("layoutRegions()", func(root ct.Node) []string {
 		if isFragment(root) {
@@ -332,41 +341,51 @@ func LayoutRegions() ct.Rule {
 		}
 		ids := idIndex(root)
 		var out []string
-		main := ids[MainID]
+		main := ids[page.MainID]
 		switch {
 		case main == nil:
-			out = append(out, fmt.Sprintf("no element with id %q", MainID))
+			out = append(out, fmt.Sprintf("no element with id %q", page.MainID))
 		case main.Tag() != "main":
-			out = append(out, fmt.Sprintf("element with id %q at %s is a %s, not main", MainID, loc(main), main.Tag()))
+			out = append(out, fmt.Sprintf("element with id %q at %s is a %s, not main", page.MainID, loc(main), main.Tag()))
 		}
-		if alerts := ids[AlertsID]; alerts == nil {
-			out = append(out, fmt.Sprintf("no element with id %q", AlertsID))
+		if alerts := ids[page.AlertsID]; alerts == nil {
+			out = append(out, fmt.Sprintf("no element with id %q", page.AlertsID))
 		} else {
 			if main != nil && !isAncestor(main, alerts) {
-				out = append(out, fmt.Sprintf("%q region at %s is outside main", AlertsID, loc(alerts)))
+				out = append(out, fmt.Sprintf("%q region at %s is outside main", page.AlertsID, loc(alerts)))
 			}
 			role, _ := attrOf(alerts, "role")
 			if !hasAttr(alerts, "aria-live") && !hasFieldFold(role, "alert") && !hasFieldFold(role, "status") {
-				out = append(out, fmt.Sprintf("%q region at %s has no aria-live", AlertsID, loc(alerts)))
+				out = append(out, fmt.Sprintf("%q region at %s has no aria-live", page.AlertsID, loc(alerts)))
 			}
 		}
-		if header := ids[HeaderID]; header != nil && main != nil && !isAncestor(main, header) {
-			out = append(out, fmt.Sprintf("%q at %s is outside main", HeaderID, loc(header)))
+		if header := ids[page.HeaderID]; header != nil && main != nil && !isAncestor(main, header) {
+			out = append(out, fmt.Sprintf("%q at %s is outside main", page.HeaderID, loc(header)))
 		}
-		dialogs := ids[DialogsID]
+		for _, id := range []string{page.NavbarID, page.SidebarID} {
+			nav := ids[id]
+			switch {
+			case nav == nil:
+			case nav.Tag() != "nav":
+				out = append(out, fmt.Sprintf("element with id %q at %s is a %s, not nav", id, loc(nav), nav.Tag()))
+			case main != nil && isAncestor(main, nav):
+				out = append(out, fmt.Sprintf("%q at %s is inside main", id, loc(nav)))
+			}
+		}
+		dialogs := ids[page.DialogsID]
 		if dialogs == nil {
-			out = append(out, fmt.Sprintf("no element with id %q", DialogsID))
+			out = append(out, fmt.Sprintf("no element with id %q", page.DialogsID))
 		} else {
 			if main != nil && (isAncestor(main, dialogs) || main == dialogs) {
-				out = append(out, fmt.Sprintf("%q region at %s is inside main", DialogsID, loc(dialogs)))
+				out = append(out, fmt.Sprintf("%q region at %s is inside main", page.DialogsID, loc(dialogs)))
 			}
 			if inside(dialogs, "form") != nil {
-				out = append(out, fmt.Sprintf("%q region at %s is inside a form", DialogsID, loc(dialogs)))
+				out = append(out, fmt.Sprintf("%q region at %s is inside a form", page.DialogsID, loc(dialogs)))
 			}
 		}
 		for d := range Elements(root, "dialog") {
 			if dialogs == nil || !isAncestor(dialogs, d) {
-				out = append(out, fmt.Sprintf("dialog at %s is outside the %q region", loc(d), DialogsID))
+				out = append(out, fmt.Sprintf("dialog at %s is outside the %q region", loc(d), page.DialogsID))
 			}
 		}
 		return out

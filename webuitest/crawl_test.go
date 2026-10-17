@@ -3,7 +3,9 @@ package webuitest_test
 import (
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/protolambda/chord/core/attr"
@@ -158,6 +160,41 @@ func TestCrawlProblems(gt *testing.T) {
 	t.Run("start outside", func(t devtest.T) {
 		report := webuitest.Crawl(t, c, webuitest.CrawlOptions{Start: []string{"https://other.example/"}})
 		t.Must(be.ErrorContains(report.Check(t.Context()), `start page "https://other.example/" is not a path of the site`))
+	})
+}
+
+func TestCrawlRedirects(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Run("chain that mints new URLs", func(t devtest.T) {
+		// A login page that itself requires a login wraps next= forever.
+		var n atomic.Int32
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
+			n.Add(1)
+			http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+		})
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{Start: []string{"/login"}, MaxPages: 5})
+		t.Must(be.ErrorContains(report.Check(t.Context()), "more than 20 redirects in a row"))
+		t.Must(be.Equal(int32(21), n.Load()))
+		t.Must(be.Len(report.Problems, 1))
+		t.Must(be.Len(report.Pages, 0))
+	})
+	t.Run("loop", func(t devtest.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /a", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/b", http.StatusFound) })
+		mux.HandleFunc("GET /b", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/a", http.StatusFound) })
+		mux.HandleFunc("GET /self", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/self", http.StatusFound) })
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{Start: []string{"/a", "/self"}})
+		err := report.Check(t.Context())
+		t.Must(be.ErrorContains(err, "GET /b (from /a): the redirects loop back to /a"))
+		t.Must(be.ErrorContains(err, "GET /self (from the start): the redirects loop back to /self"))
+	})
+	t.Run("short chains are followed", func(t devtest.T) {
+		mux := site()
+		mux.HandleFunc("GET /older", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/old", http.StatusFound) })
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{Start: []string{"/older"}})
+		t.Must(report)
+		t.Must(report.Covers("/tasks", "/"))
 	})
 }
 

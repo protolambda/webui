@@ -110,7 +110,9 @@ func TestNoInlineStyles(gt *testing.T) {
 func TestNoHTMXScripting(gt *testing.T) {
 	checkRule(gt, webuitest.NoHTMXScripting(), []ruleCase{
 		{name: "hx-on prefix", body: `<button type="button" hx-get="/x" hx-trigger="click, keyup changed delay:500ms" hx-vals='{"a":1}' hx-headers='{"X-A":"b"}' hx-on-none>x</button>`, want: []string{"hx-on-none at"}},
-		{name: "valid", body: `<button type="button" hx-get="/x" hx-trigger="sse:tick" hx-vals='{"a":"js:no"}'>x</button>`},
+		{name: "valid", body: `<button type="button" hx-get="/x" hx-trigger="sse:tick" hx-vals='{"a":"js:no"}' hx-request='{"timeout":100}'>x</button>`},
+		{name: "js request", body: `<button type="button" hx-get="/x" hx-request='js: {timeout: computeTimeout()}'>x</button>`, want: []string{"hx-request at html[1]/body[1]/button[0] has a script value"}},
+		{name: "javascript data request", body: `<div data-hx-request="javascript:{timeout: t()}"></div>`, want: []string{"data-hx-request at"}},
 		{name: "hx-on colon", body: `<button type="button" hx-on:click="alert(1)">x</button>`, want: []string{"hx-on:click at html[1]/body[1]/button[0] is an htmx script handler"}},
 		{name: "hx-on double colon", body: `<form hx-on::after-request="x()"></form>`, want: []string{"hx-on::after-request at"}},
 		{name: "hx-on dash", body: `<div hx-on-click="x()"></div>`, want: []string{"hx-on-click at"}},
@@ -191,7 +193,8 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 		{name: "formmethod post", body: `<form action="/search"><button name="save" formmethod="post">Save</button></form>`, want: []string{"button at html[1]/body[1]/form[0]/button[0] submits with POST, but its form at html[1]/body[1]/form[0] has no"}},
 		{name: "formmethod post with field", body: `<form>` + csrf + `<input type="submit" formmethod="post"></form>`},
 		{name: "hx-post outside forms", body: `<button type="button" hx-post="/x">x</button>`, want: []string{`hx-post at html[1]/body[1]/button[0] sends no "csrf" field with the expected value`}},
-		{name: "hx-post in form", body: `<form>` + csrf + `<button type="button" hx-delete="/x">x</button></form>`},
+		{name: "hx-delete in form", body: `<form method="post">` + csrf + `<button type="button" hx-delete="/x">x</button></form>`},
+		{name: "hx-post in get form", body: `<form>` + csrf + `<button type="button" hx-post="/x">x</button></form>`},
 		{name: "hx-post on form", body: `<form hx-post="/x">` + csrf + `</form>`},
 		{name: "hx-post with vals", body: `<button type="button" hx-post="/x" hx-vals='{"csrf":"` + testToken + `"}'>x</button>`},
 		{name: "hx-post with inherited vals", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><button type="button" hx-put="/x">x</button></div>`},
@@ -201,6 +204,36 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 		{name: "hx-include field", body: `<div id="d">` + csrf + `</div><button type="button" hx-patch="/x" hx-include="#nothing, #d">x</button>`},
 		{name: "hx-include closest", body: `<form><div hx-include="closest form"><span hx-post="/x">x</span></div>` + csrf + `</form>`},
 		{name: "data prefix", body: `<div data-hx-delete="/x"></div>`, want: []string{"data-hx-delete at"}},
+		// Template content is a tree of its own; datalist controls are
+		// never submitted.
+		{name: "field in template", body: `<form method="post" action="/tasks"><template>` + csrf + `</template><button type="submit">Save</button></form>`, want: []string{`post form at html[1]/body[1]/form[0] has no "csrf" field`}},
+		{name: "form attribute in template", body: `<form id="f" method="post"></form><template>` + strings.Replace(csrf, "<input", `<input form="f"`, 1) + `</template>`, want: []string{"form at html[1]/body[1]/form#f[0] has no"}},
+		{name: "form in template", body: `<template><form method="post">` + csrf + `</form><form method="post"></form></template>`, want: []string{"form at html[1]/body[1]/template[0]/form[1] has no"}},
+		{name: "include into template", body: `<div id="d"><template>` + csrf + `</template></div><button type="button" hx-post="/x" hx-include="#d">x</button>`, want: []string{"hx-post at"}},
+		{name: "field in datalist", body: `<form method="post"><datalist id="l">` + csrf + `</datalist></form>`, want: []string{`has no "csrf" field`}},
+		// htmx merges the hx-vals of every ancestor, nearer keys first.
+		{name: "merged vals", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><div hx-vals='{"x":"1"}'><button type="button" hx-post="/a" hx-vals='{"op":"up"}'>x</button></div></div>`},
+		{name: "merged data vals", body: `<div data-hx-vals='{"csrf":"` + testToken + `"}'><button type="button" hx-post="/a" hx-vals='{"x":1}'>x</button></div>`},
+		{name: "nearer null", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><button type="button" hx-post="/a" hx-vals='{"csrf":null}'>x</button></div>`},
+		{name: "nearer empty", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><button type="button" hx-post="/a" hx-vals="">x</button></div>`},
+		{name: "vals without braces", body: `<button type="button" hx-post="/a" hx-vals='"csrf":"` + testToken + `"'>x</button>`},
+		{name: "nearer wrong vals", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><button type="button" hx-post="/a" hx-vals='{"csrf":"no"}'>x</button></div>`, want: []string{"hx-post at"}},
+		{name: "unset vals", body: `<div hx-vals="unset"><button type="button" hx-post="/a" hx-vals='{"csrf":"` + testToken + `"}'>x</button></div>`, want: []string{"hx-post at"}},
+		// hx-params filters what htmx sends.
+		{name: "params none", body: `<form method="post" action="/tasks" hx-post="/tasks" hx-params="none">` + csrf + `</form>`, want: []string{"hx-post at html[1]/body[1]/form[0] sends no"}},
+		{name: "data params none", body: `<form method="post" action="/tasks" hx-post="/tasks" data-hx-params="none">` + csrf + `</form>`, want: []string{"hx-post at"}},
+		{name: "params not csrf", body: `<form method="post" hx-post="/tasks" hx-params="not title, csrf">` + csrf + `</form>`, want: []string{"hx-post at"}},
+		{name: "params list without csrf", body: `<form method="post" hx-post="/tasks" hx-params="title">` + csrf + `</form>`, want: []string{"hx-post at"}},
+		{name: "params inherited none", body: `<div hx-params="none"><form method="post">` + csrf + `<button type="button" hx-put="/x">x</button></form></div>`, want: []string{"hx-put at"}},
+		{name: "params none with vals", body: `<button type="button" hx-post="/x" hx-params="none" hx-vals='{"csrf":"` + testToken + `"}'>x</button>`, want: []string{"hx-post at"}},
+		{name: "params list with csrf", body: `<form method="post" hx-post="/tasks" hx-params="title, csrf">` + csrf + `</form>`},
+		{name: "params not other", body: `<form method="post" hx-post="/tasks" hx-params="not title">` + csrf + `</form>`},
+		{name: "params all", body: `<form method="post" hx-post="/tasks" hx-params="*">` + csrf + `</form>`},
+		{name: "params unset", body: `<div hx-params="none"><form method="post" hx-post="/tasks" hx-params="unset">` + csrf + `</form></div>`},
+		// "this" is the element that declares hx-include, as a whole value.
+		{name: "inherited include this", body: `<div hx-include="this">` + csrf + `<button type="button" hx-post="/tasks/1/done">Done</button></div>`},
+		{name: "inherited data include this", body: `<div data-hx-include="this">` + csrf + `<button type="button" hx-post="/tasks/1/done">Done</button></div>`},
+		{name: "this in a list", body: `<div hx-include="this, #nope">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
 	}
 	checkRule(gt, webuitest.PostFormsCarryCSRF(testToken), cases)
 	gt.Run("no token", func(gt *testing.T) {
@@ -237,8 +270,32 @@ func TestNoTokenLeaks(gt *testing.T) {
 		{name: "text", body: `<p>` + testToken + `</p>`, want: []string{"text at html[1]/body[1]/p[0]/[0] shows the token"}},
 		{name: "comment", body: `<!-- ` + testToken + ` -->`, want: []string{"comment at"}},
 		{name: "hx-get url", body: `<div hx-get="/x?c=` + testToken + `"></div>`, want: []string{"hx-get at html[1]/body[1]/div[0] has the token in a URL"}},
+		// htmx puts the parameters of GET and DELETE requests in the URL, and
+		// includes the related form for every method but GET.
+		{name: "hx-delete in post form", body: `<form method="post">` + csrf + `<button type="button" hx-delete="/tasks/1">x</button></form>`, want: []string{`hx-delete at html[1]/body[1]/form[0]/button[1] sends the "csrf" field in the URL`}},
+		{name: "hx-delete with vals", body: `<button type="button" hx-delete="/tasks/1" hx-vals='{"csrf":"` + testToken + `"}'>x</button>`, want: []string{`hx-delete at html[1]/body[1]/button[0] sends the "csrf" field in the URL`}},
+		{name: "data-hx-delete form", body: `<form method="post" data-hx-delete="/tasks/1">` + csrf + `</form>`, want: []string{`data-hx-delete at html[1]/body[1]/form[0] sends the "csrf" field in the URL`}},
+		{name: "hx-get under vals", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><button type="button" hx-get="/search">x</button></div>`, want: []string{`hx-get at html[1]/body[1]/div[0]/button[0] sends the "csrf" field in the URL`}},
+		{name: "hx-get under vals with the token", body: `<div hx-vals='{"t":"` + testToken + `"}'><button type="button" hx-get="/search">x</button></div>`, want: []string{`hx-get at html[1]/body[1]/div[0]/button[0] sends the token in the URL (hx-vals)`}},
+		{name: "hx-get in post form", body: `<form method="post">` + csrf + `<button type="button" hx-get="/x">x</button></form>`},
+		{name: "vals unset", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><div hx-vals="unset"><button type="button" hx-get="/search">x</button></div></div>`},
+		{name: "params drop the field", body: `<form method="post">` + csrf + `<button type="button" hx-delete="/tasks/1" hx-params="none">x</button></form>`},
+		{name: "include this", body: `<div hx-include="this">` + csrf + `<button type="button" hx-get="/x">x</button></div>`, want: []string{`hx-get at html[1]/body[1]/div[0]/button[1] sends the "csrf" field in the URL`}},
+		{name: "template field in get form", body: `<form action="/search"><template>` + csrf + `</template></form>`},
 	}
 	checkRule(gt, webuitest.NoTokenLeaks(testToken), cases)
+	gt.Run("methodsThatUseUrlParams", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		body := `<form method="post">` + csrf + `<button type="button" hx-delete="/tasks/1">x</button><button type="button" hx-post="/tasks/1">y</button></form>`
+		page := func(config string) *ct.Subject {
+			return cthtml.PageString(`<!DOCTYPE html><html lang="en"><head><title>t</title><meta name="htmx-config" content='` + config + `'></head><body>` + body + `</body></html>`)
+		}
+		t.Must(be.Len(violations(t, page(`{"methodsThatUseUrlParams":["get"]}`), webuitest.NoTokenLeaks(testToken)), 0))
+		got := violations(t, page(`{"methodsThatUseUrlParams":["get","delete","post"]}`), webuitest.NoTokenLeaks(testToken))
+		t.Must(be.Len(got, 2))
+		t.Must(be.Substring(got[1], "hx-post at"))
+		t.Must(be.Len(violations(t, page(`{"selfRequestsOnly":true}`), webuitest.NoTokenLeaks(testToken)), 1))
+	})
 	gt.Run("encoded token", func(gt *testing.T) {
 		checkRule(gt, webuitest.NoTokenLeaks("a b/c"), []ruleCase{
 			{name: "query escaped", body: `<a href="/x?t=a+b%2Fc">x</a>`, want: []string{"href at"}},
@@ -288,6 +345,16 @@ func TestNotInURLs(gt *testing.T) {
 		{name: "path", body: `<a href="/files/docs/report.txt">x</a>`, want: []string{"value 1 in href"}},
 		{name: "action", body: `<form action="/f?p=docs/report.txt"></form>`, want: []string{"value 1 in action"}},
 		{name: "htmx", body: `<div hx-get="/f?p=docs%2Freport.txt"></div>`, want: []string{"value 1 in hx-get"}},
+		// A GET submission puts the fields in the query.
+		{name: "get form", body: `<form action="/files"><input type="hidden" name="path" value="docs/report.txt"></form>`, want: []string{"value 1 in a field of input at html[1]/body[1]/form[0]/input[0], which the form at html[1]/body[1]/form[0] submits in the URL"}},
+		{name: "get text input", body: `<form action="/files"><input name="path" value="docs/report.txt"></form>`, want: []string{"value 1 in a field of input"}},
+		{name: "get textarea", body: `<form action="/files"><textarea name="path">docs/report.txt</textarea></form>`, want: []string{"value 1 in a field of textarea"}},
+		{name: "get option", body: `<form action="/files"><select name="path"><option>a</option><option value="docs/report.txt">r</option></select></form>`, want: []string{"value 1 in a field of select"}},
+		{name: "formmethod get", body: `<form method="post" action="/files"><input type="hidden" name="path" value="docs/report.txt"><button formmethod="get">Find</button></form>`, want: []string{"value 1 in a field of input"}},
+		{name: "hx-get form", body: `<form hx-get="/files"><input type="hidden" name="path" value="docs/report.txt"></form>`, want: []string{"value 1 in a field of input"}},
+		{name: "hx-get vals", body: `<div hx-vals='{"path":"docs/report.txt"}'><button type="button" hx-get="/files">x</button></div>`, want: []string{"value 1 in the hx-vals that hx-get at html[1]/body[1]/div[0]/button[0] sends in the URL"}},
+		{name: "disabled and nameless", body: `<form action="/files"><input type="hidden" name="path" value="docs/report.txt" disabled><input value="docs/report.txt"></form>`},
+		{name: "post vals", body: `<button type="button" hx-post="/files" hx-vals='{"path":"docs/report.txt"}'>x</button>`},
 	})
 	gt.Run("empty", func(gt *testing.T) {
 		t := devtest.ParallelT(gt)
@@ -310,8 +377,16 @@ func TestHXTargets(gt *testing.T) {
 		{name: "data prefix", body: `<div data-hx-target="#gone"></div>`, want: []string{"data-hx-target at"}},
 		{name: "attribute selector", body: `<div hx-include="[name='q']"></div>`, want: []string{`selects no element with "[name='q']"`}},
 		{name: "fragment document target", fragment: true, body: `<button type="button" hx-get="/x" hx-target="#main" hx-include="closest form">x</button>`},
+		{name: "fragment layout targets", fragment: true, body: `<button type="button" hx-get="/badge" hx-target="#navbar">x</button><button type="button" hx-get="/side" hx-target="#sidebar">y</button><div hx-target="#page-header"></div><div hx-target="#dialogs"></div><div hx-target="#alerts"></div>`},
 		{name: "fragment missing", fragment: true, body: `<button type="button" hx-get="/x" hx-target="#nope">x</button>`, want: []string{`targets missing id "nope"`}},
 		{name: "fragment find", fragment: true, body: `<button type="button" hx-get="/x" hx-indicator="find .spin">x</button>`, want: []string{`finds no ".spin" descendant`}},
+		// Inherited relative selectors start from the requesting element.
+		{name: "inherited closest", body: `<table><tbody hx-target="closest tr" hx-swap="outerHTML"><tr><td><button type="button" hx-delete="/r/1">x</button></td></tr><tr><td><button type="button" data-hx-delete="/r/2">y</button></td></tr></tbody></table>`},
+		{name: "inherited next", body: `<div hx-include="next input"><button type="button" hx-get="/x">x</button><input name="q"></div>`},
+		{name: "inherited find", body: `<div hx-indicator="find .spin"><span class="spin"></span><button type="button" hx-get="/x">x</button></div>`, want: []string{`hx-indicator at html[1]/body[1]/div[0], inherited by html[1]/body[1]/div[0]/button[1], finds no ".spin" descendant`}},
+		{name: "inherited closest missing", body: `<div hx-target="closest section"><button type="button" hx-get="/x">x</button></div>`, want: []string{`inherited by html[1]/body[1]/div[0]/button[0], finds no "section" ancestor`}},
+		{name: "nearer attribute wins", body: `<div hx-target="closest section"><p hx-target="#out"><button type="button" hx-get="/x">x</button></p></div><div id="out"></div>`},
+		{name: "sse swap target", body: `<div hx-target="closest li"><p sse-swap="tick">x</p></div>`, want: []string{"inherited by html[1]/body[1]/div[0]/p[0]"}},
 	})
 	gt.Run("description", func(gt *testing.T) {
 		t := devtest.ParallelT(gt)
@@ -485,6 +560,9 @@ func TestLayoutRegions(gt *testing.T) {
 		{name: "dialogs in main", body: `<main id="main"><div id="alerts" aria-live="polite"></div><div id="dialogs"></div></main>`, want: []string{`"dialogs" region at html[1]/body[1]/main#main[0]/div#dialogs[1] is inside main`}},
 		{name: "dialog elsewhere", body: valid + `<dialog id="e"></dialog>`, want: []string{`dialog at html[1]/body[1]/dialog#e[3] is outside the "dialogs" region`}},
 		{name: "fragment", fragment: true, body: `<dialog></dialog>`},
+		{name: "navbar and sidebar", body: `<nav id="navbar"></nav><div><nav id="sidebar"></nav></div>` + valid[len(`<nav>n</nav>`):]},
+		{name: "navbar not nav", body: `<div id="navbar"></div>` + valid[len(`<nav>n</nav>`):], want: []string{`element with id "navbar" at html[1]/body[1]/div#navbar[0] is a div, not nav`}},
+		{name: "sidebar in main", body: strings.Replace(valid, `<div class="container">`, `<div class="container"><nav id="sidebar"></nav>`, 1), want: []string{`"sidebar" at html[1]/body[1]/main#main[1]/div[0]/nav#sidebar[0] is inside main`}},
 	})
 }
 

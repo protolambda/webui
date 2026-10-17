@@ -18,6 +18,19 @@ import (
 // Drivers report infrastructure failures (a request that cannot be built, a
 // stream that does not answer) with Error followed by FailNow. When FailNow
 // returns, as it does for [PrintT], the driver returns a zero value.
+//
+// The [mustbe.MT] of mustbe.WrapT is not a TB: it has no Cleanup, which
+// [ServeStream], [NewBrowser] and [Browser.Stream] need to close what they
+// start and to report a handler that panics or does not return. Pass the
+// *testing.T to drivers and the MT to Must. That is the pattern inside a
+// testing/synctest bubble, where devtest.T cannot be used because it calls
+// T.Deadline:
+//
+//	synctest.Test(gt, func(gt *testing.T) {
+//		t := mustbe.WrapT(gt)
+//		st := webuitest.ServeStream(gt, h, webuitest.Get(gt, "/events", webuitest.EventSource()))
+//		t.Must(be.Equal("tick", st.Next(gt).Name))
+//	})
 type TB interface {
 	Helper()
 	Context() context.Context

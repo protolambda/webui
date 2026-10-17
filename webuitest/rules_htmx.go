@@ -20,8 +20,14 @@ var htmxTargetAttrs = []string{"hx-target", "hx-include", "hx-indicator", "hx-di
 //     page around the fragment provides (see [DocumentTargets]);
 //   - "closest S", "find S", "next S" and "previous S" find an element
 //     matching S among the ancestors, descendants, following or preceding
-//     elements; in a fragment, closest, next and previous may also find
-//     their element outside the fragment, so only find is checked there;
+//     elements of each element that makes a request with the attribute,
+//     as htmx resolves them: the element that holds the attribute, if it
+//     makes a request (an hx-get, hx-post, hx-put, hx-patch or hx-delete;
+//     for hx-target also an sse-swap), and every requesting descendant
+//     that inherits it (such as the buttons in a tbody with
+//     hx-target="closest tr"); in a fragment, closest, next and previous
+//     may also find their element outside the fragment, so only find is
+//     checked there;
 //   - another selector matches some element of a document.
 //
 // Selectors are checked when they are simple: a tag, an id, classes and
@@ -48,19 +54,69 @@ func HXTargets(documentTargets ...string) ct.Rule {
 		var out []string
 		for i, e := range elems {
 			for _, name := range htmxTargetAttrs {
-				v, attr, ok := hxAttrOf(e, name)
+				req := makesRequest(e, name)
+				if v, attr, ok := hxAttrOf(e, name); ok {
+					for _, part := range splitSelectors(v) {
+						if relativeSelector(part) && !req {
+							// htmx resolves it from the requesting elements.
+							continue
+						}
+						if msg := resolveTarget(elems, i, part, ids, frag, allowed); msg != "" {
+							out = append(out, fmt.Sprintf("%s at %s %s", attr, loc(e), msg))
+						}
+					}
+					continue
+				}
+				if !req {
+					continue
+				}
+				v, from, ok := inheritedFrom(e.Parent(), name)
 				if !ok {
 					continue
 				}
+				_, attr, _ := hxAttrOf(from, name)
 				for _, part := range splitSelectors(v) {
+					if !relativeSelector(part) {
+						// Checked where it is written.
+						continue
+					}
 					if msg := resolveTarget(elems, i, part, ids, frag, allowed); msg != "" {
-						out = append(out, fmt.Sprintf("%s at %s %s", attr, loc(e), msg))
+						out = append(out, fmt.Sprintf("%s at %s, inherited by %s, %s", attr, loc(from), loc(e), msg))
 					}
 				}
 			}
 		}
 		return out
 	})
+}
+
+// makesRequest reports whether e makes an htmx request that uses the
+// attribute name: it has an htmx request attribute, or, for hx-target, an
+// sse-swap, whose target the SSE extension resolves from e.
+func makesRequest(e ct.Node, name string) bool {
+	for _, a := range htmxRequestAttrs {
+		if _, _, ok := hxAttrOf(e, a); ok {
+			return true
+		}
+	}
+	if name == "hx-target" {
+		_, _, ok := hxAttrOf(e, "sse-swap")
+		return ok
+	}
+	return false
+}
+
+// relativeSelector reports whether a part of an extended selector is
+// resolved relative to the element that makes the request: closest, find,
+// next or previous with a selector.
+func relativeSelector(part string) bool {
+	p := unwrapSelector(part)
+	for _, kw := range []string{"closest", "find", "next", "previous"} {
+		if _, ok := cutKeyword(p, kw); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveTarget checks one extended selector of the element elems[i], and

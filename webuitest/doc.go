@@ -4,8 +4,9 @@
 //
 // The helpers do not wrap ct: they return [ct.Rule], [ct.Query],
 // [*ct.Subject] and [assertion.Assertion] values and take
-// [*cthttp.Result], so they mix freely with ct's own vocabulary and with
-// any test runner that checks mustbe assertions (mustbe.WrapT, devtest).
+// [*cthttp.Result], so they mix freely with ct's own vocabulary, and their
+// assertions with any runner that checks mustbe assertions (mustbe.WrapT,
+// devtest).
 //
 // # Rules and contracts
 //
@@ -21,11 +22,12 @@
 //
 // [Shell] describes what every page of an application has in common: the
 // document head that webui's page.Document renders (charset, viewport,
-// title, color scheme, icon, the htmx-config meta element, stylesheets
-// and deferred scripts with integrity) and a main landmark.
+// title, color scheme, icon, the htmx-config meta element, stylesheets,
+// and deferred scripts and modules with integrity) and a main landmark.
 // [DefaultShell] builds it from asset sets. [ShellContract],
 // [PageContract] and [FragmentContract] apply shell and rules to a
-// subject.
+// subject; [LayoutRegions] checks the regions of page.Layout, whose ids
+// (page.MainID and the others) [DocumentTargets] lists for fragments.
 //
 // # Requests, clients and responses
 //
@@ -37,10 +39,11 @@
 //
 // [Client] is the handler-level harness: it serves requests through a
 // handler, prepares them (for example to attach a session), adds the
-// CSRF field to forms, checks pages against a contract ([Client.Page]),
-// and submits the page's own forms as a browser would ([FormData],
-// [Client.Submit]). [Browser] does the same over a real test server with
-// TLS and a cookie jar, for full-stack tests.
+// CSRF field to hand-built posts, checks pages against a contract
+// ([Client.Page]), and submits the page's own forms as a browser would
+// ([FormData], [Client.Submit], with [PageURL] for actions relative to the
+// page). [Browser] does the same over a real test server with TLS and a
+// cookie jar, for full-stack tests.
 //
 // [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookies] and
 // [SecurityHeaders] assert responses; cookie values are never printed.
@@ -63,9 +66,9 @@
 // # Runners
 //
 // Drivers (request builders, clients, streams, the crawler) take a [TB],
-// which *testing.T and devtest.T satisfy; they fail the test only on
-// infrastructure errors. [PrintT] prints failures instead, for Example
-// tests. [All] combines assertions and reports every failure. Never use
-// be.Not on a selection: it also passes when the subject fails to load;
-// use [ct.Selection.None].
+// which *testing.T and devtest.T satisfy, but not the MT of mustbe.WrapT
+// (see [TB]); they fail the test only on infrastructure errors. [PrintT]
+// prints failures instead, for Example tests. [All] combines assertions
+// and reports every failure. Never use be.Not on a selection: it also
+// passes when the subject fails to load; use [ct.Selection.None].
 package webuitest

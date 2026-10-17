@@ -16,7 +16,6 @@ import (
 	"github.com/protolambda/chord/html/form/input"
 	"github.com/protolambda/chord/html/form/label"
 	"github.com/protolambda/chord/html/interactive"
-	"github.com/protolambda/chord/html/meta"
 	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/text"
 	"github.com/protolambda/mustbe/be"
@@ -26,6 +25,7 @@ import (
 	"github.com/protolambda/webui/bs"
 	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/mw"
+	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/session"
 	"github.com/protolambda/webui/sse"
 	"github.com/protolambda/webui/webuitest"
@@ -90,24 +90,13 @@ func exampleAssets() *asset.Set {
 	}))
 }
 
-// examplePage is a document as page.Document renders it, with the htmx
-// configuration c.
+// examplePage is a page.Document with the htmx configuration c.
 func examplePage(set *asset.Set, c hx2.Config) elem.Node {
-	return elem.Bundle{
-		elem.Doctype(),
-		meta.HTML(attr.Lang("en"), attr.KV("data-bs-theme", "dark"))(
-			meta.Head()(
-				meta.Meta(meta.Charset("utf-8")),
-				meta.Meta(meta.Name("viewport"), meta.Content("width=device-width, initial-scale=1")),
-				meta.Title()(text.Text("Notes")),
-				meta.Meta(meta.Name("color-scheme"), meta.Content("dark")),
-				meta.Link(meta.Rel("icon"), meta.Href("data:,")),
-				c.Meta(),
-				set.Stylesheets(),
-				set.Scripts(),
-			),
-			section.Body()(section.Main(attr.ID("main"))(section.H1()(text.Text("Notes")))),
-		),
+	return page.Document{
+		Title:  "Notes",
+		Assets: []*asset.Set{set},
+		HTMX:   c,
+		Body:   section.Main(attr.ID(page.MainID))(section.H1()(text.Text("Notes"))),
 	}
 }
 

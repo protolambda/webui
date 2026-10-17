@@ -1,6 +1,7 @@
 package webuitest
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 
@@ -37,9 +38,11 @@ type Client struct {
 	// login flow. It must return a request.
 	Prepare func(*http.Request) *http.Request
 	// CSRF, when set, is added as the CSRF field ([session.CSRFField]) to
-	// the form bodies of requests other than GET and HEAD that do not
-	// carry the field yet, as the page's forms would. It is also the token
-	// of the default Contract.
+	// the hand-built form bodies of requests other than GET and HEAD
+	// ([Client.Request], [Client.Send], [Client.Post]) that do not carry
+	// the field yet, as the page's forms would. [Client.Submit] sends what
+	// a form submits and never adds it. It is also the token of the
+	// default Contract.
 	CSRF string
 	// Contract checks the pages that [Client.Page] returns; nil means
 	// [PageContract] with [DefaultShell]() and [Rules]([WithCSRF](CSRF)).
@@ -61,8 +64,12 @@ func (c *Client) Request(t TB, method, target string, body Body, opts ...ReqOpti
 	if c.CSRF != "" && !safeMethod(method) && !body.Has(csrfFieldName) {
 		body = body.With(csrfFieldName, c.CSRF)
 	}
-	all := append(append([]ReqOption(nil), c.Options...), opts...)
-	return Request(t, method, target, body, all...)
+	return Request(t, method, target, body, c.options(opts)...)
+}
+
+// options returns the client's options followed by opts.
+func (c *Client) options(opts []ReqOption) []ReqOption {
+	return append(append([]ReqOption(nil), c.Options...), opts...)
 }
 
 // Do prepares req (see [Client.Prepare]) and serves it. A missing handler
@@ -145,23 +152,34 @@ func (c *Client) Fragment(t TB, res *cthttp.Result, status int, contextTag strin
 // Submit submits a form of page as a browser would ([FormData]), with
 // edits replacing the values of the named controls as a user would enter
 // them, and serves the request. A nil submitter submits without one.
-// Editing a name that is no control of the form, a form without an
-// action, or a dialog form fails the test.
+//
+// The body is what the form submits: [Client.CSRF] is not added, so a form
+// without the CSRF field is sent without one, as by a browser. A browser
+// resolves the action against the page's URL: pass it with [PageURL] for a
+// form whose action is relative to the page ("done", "?page=2") or empty.
+// Editing a name that is no control of the form, a relative or empty
+// action without PageURL, or a dialog form fails the test.
 func (c *Client) Submit(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
-	method, target, body, ok := submission(t, page, form, submitter, edits)
+	all := c.options(opts)
+	method, target, body, ok := submission(t, page, form, submitter, edits, all)
 	if !ok {
 		return nil
 	}
-	return c.Send(t, method, target, body, opts...)
+	req := Request(t, method, target, body, all...)
+	if req == nil {
+		return nil
+	}
+	return c.Do(t, req)
 }
 
-// submission computes and edits the submission of a form.
-func submission(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url.Values) (method, target string, body Body, ok bool) {
+// submission computes and edits the submission of a form; opts are the
+// options of its request, which may name the page's URL ([PageURL]).
+func submission(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url.Values, opts []ReqOption) (method, target string, body Body, ok bool) {
 	t.Helper()
 	s, err := FormData(t.Context(), page, form, submitter)
 	if err != nil {
-		fatalf(t, "webuitest: %v", err)
+		fatalf(t, "%v", prefixed(err))
 		return "", "", Body{}, false
 	}
 	for name, values := range edits {
@@ -171,12 +189,21 @@ func submission(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url
 		}
 		s.Set(name, values...)
 	}
-	method, target, body, err = s.target()
+	method, target, body, err = s.target(opts)
 	if err != nil {
-		fatalf(t, "webuitest: %v", err)
+		fatalf(t, "%v", prefixed(err))
 		return "", "", Body{}, false
 	}
 	return method, target, body, true
+}
+
+// prefixed returns the message of err with the package prefix, which
+// [ErrFormData] already has.
+func prefixed(err error) string {
+	if errors.Is(err, ErrFormData) {
+		return err.Error()
+	}
+	return "webuitest: " + err.Error()
 }
 
 // CSRFToken returns the CSRF token of a page: the value of its hidden

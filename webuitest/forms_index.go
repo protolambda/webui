@@ -23,9 +23,12 @@ type formIndex struct {
 
 // indexForms computes the form owner of every listed element below root:
 // the form element whose id the element's form attribute names (none when
-// that id names no form), else the nearest form ancestor.
+// that id names no form), else the nearest form ancestor in its tree. The
+// content of a template element is an inert tree of its own, which is
+// never connected to the document: a form outside the template does not
+// own it, and its form attributes and ids do not apply.
 func indexForms(root ct.Node) formIndex {
-	ids := idIndex(root)
+	ids := documentIDs(root)
 	idx := formIndex{
 		controls: make(map[ct.Node][]ct.Node),
 		owner:    make(map[ct.Node]ct.Node),
@@ -38,12 +41,12 @@ func indexForms(root ct.Node) formIndex {
 			continue
 		}
 		var owner ct.Node
-		if ref, ok := attrOf(e, "form"); ok {
+		if ref, ok := attrOf(e, "form"); ok && inside(e, "template") == nil {
 			if f := ids[ref]; f != nil && f.Tag() == "form" {
 				owner = f
 			}
 		} else {
-			owner = inside(e, "form")
+			owner = nearestForm(e)
 		}
 		if owner != nil {
 			idx.owner[e] = owner
@@ -51,6 +54,45 @@ func indexForms(root ct.Node) formIndex {
 		}
 	}
 	return idx
+}
+
+// nearestForm returns the nearest form ancestor of n in its tree, or nil:
+// the search stops at a template element, whose content is a tree of its
+// own.
+func nearestForm(n ct.Node) ct.Node {
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		if p.Kind() != ct.KindElement {
+			continue
+		}
+		switch p.Tag() {
+		case "form":
+			return p
+		case "template":
+			return nil
+		}
+	}
+	return nil
+}
+
+// sameTree reports whether a and b are in the same tree: the document, or
+// the content of the same template element.
+func sameTree(a, b ct.Node) bool {
+	return inside(a, "template") == inside(b, "template")
+}
+
+// documentIDs maps the ids of the elements of the document below root, not
+// in template content, to the first element with each, as
+// document.getElementById finds them.
+func documentIDs(root ct.Node) map[string]ct.Node {
+	out := make(map[string]ct.Node)
+	for e := range Elements(root, "") {
+		if id, ok := attrOf(e, "id"); ok && id != "" && inside(e, "template") == nil {
+			if _, dup := out[id]; !dup {
+				out[id] = e
+			}
+		}
+	}
+	return out
 }
 
 // formMethod returns the method a form submits with: "post", "dialog" or
@@ -134,7 +176,8 @@ func isAncestor(a, n ct.Node) bool {
 }
 
 // csrfField reports whether e is a control that submits the CSRF field:
-// an input named session.CSRFField that is not disabled.
+// an input named session.CSRFField that is not disabled and not in a
+// datalist (whose controls are never submitted).
 func csrfField(e ct.Node) bool {
-	return e.Tag() == "input" && AttrIs(e, "name", csrfFieldName) && !disabledControl(e)
+	return e.Tag() == "input" && AttrIs(e, "name", csrfFieldName) && !disabledControl(e) && inside(e, "datalist") == nil
 }

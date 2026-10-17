@@ -2,6 +2,7 @@ package webuitest_test
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,23 @@ func TestLogsRequests(gt *testing.T) {
 		mw.Logger(r.Context()).Warn("leak", "path", r.URL.Path)
 	}), webuitest.Get(t, "/share/"+secret, webuitest.LogTo(direct.Logger())))
 	t.Must(be.ErrorIs(direct.NotLogged(secret).Check(t.Context()), webuitest.ErrLeak))
+}
+
+func TestLogsPercentEncoded(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	const secret = "Quarterly plan M\u00fcller.pdf"
+	logs := webuitest.NewLogs()
+	h := mw.LogRequests(mw.RequestLog{Logger: logs.Logger(), Path: true})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	webuitest.Serve(t, h, webuitest.Get(t, "/files/"+url.PathEscape(secret)))
+	t.Must(be.Substring(logs.String(), "/files/Quarterly%20plan%20M%C3%BCller.pdf"))
+	err := logs.NotLogged(secret).Check(t.Context())
+	t.Must(be.ErrorIs(err, webuitest.ErrLeak))
+	t.Must(be.ErrorContains(err, "secret 1 appears 1 times"))
+	t.Must(be.False(strings.Contains(err.Error(), "Quarterly")))
+
+	body := webuitest.NewLogs()
+	body.Logger().Info("form", "raw", url.Values{"note": {"my secret note"}}.Encode())
+	t.Must(be.ErrorIs(body.NotLogged("my secret note").Check(t.Context()), webuitest.ErrLeak))
 }
 
 func TestLogsConcurrent(gt *testing.T) {

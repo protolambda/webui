@@ -3,6 +3,7 @@ package webuitest
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -45,8 +46,10 @@ type BrowserOptions struct {
 // The server listens on a loopback port, but the browser names it
 // [BaseURL] (or [InsecureBaseURL] with [BrowserOptions.Insecure]):
 // every connection goes to the server, so the Host header, the Origin
-// header, cookies and TLS all name the application's site, as in
-// production. Configure the application with that site.
+// header, cookies and the TLS server name (SNI, r.TLS.ServerName) all name
+// the application's site, as in production. Configure the application with
+// that site. The server's certificate is httptest's, which the browser
+// trusts by pinning it.
 //
 // A Browser is safe for concurrent use; its methods take the test, so one
 // browser can serve subtests. The server is closed at the end of the test
@@ -91,10 +94,23 @@ func NewBrowser(t TB, h http.Handler, o BrowserOptions) *Browser {
 		return d.DialContext(ctx, network, addr)
 	}
 	if tr.TLSClientConfig != nil {
-		// The test certificate of httptest names example.com.
+		// httptest's certificate names example.com, not the application's
+		// site. Leave ServerName empty, so that the transport sends the
+		// request's host as SNI, as a browser does and as Request records
+		// it, and trust exactly the test server's certificate instead of
+		// verifying a name: the pin replaces the chain and name checks, and
+		// the handshake still proves that the server holds its key.
+		cert := srv.Certificate()
 		cfg := tr.TLSClientConfig.Clone()
-		cfg.ServerName = "example.com"
+		cfg.ServerName = ""
 		cfg.MinVersion = tls.VersionTLS12
+		cfg.InsecureSkipVerify = true
+		cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+			if cert == nil || len(cs.PeerCertificates) == 0 || !cs.PeerCertificates[0].Equal(cert) {
+				return errors.New("webuitest: the server is not the test server")
+			}
+			return nil
+		}
 		tr.TLSClientConfig = cfg
 	}
 	timeout := o.StreamTimeout
@@ -193,10 +209,12 @@ func (b *Browser) Post(t TB, target string, body Body, opts ...ReqOption) *cthtt
 }
 
 // Submit submits a form of page as [Client.Submit] does, and sends the
-// request.
+// request: what the form submits, with the action resolved against the
+// page's URL of [PageURL] when it is relative or empty.
 func (b *Browser) Submit(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
-	method, target, body, ok := submission(t, page, form, submitter, edits)
+	all := append(append([]ReqOption(nil), b.Options...), opts...)
+	method, target, body, ok := submission(t, page, form, submitter, edits, all)
 	if !ok {
 		return nil
 	}

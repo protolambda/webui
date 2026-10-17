@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/protolambda/chord/core"
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthtml"
@@ -212,12 +214,88 @@ func TestFormData(gt *testing.T) {
 		view := form.Form(form.Action("/n"), form.Method(form.MethodPost))(
 			textarea.Textarea(textarea.Name("text"))(elem.Text("\nhello")),
 			textarea.Textarea(textarea.Name("two"))(elem.Text("\n\nworld")),
+			textarea.Textarea(textarea.Name("plain"))(elem.Text("x\ny")),
 		)
 		page := ct.View(view)
 		s, err := webuitest.FormData(t.Context(), page, page.Find(ct.Tag("form")), nil)
 		t.Must(be.NoError(err))
-		t.Must(be.Equal(url.Values{"text": {"hello"}, "two": {"\r\nworld"}}.Encode(), s.Values().Encode()))
+		// chord's renderer keeps a leading line break, so a browser sends it.
+		want := url.Values{"text": {"\r\nhello"}, "two": {"\r\n\r\nworld"}, "plain": {"x\r\ny"}}
+		t.Must(be.Equal(want.Encode(), s.Values().Encode()))
+		// The same as from the rendered and parsed page.
+		var html strings.Builder
+		t.Must(be.NoError(core.Render(t.Context(), view, &html)))
+		parsed := cthtml.PageString(htmlPage(html.String()))
+		ps, err := webuitest.FormData(t.Context(), parsed, parsed.Find(ct.Tag("form")), nil)
+		t.Must(be.NoError(err))
+		t.Must(be.Equal(want.Encode(), ps.Values().Encode()))
 	})
+	t.Run("radio groups", func(t devtest.T) {
+		page := cthtml.PageString(htmlPage(`<form id="r">
+<input type="radio" name="size" value="s" checked><input type="radio" name="size" value="m" checked>
+<input type="radio" name="pick" value="a" checked><input type="radio" name="pick" value="b" checked disabled>
+<input type="radio" name="p" value="lower" checked><input type="radio" name="P" value="upper" checked>
+<input type="radio" name="out" value="in" checked>
+</form><input form="r" type="radio" name="out" value="outside" checked>
+<form><input type="radio" name="size" value="other" checked></form>`))
+		s, err := webuitest.FormData(t.Context(), page, page.Find(ct.ID("r")), nil)
+		t.Must(be.NoError(err))
+		t.Must(be.DeepEqual([][2]string{{"size", "m"}, {"p", "lower"}, {"P", "upper"}, {"out", "outside"}}, formFields(s.Fields)))
+	})
+	t.Run("template content", func(t devtest.T) {
+		page := cthtml.PageString(htmlPage(`<form id="t" method="post" action="/rows">
+<input type="hidden" name="csrf" value="tok">
+<template><input name="item" value="x"><input form="t" name="also" value="y"></template>
+</form>`))
+		s, err := webuitest.FormData(t.Context(), page, page.Find(ct.ID("t")), nil)
+		t.Must(be.NoError(err))
+		t.Must(be.DeepEqual([][2]string{{"csrf", "tok"}}, formFields(s.Fields)))
+	})
+}
+
+func TestSubmissionActions(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	page := cthtml.PageString(htmlPage(`
+<form id="done" method="post" action="done"><input name="a" value="1"></form>
+<form id="next" action="?page=2"><input name="q" value="z"></form>
+<form id="self" method="post"><input name="b" value="2"></form>
+<form id="selfget"><input name="b" value="2"></form>
+<form id="abs" method="post" action=" /tasks "><input name="c" value="3"></form>
+<form id="url" method="post" action="https://app.example.test/x"></form>`))
+	sub := func(id string) webuitest.Submission {
+		s, err := webuitest.FormData(t.Context(), page, page.Find(ct.ID(id)), nil)
+		t.Must(be.NoError(err))
+		return s
+	}
+	const at = "/projects/7/tasks/3/?tab=x"
+	for _, c := range []struct{ id, want string }{
+		{"done", "POST /projects/7/tasks/3/done"},
+		{"next", "GET /projects/7/tasks/3/?q=z"},
+		{"self", "POST /projects/7/tasks/3/?tab=x"},
+		{"selfget", "GET /projects/7/tasks/3/?b=2"},
+		{"abs", "POST /tasks"},
+		{"url", "POST /x"},
+	} {
+		req := sub(c.id).Request(t, webuitest.PageURL(at))
+		t.Mustf(be.Equal(c.want, req.Method+" "+req.RequestURI), "form %s", c.id)
+	}
+	for _, c := range []struct{ id, want string }{
+		{"done", "the action is relative to the page's URL; pass PageURL with it"},
+		{"next", "the action is relative to the page's URL"},
+		{"self", "the form has no action; set Submission.Action or pass PageURL"},
+	} {
+		r := newRecordT(t.Context())
+		t.Must(be.True(sub(c.id).Request(r) == nil))
+		t.Must(be.True(r.failed))
+		t.Must(be.Substring(r.output(), c.want))
+	}
+	// Absolute actions need no page URL.
+	req := sub("abs").Request(t)
+	t.Must(be.Equal("/tasks", req.RequestURI))
+	// A query-only target on the base URL requests the root path.
+	req = webuitest.Get(t, "?x=1")
+	t.Must(be.Equal("/", req.URL.Path))
+	t.Must(be.Equal("/?x=1", req.RequestURI))
 }
 
 func TestFormDataValues(gt *testing.T) {

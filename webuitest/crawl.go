@@ -102,6 +102,10 @@ type Target struct {
 	Page string
 }
 
+// maxRedirects is the longest redirect chain that [Crawl] follows, the
+// limit of browsers.
+const maxRedirects = 20
+
 // CrawlOptions configure [Crawl].
 type CrawlOptions struct {
 	// Start are the pages the crawl starts from; empty means "/".
@@ -114,8 +118,9 @@ type CrawlOptions struct {
 	// Skip, when set, excludes targets by path (for example "/logout" or
 	// a prefix of downloads) from route checks and from crawling.
 	Skip func(path string) bool
-	// MaxPages bounds the pages crawled; zero means 500. A crawl that
-	// reaches the bound reports it.
+	// MaxPages bounds the pages crawled (answers 200); zero means 500. A
+	// crawl that reaches the bound reports it. Redirects do not count as
+	// pages: a chain of them is bounded by itself, see [Crawl].
 	MaxPages int
 	// Assets fetches every stylesheet, icon, preload and script once and
 	// checks that it is served with status 200, nosniff and the content
@@ -225,8 +230,9 @@ type assetRef struct {
 // instead of stopping at the first:
 //
 //   - every page answers 200 with HTML that satisfies the contract
-//     (redirects are followed when they stay on the site; other statuses
-//     are problems);
+//     (redirects are followed when they stay on the site, up to 20 in a
+//     row as browsers follow them: a longer chain, or one that comes back
+//     to a URL of the chain, is a problem; other statuses are problems);
 //   - every link, form action, formaction, htmx request URL, sse-connect
 //     URL and asset on the site is routed (with Routes);
 //   - every link to a fragment of another crawled page names an element
@@ -258,18 +264,22 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 	r := &CrawlReport{Start: append([]string(nil), start...)}
 	problem := func(format string, args ...any) { r.Problems = append(r.Problems, fmt.Sprintf(format, args...)) }
 
-	type queued struct{ url, from string }
+	type queued struct {
+		url, from string
+		// chain holds the URLs of the redirects that led here, in order.
+		chain []string
+	}
 	var queue []queued
 	seen := make(map[string]bool)
-	enqueue := func(u, from string) {
+	enqueue := func(u, from string, chain []string) {
 		if !seen[u] {
 			seen[u] = true
-			queue = append(queue, queued{u, from})
+			queue = append(queue, queued{u, from, chain})
 		}
 	}
 	for _, p := range start {
 		if key, _, ok := siteURL(defaultBase, p); ok {
-			enqueue(key, "the start")
+			enqueue(key, "the start", nil)
 		} else {
 			problem("start page %q is not a path of the site", p)
 		}
@@ -308,7 +318,15 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 				if o.Routes != nil && !o.Routes(http.MethodGet, key) {
 					problem("redirect of %s to %s has no route", q.url, key)
 				}
-				enqueue(key, q.url)
+				chain := append(append([]string(nil), q.chain...), q.url)
+				switch {
+				case contains(chain, key):
+					problem("GET %s (from %s): the redirects loop back to %s", q.url, q.from, key)
+				case len(chain) > maxRedirects:
+					problem("GET %s (from %s): more than %d redirects in a row", q.url, q.from, maxRedirects)
+				default:
+					enqueue(key, q.url, chain)
+				}
 			}
 			continue
 		}
@@ -353,7 +371,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 				if frag != "" && key != q.url {
 					fragRefs = append(fragRefs, fragmentRef{page: key, id: frag, from: q.url})
 				}
-				enqueue(key, q.url)
+				enqueue(key, q.url, nil)
 			case TargetAsset:
 				if _, dup := assets[key]; !dup {
 					assets[key] = assetRef{kind: tg.assetKind, integrity: tg.integrity, page: q.url}

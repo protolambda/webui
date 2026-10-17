@@ -30,8 +30,11 @@ type Submission struct {
 	// its dialog and sends nothing).
 	Method string
 	// Action is the action URL as the page writes it: the submitter's
-	// formaction, else the form's action. "" means the page's own URL,
-	// which the page subject does not know: set it before sending.
+	// formaction, else the form's action. A browser resolves it against
+	// the page's URL, which the page subject does not know: "" means the
+	// page's URL itself, and a reference without a leading slash ("done",
+	// "./x", "?page=2") is relative to it. Sending such an action needs
+	// the page's URL ([PageURL]); otherwise, set an absolute path or URL.
 	Action string
 	// Enctype is [EnctypeURLEncoded], [EnctypeMultipart] or [EnctypeText].
 	Enctype string
@@ -110,8 +113,10 @@ func (s Submission) Body() Body {
 }
 
 // target returns the method, URL and body of the submission's request: a
-// GET submission replaces the query of the action with the fields.
-func (s Submission) target() (method, target string, body Body, err error) {
+// GET submission replaces the query of the action with the fields. An
+// action relative to the page's URL needs [PageURL] among opts, against
+// which the request target is resolved.
+func (s Submission) target(opts []ReqOption) (method, target string, body Body, err error) {
 	switch s.Method {
 	case "DIALOG":
 		return "", "", Body{}, fmt.Errorf("%w: a dialog form sends no request", ErrFormData)
@@ -119,15 +124,29 @@ func (s Submission) target() (method, target string, body Body, err error) {
 	default:
 		return "", "", Body{}, fmt.Errorf("%w: unknown method %q", ErrFormData, s.Method)
 	}
-	if s.Action == "" {
-		return "", "", Body{}, fmt.Errorf("%w: the form has no action; set Submission.Action to the page's URL", ErrFormData)
-	}
-	if s.Method == "POST" {
-		return http.MethodPost, s.Action, s.Body(), nil
-	}
-	u, err := url.Parse(s.Action)
+	// Browsers strip leading and trailing ASCII white space from URLs.
+	action := strings.Trim(s.Action, "\t\n\f\r ")
+	u, err := url.Parse(action)
 	if err != nil {
 		return "", "", Body{}, fmt.Errorf("%w: invalid action: %w", ErrFormData, err)
+	}
+	if u.Scheme == "" && u.Host == "" && !strings.HasPrefix(u.Path, "/") {
+		var rs reqSettings
+		for _, o := range opts {
+			if o != nil {
+				o(&rs)
+			}
+		}
+		switch {
+		case rs.page != nil:
+		case action == "":
+			return "", "", Body{}, fmt.Errorf("%w: the form has no action; set Submission.Action or pass PageURL with the page's URL", ErrFormData)
+		default:
+			return "", "", Body{}, fmt.Errorf("%w: the action is relative to the page's URL; pass PageURL with it", ErrFormData)
+		}
+	}
+	if s.Method == "POST" {
+		return http.MethodPost, action, s.Body(), nil
 	}
 	u.RawQuery = string(Body{kind: bodyForm, parts: s.Fields}.Bytes())
 	u.Fragment, u.RawFragment = "", ""
@@ -136,10 +155,12 @@ func (s Submission) target() (method, target string, body Body, err error) {
 
 // Request builds the request of the submission, as [Request] does: a GET
 // with the fields as the query of the action, or a POST with the body.
-// A dialog submission, or one without an action, fails the test.
+// An action relative to the page (see [Submission.Action]) is resolved
+// against the [PageURL] among opts. A dialog submission, or a relative
+// action without PageURL, fails the test.
 func (s Submission) Request(t TB, opts ...ReqOption) *http.Request {
 	t.Helper()
-	method, target, body, err := s.target()
+	method, target, body, err := s.target(opts)
 	if err != nil {
 		fatalf(t, "%v", err)
 		return nil
@@ -159,11 +180,15 @@ func (s Submission) Request(t TB, opts ...ReqOption) *http.Request {
 // disabled fieldset) and nameless ones are skipped; buttons count only as
 // the submitter (an image button sends name.x and name.y as 0);
 // checkboxes and radios only when checked, with "on" as the default
-// value; selects send their selected, enabled options, a single select
-// its first enabled option when none is selected; textareas their raw
-// text (the parser's leading line break dropped); file inputs a file
-// field without a file; range and color inputs their default values;
-// _charset_ hidden inputs "UTF-8"; dirname adds "ltr". The submitter's
+// value, and of a radio group (radios of the form with one name) only the
+// last with the checked attribute, since checking a radio unchecks the
+// others (also when that one is disabled, and so sends nothing); selects
+// send their selected, enabled options, a single select its first enabled
+// option when none is selected; textareas their raw text, as a parser
+// reads it from the rendered page; file inputs a file field without a
+// file; range and color inputs their default values; _charset_ hidden
+// inputs "UTF-8"; dirname adds "ltr". Controls in the content of a
+// template element belong to no form outside it. The submitter's
 // formaction, formmethod and formenctype override the form's.
 //
 // Errors wrap [ErrFormData], or the load or query error of the
@@ -216,11 +241,12 @@ func FormData(ctx context.Context, page *ct.Subject, form, submitter *ct.Selecti
 		Enctype: normEnctype(override("enctype", "formenctype")),
 		names:   make(map[string]bool),
 	}
+	radios := checkedRadios(idx.controls[f])
 	for _, c := range idx.controls[f] {
 		if name, ok := attrOf(c, "name"); ok && name != "" {
 			s.names[name] = true
 		}
-		s.Fields = append(s.Fields, entries(c, sub)...)
+		s.Fields = append(s.Fields, entries(c, sub, radios)...)
 	}
 	for i := range s.Fields {
 		s.Fields[i].Name = normalizeNewlines(s.Fields[i].Name)
@@ -264,8 +290,27 @@ func normalizeNewlines(s string) string {
 	return strings.ReplaceAll(s, "\n", "\r\n")
 }
 
-// entries returns the entries that control c adds to the form data set.
-func entries(c ct.Node, submitter ct.Node) []Part {
+// checkedRadios returns the checked radio of each radio group of a form's
+// controls, by name: checking a radio unchecks the others of its group
+// (same form owner and name, compared case-sensitively), also while
+// parsing, so the last radio with the checked attribute in tree order is
+// the checked one, even when it is disabled and so submits nothing.
+func checkedRadios(controls []ct.Node) map[string]ct.Node {
+	out := make(map[string]ct.Node)
+	for _, c := range controls {
+		if c.Tag() != "input" || inputType(c) != "radio" || !hasAttr(c, "checked") {
+			continue
+		}
+		if name, ok := attrOf(c, "name"); ok && name != "" {
+			out[name] = c
+		}
+	}
+	return out
+}
+
+// entries returns the entries that control c adds to the form data set;
+// radios holds the checked radio of each group ([checkedRadios]).
+func entries(c ct.Node, submitter ct.Node, radios map[string]ct.Node) []Part {
 	if inside(c, "datalist") != nil || disabledControl(c) {
 		return nil
 	}
@@ -287,12 +332,10 @@ func entries(c ct.Node, submitter ct.Node) []Part {
 		if name == "" {
 			return nil
 		}
-		v := rawText(c)
-		if viewNode(c) {
-			// The HTML parser drops a line break right after <textarea>.
-			v = strings.TrimPrefix(v, "\n")
-		}
-		out := []Part{{Name: name, Value: v}}
+		// The text is the value: the parser drops a line break right after
+		// <textarea>, and chord's renderer writes an extra one before text
+		// that starts with a line break, so that the parser keeps it.
+		out := []Part{{Name: name, Value: rawText(c)}}
 		if dir, ok := attrOf(c, "dirname"); ok && dir != "" {
 			out = append(out, Part{Name: dir, Value: "ltr"})
 		}
@@ -316,7 +359,7 @@ func entries(c ct.Node, submitter ct.Node) []Part {
 		}
 		return []Part{{Name: x, Value: "0"}, {Name: y, Value: "0"}}
 	case "checkbox", "radio":
-		if name == "" || !hasAttr(c, "checked") {
+		if name == "" || !hasAttr(c, "checked") || (t == "radio" && radios[name] != c) {
 			return nil
 		}
 		if !hasValue {

@@ -79,8 +79,13 @@ type CookieWant struct {
 	// MaxAge, when not zero, requires that Max-Age, in whole seconds.
 	MaxAge time.Duration
 	// Cleared requires a cookie that deletes itself: Max-Age zero or less,
-	// or an Expires date in the past.
+	// or, without a Max-Age, an Expires date before Now. Max-Age takes
+	// precedence over Expires (RFC 6265, section 5.3), so a cookie with a
+	// positive Max-Age is kept whatever its Expires says.
 	Cleared bool
+	// Now is the time that an Expires date is compared with, for an
+	// application with an injected clock; zero means the current time.
+	Now time.Time
 }
 
 // Cookie asserts that the response sets exactly one cookie called name,
@@ -167,10 +172,16 @@ func (a cookieAssertion) Check(ctx context.Context) error {
 	if w.Path != "" && c.Path != w.Path {
 		problems = append(problems, fmt.Sprintf("Path is %q, want %q", c.Path, w.Path))
 	}
-	cleared := c.MaxAge < 0 || (!c.Expires.IsZero() && c.Expires.Before(time.Now()))
+	now := w.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	// http.ParseSetCookie reports a Max-Age of zero or less as -1, and a
+	// missing (or invalid, so ignored) one as 0.
+	cleared := c.MaxAge < 0 || (c.MaxAge == 0 && !c.Expires.IsZero() && !c.Expires.After(now))
 	switch {
 	case w.Cleared && !cleared:
-		problems = append(problems, "not cleared (no Max-Age<=0 or past Expires)")
+		problems = append(problems, "not cleared (no Max-Age<=0, or no Max-Age and a past Expires)")
 	case !w.Cleared && cleared:
 		problems = append(problems, "the cookie is cleared")
 	}
@@ -276,9 +287,10 @@ var unsafeSources = []string{"'unsafe-inline'", "'unsafe-eval'", "'unsafe-hashes
 // p, each exactly once: the Content-Security-Policy, parsed with
 // mw.ParseCSP and compared directive by directive with the exact source
 // lists (in any order); X-Frame-Options as mw derives it from
-// frame-ancestors (DENY for 'none', SAMEORIGIN for 'self', none
-// otherwise); X-Content-Type-Options: nosniff; Referrer-Policy,
-// Permissions-Policy, Cache-Control, Cross-Origin-Opener-Policy and
+// frame-ancestors (DENY without frame-ancestors or for 'none', SAMEORIGIN
+// for 'self', compared case-insensitively, none when it allows more);
+// X-Content-Type-Options: nosniff; Referrer-Policy, Permissions-Policy,
+// Cache-Control, Cross-Origin-Opener-Policy and
 // Cross-Origin-Resource-Policy; and Strict-Transport-Security when p sets
 // HSTS, absent otherwise. Unless p.AllowUnsafe, no directive may allow
 // 'unsafe-inline', 'unsafe-eval' or 'unsafe-hashes'. The failure lists
@@ -327,16 +339,7 @@ func (a securityHeaders) Check(ctx context.Context) error {
 		want = mw.StrictCSP()
 	}
 	problems = append(problems, a.cspProblems(h.Values("Content-Security-Policy"), want)...)
-	frame := ""
-	if fa, ok := want.Values(mw.FrameAncestors); ok && len(fa) == 1 {
-		switch fa[0] {
-		case mw.SourceNone:
-			frame = "DENY"
-		case mw.SourceSelf:
-			frame = "SAMEORIGIN"
-		}
-	}
-	single("X-Frame-Options", frame)
+	single("X-Frame-Options", frameOptions(want))
 	single("X-Content-Type-Options", "nosniff")
 	single("Referrer-Policy", or(cfg.ReferrerPolicy, "same-origin"))
 	single("Permissions-Policy", or(cfg.PermissionsPolicy, mw.DefaultPermissionsPolicy))
@@ -348,6 +351,24 @@ func (a securityHeaders) Check(ctx context.Context) error {
 		return nil
 	}
 	return fmt.Errorf("%w: security headers of %s:\n  %s", ct.ErrMismatch, a.res.Describe(), strings.Join(problems, "\n  "))
+}
+
+// frameOptions returns the X-Frame-Options that mw derives from the
+// frame-ancestors of p, for browsers that do not support frame-ancestors:
+// DENY without frame-ancestors (which does not fall back to default-src,
+// so framing is otherwise unrestricted) or with just 'none', SAMEORIGIN
+// with just 'self', and none otherwise. Keywords are case-insensitive.
+func frameOptions(p mw.CSP) string {
+	fa, ok := p.Values(mw.FrameAncestors)
+	switch {
+	case !ok:
+		return "DENY"
+	case len(fa) == 1 && strings.EqualFold(fa[0], mw.SourceNone):
+		return "DENY"
+	case len(fa) == 1 && strings.EqualFold(fa[0], mw.SourceSelf):
+		return "SAMEORIGIN"
+	}
+	return ""
 }
 
 func (a securityHeaders) cspProblems(values []string, want mw.CSP) []string {

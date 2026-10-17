@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthtml"
@@ -55,7 +56,9 @@ func (e Event) Fragment(contextTag string, opts ...ct.Option) *ct.Subject {
 // colon and one optional space; data fields join with LF; an event
 // without data fields is not dispatched; the event type defaults to
 // "message"; an id containing NUL is ignored; a retry value must be ASCII
-// digits; unknown fields are ignored; invalid UTF-8 becomes U+FFFD.
+// digits; unknown fields are ignored; invalid UTF-8 becomes U+FFFD as a
+// browser decodes it, one for each maximal subpart of an ill-formed
+// sequence.
 //
 // A stream that ends inside a line or an event fails with
 // [ErrUnterminated], and a line or event over [MaxEventSize] with
@@ -188,7 +191,57 @@ func (p *eventParser) dispatch(emit func(Event) bool) error {
 	return nil
 }
 
-// text converts bytes of the stream to a string, replacing invalid UTF-8.
+// text converts bytes of the stream to a string as the WHATWG UTF-8
+// decoder of a browser does: each maximal subpart of an ill-formed
+// sequence becomes one U+FFFD. (strings.ToValidUTF8 would replace a whole
+// run of them with one.)
 func text(b []byte) string {
-	return strings.ToValidUTF8(string(b), "\uFFFD")
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	var s strings.Builder
+	s.Grow(len(b) + len(b)/2)
+	for len(b) > 0 {
+		r, n := utf8.DecodeRune(b)
+		if r == utf8.RuneError && n == 1 {
+			// n == 1 tells an ill-formed sequence from an encoded U+FFFD,
+			// which is copied as is.
+			n = maximalSubpart(b)
+			s.WriteRune(utf8.RuneError)
+		} else {
+			s.Write(b[:n])
+		}
+		b = b[n:]
+	}
+	return s.String()
+}
+
+// maximalSubpart returns the length of the maximal subpart at the start of
+// b, which starts with an ill-formed sequence: its lead byte and the
+// continuation bytes that a well-formed sequence could follow it with
+// (Unicode, section 3.9, table 3-7). It is at least 1.
+func maximalSubpart(b []byte) int {
+	need, lo, hi := 0, byte(0x80), byte(0xBF)
+	switch c := b[0]; {
+	case 0xC2 <= c && c <= 0xDF:
+		need = 1
+	case c == 0xE0:
+		need, lo = 2, 0xA0
+	case c == 0xED:
+		need, hi = 2, 0x9F
+	case 0xE1 <= c && c <= 0xEF:
+		need = 2
+	case c == 0xF0:
+		need, lo = 3, 0x90
+	case c == 0xF4:
+		need, hi = 3, 0x8F
+	case 0xF1 <= c && c <= 0xF3:
+		need = 3
+	}
+	n := 1
+	for n <= need && n < len(b) && lo <= b[n] && b[n] <= hi {
+		n++
+		lo, hi = 0x80, 0xBF
+	}
+	return n
 }

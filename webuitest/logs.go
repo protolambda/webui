@@ -58,11 +58,14 @@ func (l *Logs) Reset() {
 }
 
 // NotLogged asserts, when it is checked, that no record so far contains
-// any of secrets, also in the quoted and escaped form in which the text
-// handler writes values with spaces, quotes or control characters. A
-// failure names a secret by its position in secrets and counts its
-// occurrences, never showing it. Empty secrets are a programming error:
-// NotLogged panics on them.
+// any of secrets: as is, in the quoted and escaped form in which the text
+// handler writes values with spaces, quotes or control characters, and
+// percent-encoded as url.PathEscape and url.QueryEscape write it, the form
+// in which escaped paths (mw.RequestLog's Path), queries and urlencoded
+// bodies reach a log. Only the canonical upper-case percent-encoding is
+// matched. A failure names a secret by its position in secrets and counts
+// its occurrences (overlapping forms may count twice), never showing it.
+// Empty secrets are a programming error: NotLogged panics on them.
 func (l *Logs) NotLogged(secrets ...string) assertion.Assertion {
 	checkValues("Logs.NotLogged", secrets)
 	return notLogged{l: l, secrets: append([]string(nil), secrets...)}
@@ -79,9 +82,13 @@ func (a notLogged) Check(context.Context) error {
 	text := a.l.String()
 	var found []string
 	for i, s := range a.secrets {
-		n := strings.Count(text, s)
-		if q := strconv.Quote(s); q[1:len(q)-1] != s {
-			n += strings.Count(text, q[1:len(q)-1])
+		variants := encodedVariants(s)
+		if q := strconv.Quote(s); !contains(variants, q[1:len(q)-1]) {
+			variants = append(variants, q[1:len(q)-1])
+		}
+		n := 0
+		for _, v := range variants {
+			n += strings.Count(text, v)
 		}
 		if n > 0 {
 			found = append(found, fmt.Sprintf("secret %d appears %d times", i+1, n))

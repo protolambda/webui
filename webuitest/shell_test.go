@@ -267,6 +267,50 @@ func TestDefaultShell(gt *testing.T) {
 	t.Must(webuitest.ShellContract(ct.View(validDoc(theme.MustAssets(theme.Options{WithoutIcons: true}), app).node()), both))
 	t.Must(be.Panic(func() { webuitest.DefaultShell(nil) }))
 	t.Must(be.Equal("/x.js", webuitest.Asset{URL: "/x.js"}.String()))
+
+	t.Run("unlisted files and modules", func(t devtest.T) {
+		set := asset.Must(asset.New(asset.Options{Prefix: "/assets/app/", FS: fstest.MapFS{
+			"app.css":    {Data: []byte("p{}")},
+			"print.css":  {Data: []byte("p{}")},
+			"main.mjs":   {Data: []byte("export {};")},
+			"worker.js":  {Data: []byte("1")},
+			"classic.js": {Data: []byte("1")},
+		}, Files: []asset.File{
+			{Name: "app.css"},
+			{Name: "print.css", Unlisted: true},
+			{Name: "main.mjs", Kind: asset.KindModule, ContentType: "text/javascript"},
+			{Name: "worker.js", Unlisted: true},
+			{Name: "classic.js"},
+		}}))
+		s := webuitest.DefaultShell(set)
+		t.Must(be.DeepEqual([]webuitest.Asset{{Name: "app.css", URL: set.URL("app.css"), Integrity: set.Integrity("app.css")}}, s.Stylesheets))
+		t.Must(be.DeepEqual([]webuitest.Asset{
+			{Name: "main.mjs", URL: set.URL("main.mjs"), Integrity: set.Integrity("main.mjs"), Module: true},
+			{Name: "classic.js", URL: set.URL("classic.js"), Integrity: set.Integrity("classic.js")},
+		}, s.Scripts))
+		// The head of a document that loads the set, as page.Document
+		// renders it.
+		head := func(scripts ...elem.Node) elem.Node {
+			return validDoc(set).with(func(d *docSpec) {
+				d.head[headScripts] = elem.Bundle(scripts)
+			}).node()
+		}
+		t.Must(webuitest.ShellContract(ct.View(head(set.Scripts())), s))
+		// A module loaded as a classic script, and the reverse, differ.
+		swapped := head(
+			script.Script(script.Src(set.URL("main.mjs")), script.Defer(), script.Integrity(set.Integrity("main.mjs")))(),
+			script.Script(script.Type("module"), script.Src(set.URL("classic.js")), script.Integrity(set.Integrity("classic.js")))(),
+		)
+		err := webuitest.ShellContract(ct.View(swapped), s).Check(t.Context())
+		t.Must(be.ErrorContains(err, `script main.mjs at html[1]/head[0]/script[`))
+		t.Must(be.ErrorContains(err, `is not type="module"`))
+		t.Must(be.ErrorContains(err, "script classic.js at"))
+		t.Must(be.ErrorContains(err, "is a module, want a classic script"))
+		// An unlisted file that a page loads anyway is not part of the shell.
+		extra := head(set.Scripts(), set.Script("worker.js"))
+		err = webuitest.ShellContract(ct.View(extra), s).Check(t.Context())
+		t.Must(be.ErrorContains(err, "is not part of the shell"))
+	})
 }
 
 func TestPageContract(gt *testing.T) {

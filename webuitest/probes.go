@@ -34,22 +34,33 @@ const (
 //     cross-site, a foreign Origin), as current browsers send it;
 //   - a same-site request from a sibling subdomain (Sec-Fetch-Site:
 //     same-site), which cookies with SameSite do not stop;
-//   - without fetch metadata: a foreign Origin, the opaque "null" Origin
-//     (sandboxed frames, some redirects), the site's own host over plain
-//     http (a downgraded origin), a foreign Referer only, and no origin
-//     headers at all (refused on sites other than loopback);
+//   - without fetch metadata: a foreign Origin; Origins that only look
+//     like the site's, which a prefix, suffix or host-only comparison
+//     accepts (the site's origin as the prefix of another host, its host
+//     as the suffix of another, the site on another port); the opaque
+//     "null" Origin (sandboxed frames, some redirects); the site's own host
+//     over plain http (a downgraded origin); a foreign Referer only, also
+//     one that starts with the site's origin; and no origin headers at all
+//     (refused on sites other than loopback);
 //   - DNS rebinding: a foreign Host header with that host as the origin,
 //     which looks same-origin to the browser.
 //
-// Each call returns new probes.
+// The site's host with a trailing dot ("https://app.example.test.") is
+// not probed: it names the same server, so a policy that accepts it lets
+// no other site in, and requiring its refusal would fail harmless
+// normalizations. Each call returns new probes.
 func CrossSiteProbes() []Probe {
 	return []Probe{
 		{Name: "cross-site", Options: []ReqOption{FetchSite("cross-site"), Origin(ForeignOrigin)}},
 		{Name: "same-site", Options: []ReqOption{FetchSite("same-site"), Origin(SameSiteOrigin)}},
 		{Name: "foreign origin without fetch metadata", Options: []ReqOption{NoFetchMetadata(), Header("Origin", ForeignOrigin)}},
+		{Name: "lookalike origin", Options: []ReqOption{NoFetchMetadata(), Header("Origin", BaseURL+".evil.example")}},
+		{Name: "suffix origin", Options: []ReqOption{NoFetchMetadata(), Header("Origin", "https://evil"+defaultBase.Host)}},
+		{Name: "other port origin", Options: []ReqOption{NoFetchMetadata(), Header("Origin", BaseURL+":8443")}},
 		{Name: "null origin", Options: []ReqOption{NoFetchMetadata(), Header("Origin", "null")}},
 		{Name: "http origin", Options: []ReqOption{NoFetchMetadata(), Header("Origin", "http://"+defaultBase.Host)}},
 		{Name: "foreign referer only", Options: []ReqOption{NoFetchMetadata(), Header("Referer", ForeignOrigin+"/page")}},
+		{Name: "lookalike referer only", Options: []ReqOption{NoFetchMetadata(), Header("Referer", BaseURL+".evil.example/page")}},
 		{Name: "no origin headers", Options: []ReqOption{NoFetchMetadata()}},
 		{Name: "dns rebinding", Options: []ReqOption{Host("evil.example"), Origin("https://evil.example")}},
 	}

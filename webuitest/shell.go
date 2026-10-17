@@ -26,6 +26,11 @@ type Asset struct {
 	// Integrity is the exact integrity value. Empty requires any
 	// well-formed sha256, sha384 or sha512 value.
 	Integrity string
+	// Module marks a JavaScript module (asset.KindModule), loaded with
+	// <script type="module">, which runs deferred by nature. A script
+	// without it is a classic script, which must have defer and must not
+	// be a module: the two kinds run with different semantics.
+	Module bool
 }
 
 func (a Asset) String() string {
@@ -57,8 +62,9 @@ type Shell struct {
 	HTMXConfig string
 	// Stylesheets are all stylesheet links of the page, in order.
 	Stylesheets []Asset
-	// Scripts are all scripts of the page, in order. Each must be
-	// deferred.
+	// Scripts are all scripts and modules of the page, in order. Classic
+	// scripts must be deferred; modules ([Asset.Module]) run deferred by
+	// nature.
 	Scripts []Asset
 }
 
@@ -77,10 +83,14 @@ func DefaultHTMXConfig() string {
 	return s
 }
 
-// DefaultShell returns the shell of pages that load sets, in order: their
-// stylesheets, then their scripts, in the order of the files of each set,
-// with their URLs and integrity values, and every other field at webui's
-// default. Without sets, it uses the default theme set,
+// DefaultShell returns the shell of pages that load sets, in order, as
+// page.Document renders them: the stylesheets of all sets, then the
+// scripts and modules of all sets, each in the order of the files of its
+// set, with their URLs and integrity values, and every other field at
+// webui's default. Files that the sets leave out of their rendered
+// elements (asset.File.Unlisted) are left out, as are files of other
+// kinds; a module (asset.KindModule) is an [Asset] with Module set.
+// Without sets, it uses the default theme set,
 // theme.MustAssets(theme.Options{}). A nil set panics. Each call returns a
 // new Shell, which the caller may extend.
 func DefaultShell(sets ...*asset.Set) Shell {
@@ -97,11 +107,17 @@ func DefaultShell(sets ...*asset.Set) Shell {
 			panic(fmt.Sprintf("webuitest.DefaultShell: set %d is nil", i))
 		}
 		for info := range set.Files() {
+			if info.Unlisted {
+				continue
+			}
 			a := Asset{Name: info.Name, URL: info.URL, Integrity: info.Integrity}
 			switch info.Kind {
 			case asset.KindStylesheet:
 				s.Stylesheets = append(s.Stylesheets, a)
 			case asset.KindScript:
+				s.Scripts = append(s.Scripts, a)
+			case asset.KindModule:
+				a.Module = true
 				s.Scripts = append(s.Scripts, a)
 			}
 		}
@@ -124,7 +140,8 @@ func DefaultShell(sets ...*asset.Set) Shell {
 //   - no base element (webui's policy sets base-uri 'none');
 //   - exactly the stylesheet links of [Shell.Stylesheets] and the scripts
 //     of [Shell.Scripts], in order, in the head, each with its integrity
-//     value; scripts deferred (or modules) and not async;
+//     value; classic scripts deferred, modules ([Asset.Module]) with
+//     type="module", and none async;
 //   - one main landmark.
 func (s Shell) Rule() ct.Rule {
 	return ct.CustomRule("shell()", s.check)
@@ -261,10 +278,15 @@ func (s Shell) check(root ct.Node) []string {
 	}
 	out = append(out, assetList("stylesheet", "href", sheets, s.Stylesheets, head)...)
 	out = append(out, assetList("script", "src", scripts, s.Scripts, head)...)
-	for _, sc := range scripts {
+	for i, sc := range scripts {
 		t, _ := attrOf(sc, "type")
 		module := strings.EqualFold(strings.TrimSpace(t), "module")
-		if !module && !hasAttr(sc, "defer") {
+		switch {
+		case i < len(s.Scripts) && s.Scripts[i].Module && !module:
+			out = append(out, fmt.Sprintf("script %s at %s is not type=\"module\"", s.Scripts[i], loc(sc)))
+		case i < len(s.Scripts) && !s.Scripts[i].Module && module:
+			out = append(out, fmt.Sprintf("script %s at %s is a module, want a classic script", s.Scripts[i], loc(sc)))
+		case !module && !hasAttr(sc, "defer"):
 			out = append(out, "script at "+loc(sc)+" is not deferred")
 		}
 		if hasAttr(sc, "async") {

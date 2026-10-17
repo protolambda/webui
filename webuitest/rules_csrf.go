@@ -29,15 +29,27 @@ var htmxUnsafeAttrs = []string{"hx-post", "hx-put", "hx-patch", "hx-delete"}
 //   - every element with hx-post, hx-put, hx-patch or hx-delete (also with
 //     a data- prefix) sends one: it is a form that owns the field, its form
 //     owns it (htmx includes the related form in such requests), the
-//     nearest hx-vals of the element or its ancestors has the field as a
-//     JSON key, or the nearest hx-include names the field, an element
-//     containing it, "this", or "closest form" that owns it.
+//     hx-vals of the element and its ancestors, merged as htmx merges them
+//     (nearer keys win; "unset" on any of them drops them all), have the
+//     field, or the nearest hx-include names the field, an element
+//     containing it, "this" (the element that declares the hx-include), or
+//     "closest form" that owns it; and the nearest hx-params does not drop
+//     it ("none", a "not" list that names it, or a list without it).
+//
+// Fields in the content of a template element are not part of the
+// document, and fields in a datalist are never submitted: neither counts.
 //
 // The CSRF token is a second defense beside the same-origin policy
 // (mw.SameOrigin), which depends on browsers sending fetch metadata.
 // Messages never show the token. A GET form with a formmethod="post"
 // button cannot satisfy both this rule and [NoTokenLeaks]: give the POST
-// action a form of its own.
+// action a form of its own. Likewise hx-delete: with htmx's default
+// methodsThatUseUrlParams (["get", "delete"]), a DELETE request has no body
+// and puts its parameters, the CSRF field too, in the URL, which
+// [NoTokenLeaks] reports (and which the form package ignores). Use hx-post,
+// hx-put or hx-patch for requests that need the token, or set
+// methodsThatUseUrlParams to ["get"] (hx2.Config.Extra), which both rules
+// read from the page's htmx-config meta element.
 func PostFormsCarryCSRF(token string) ct.Rule {
 	desc := "postFormsCarryCSRF()"
 	if token != "" {
@@ -45,7 +57,7 @@ func PostFormsCarryCSRF(token string) ct.Rule {
 	}
 	return ct.CustomRule(desc, func(root ct.Node) []string {
 		idx := indexForms(root)
-		ids := idIndex(root)
+		ids := documentIDs(root)
 		var out []string
 		for _, f := range idx.forms {
 			if formMethod(f) != "post" {
@@ -87,7 +99,7 @@ func withValue(token string) string {
 func csrfProblem(controls []ct.Node, token string) string {
 	var fields, enabled []ct.Node
 	for _, c := range controls {
-		if c.Tag() == "input" && AttrIs(c, "name", csrfFieldName) {
+		if c.Tag() == "input" && AttrIs(c, "name", csrfFieldName) && inside(c, "datalist") == nil {
 			fields = append(fields, c)
 			if !disabledControl(c) {
 				enabled = append(enabled, c)
@@ -121,7 +133,7 @@ func csrfMatches(v, token string) bool {
 
 // carriesCSRF reports whether the element sends a matching CSRF field when
 // htmx includes it: it is the field, a form that owns it, or (for other
-// elements) contains it.
+// elements) contains it in its own tree (not in template content).
 func carriesCSRF(e ct.Node, idx formIndex, token string) bool {
 	if e.Tag() == "form" {
 		return csrfProblem(idx.controls[e], token) == ""
@@ -132,7 +144,7 @@ func carriesCSRF(e ct.Node, idx formIndex, token string) bool {
 	}
 	var fields []ct.Node
 	for d := range Elements(e, "input") {
-		if csrfField(d) {
+		if csrfField(d) && sameTree(d, e) {
 			fields = append(fields, d)
 		}
 	}
@@ -144,19 +156,18 @@ func carriesCSRF(e ct.Node, idx formIndex, token string) bool {
 }
 
 // htmxCarriesCSRF reports whether an element's non-GET htmx request sends
-// the CSRF field.
+// the CSRF field with a value that matches token.
 func htmxCarriesCSRF(e ct.Node, idx formIndex, ids map[string]ct.Node, token string) bool {
-	if e.Tag() == "form" && carriesCSRF(e, idx, token) {
+	if !paramsKeepCSRF(e) {
+		return false
+	}
+	if (e.Tag() == "form" || csrfField(e)) && carriesCSRF(e, idx, token) {
 		return true
 	}
-	related := idx.owner[e]
-	if related == nil {
-		related = inside(e, "form")
-	}
-	if related != nil && carriesCSRF(related, idx, token) {
+	if related := relatedForm(e, idx); related != nil && carriesCSRF(related, idx, token) {
 		return true
 	}
-	if v, ok := inherited(e, "hx-vals"); ok && valsCarry(v, token) {
+	if v, ok := htmxVals(e)[csrfFieldName].(string); ok && csrfMatches(v, token) {
 		return true
 	}
 	for _, target := range includeTargets(e, ids) {
@@ -167,45 +178,170 @@ func htmxCarriesCSRF(e ct.Node, idx formIndex, ids map[string]ct.Node, token str
 	return false
 }
 
+// relatedForm returns the form that htmx includes in a request of e other
+// than GET: the form owner of e, else its nearest form ancestor.
+func relatedForm(e ct.Node, idx formIndex) ct.Node {
+	if f := idx.owner[e]; f != nil {
+		return f
+	}
+	return nearestForm(e)
+}
+
 // inherited returns the value of an inherited htmx attribute: from the
 // element or its nearest ancestor that has it.
 func inherited(e ct.Node, name string) (string, bool) {
+	v, _, ok := inheritedFrom(e, name)
+	return v, ok
+}
+
+// inheritedFrom is [inherited] that also returns the element that declares
+// the attribute.
+func inheritedFrom(e ct.Node, name string) (string, ct.Node, bool) {
 	for p := e; p != nil; p = p.Parent() {
 		if p.Kind() != ct.KindElement {
 			continue
 		}
 		if v, _, ok := hxAttrOf(p, name); ok {
-			return v, true
+			return v, p, true
 		}
 	}
-	return "", false
+	return "", nil, false
 }
 
-// valsCarry reports whether an hx-vals JSON object has the CSRF field.
-func valsCarry(v string, token string) bool {
-	if scriptValue(v) {
+// htmxVals returns the values that htmx adds to a request of e from
+// hx-vals: the objects of e and its ancestors merged, nearer keys winning
+// (a null value counts as absent), as htmx's getValuesForElement does.
+// "unset" on any of them drops every hx-vals value, nearer ones included.
+// Script values, which htmx ignores with allowEval false, and malformed
+// values add nothing. A value without braces is wrapped in them, as htmx
+// does.
+func htmxVals(e ct.Node) map[string]any {
+	vals := make(map[string]any)
+	for p := e; p != nil; p = p.Parent() {
+		if p.Kind() != ct.KindElement {
+			continue
+		}
+		// htmx reads data-hx-vals when hx-vals is absent or empty.
+		v, _ := attrOf(p, "hx-vals")
+		if v == "" {
+			v, _ = attrOf(p, "data-hx-vals")
+		}
+		v = strings.TrimSpace(v)
+		switch {
+		case v == "" || scriptValue(v):
+			continue
+		case v == "unset":
+			return nil
+		}
+		if !strings.HasPrefix(v, "{") {
+			v = "{" + v + "}"
+		}
+		var obj map[string]any
+		if json.Unmarshal([]byte(v), &obj) != nil {
+			continue
+		}
+		for k, x := range obj {
+			if vals[k] == nil {
+				vals[k] = x
+			}
+		}
+	}
+	return vals
+}
+
+// valsHave reports whether merged hx-vals contain one of variants in a key
+// or a value; values that are not strings are compared as JSON.
+func valsHave(vals map[string]any, variants []string) bool {
+	for k, v := range vals {
+		if containsAny(k, variants) {
+			return true
+		}
+		text, ok := v.(string)
+		if !ok {
+			b, err := json.Marshal(v)
+			if err != nil {
+				continue
+			}
+			text = string(b)
+		}
+		if containsAny(text, variants) {
+			return true
+		}
+	}
+	return false
+}
+
+// paramsKeepCSRF reports whether the nearest hx-params of e lets htmx send
+// the CSRF field: htmx sends no parameters for "none", drops the names of
+// a "not a, b" list, and sends only the names of any other list; "*",
+// "unset" and an empty value filter nothing. The comparisons are exact,
+// as in htmx: "None" is a list of one name.
+func paramsKeepCSRF(e ct.Node) bool {
+	v, ok := inherited(e, "hx-params")
+	switch {
+	case !ok, v == "", v == "*", v == "unset":
+		return true
+	case v == "none":
 		return false
 	}
-	var vals map[string]any
-	if err := json.Unmarshal([]byte(v), &vals); err != nil {
-		return false
+	if rest, ok := strings.CutPrefix(v, "not "); ok {
+		return !namesCSRF(rest)
 	}
-	s, ok := vals[csrfFieldName].(string)
-	return ok && csrfMatches(s, token)
+	return namesCSRF(v)
+}
+
+// namesCSRF reports whether a comma-separated hx-params list names the
+// CSRF field.
+func namesCSRF(list string) bool {
+	for name := range strings.SplitSeq(list, ",") {
+		if strings.TrimSpace(name) == csrfFieldName {
+			return true
+		}
+	}
+	return false
+}
+
+// htmxURLMethods returns the methods whose htmx requests carry their
+// parameters in the URL: the methodsThatUseUrlParams of the document's
+// htmx-config meta element (htmx reads the first one), else htmx's default,
+// GET and DELETE. Fragments have no meta element and get the default.
+func htmxURLMethods(root ct.Node) map[string]bool {
+	for m := range Elements(root, "meta") {
+		if n, _ := attrOf(m, "name"); !strings.EqualFold(n, "htmx-config") {
+			continue
+		}
+		content, _ := attrOf(m, "content")
+		var cfg struct {
+			Methods []string `json:"methodsThatUseUrlParams"`
+		}
+		if json.Unmarshal([]byte(content), &cfg) != nil || cfg.Methods == nil {
+			break
+		}
+		out := make(map[string]bool, len(cfg.Methods))
+		for _, x := range cfg.Methods {
+			out[strings.ToLower(x)] = true
+		}
+		return out
+	}
+	return map[string]bool{"get": true, "delete": true}
 }
 
 // includeTargets resolves the elements of the nearest hx-include of e that
 // this package can resolve: "this", "closest form" and "#id" selectors.
+// htmx resolves "this" only as the whole value, to the element that
+// declares the hx-include; in a list it is a CSS type selector, which
+// matches nothing.
 func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
-	v, ok := inherited(e, "hx-include")
+	v, from, ok := inheritedFrom(e, "hx-include")
 	if !ok {
 		return nil
+	}
+	if strings.TrimSpace(v) == "this" {
+		return []ct.Node{from}
 	}
 	var out []ct.Node
 	for _, part := range splitSelectors(v) {
 		switch {
-		case part == "this":
-			out = append(out, e)
 		case part == "closest form":
 			if f := Closest(e, func(n ct.Node) bool { return n.Tag() == "form" }); f != nil {
 				out = append(out, f)
@@ -226,22 +362,35 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 //   - a form with method GET (the default) that owns a control named
 //     [session.CSRFField];
 //   - a submit button with formmethod="get" in a form that owns one;
-//   - an element with hx-get (also data-hx-get) that is such a form or whose
-//     nearest hx-include names the field or an element containing it;
+//   - an htmx request that puts its parameters in the URL, with hx-get or
+//     hx-delete (also with a data- prefix; htmx's default
+//     methodsThatUseUrlParams, or the list of the page's htmx-config meta
+//     element), that sends the field: the element is such a form or the
+//     field, its related form owns it (htmx includes it for every method
+//     but GET), the nearest hx-include names the field or an element
+//     containing it, or the merged hx-vals of the element and its
+//     ancestors have it (or, when token is not "", the token anywhere),
+//     unless the nearest hx-params drops it;
 //   - a field of that name that is not of type hidden;
 //   - when token is not "": the token in any attribute other than the value
 //     of the CSRF field, hx-vals and hx-headers (URL attributes are named as
 //     such), and in any text or comment, also percent-encoded.
 //
-// Messages never show the token.
+// Fields in template content or in a datalist are never submitted and do
+// not count. Messages never show the token.
 func NoTokenLeaks(token string) ct.Rule {
 	desc := "noTokenLeaks()"
 	if token != "" {
 		desc = "noTokenLeaks(token)"
 	}
+	var variants []string
+	if token != "" {
+		variants = encodedVariants(token)
+	}
 	return ct.CustomRule(desc, func(root ct.Node) []string {
 		idx := indexForms(root)
-		ids := idIndex(root)
+		ids := documentIDs(root)
+		urlMethods := htmxURLMethods(root)
 		var out []string
 		for _, f := range idx.forms {
 			has := false
@@ -265,15 +414,16 @@ func NoTokenLeaks(token string) ct.Rule {
 			}
 		}
 		for e := range Elements(root, "") {
-			if _, attr, ok := hxAttrOf(e, "hx-get"); ok {
-				leaks := e.Tag() == "form" && carriesCSRF(e, idx, "")
-				for _, target := range includeTargets(e, ids) {
-					if carriesCSRF(target, idx, "") {
-						leaks = true
-					}
+			for _, name := range htmxRequestAttrs {
+				_, attr, ok := hxAttrOf(e, name)
+				if !ok || !urlMethods[strings.TrimPrefix(name, "hx-")] || !paramsKeepCSRF(e) {
+					continue
 				}
-				if leaks {
+				switch {
+				case htmxURLCarriesCSRF(e, name != "hx-get", idx, ids):
 					out = append(out, fmt.Sprintf("%s at %s sends the %q field in the URL", attr, loc(e), csrfFieldName))
+				case variants != nil && valsHave(htmxVals(e), variants):
+					out = append(out, fmt.Sprintf("%s at %s sends the token in the URL (hx-vals)", attr, loc(e)))
 				}
 			}
 			if e.Tag() == "input" && AttrIs(e, "name", csrfFieldName) && inputType(e) != "hidden" {
@@ -283,7 +433,6 @@ func NoTokenLeaks(token string) ct.Rule {
 		if token == "" {
 			return out
 		}
-		variants := encodedVariants(token)
 		for d := range Descendants(root) {
 			switch d.Kind() {
 			case ct.KindElement:
@@ -320,6 +469,28 @@ func NoTokenLeaks(token string) ct.Rule {
 		}
 		return out
 	})
+}
+
+// htmxURLCarriesCSRF reports whether an htmx request of e that carries its
+// parameters in the URL includes a CSRF field (of any value): e is a form
+// that owns one or the field itself, its related form owns one (related:
+// for methods other than GET), an hx-include target has one, or the merged
+// hx-vals have the field.
+func htmxURLCarriesCSRF(e ct.Node, related bool, idx formIndex, ids map[string]ct.Node) bool {
+	if (e.Tag() == "form" || csrfField(e)) && carriesCSRF(e, idx, "") {
+		return true
+	}
+	if related {
+		if f := relatedForm(e, idx); f != nil && carriesCSRF(f, idx, "") {
+			return true
+		}
+	}
+	for _, target := range includeTargets(e, ids) {
+		if carriesCSRF(target, idx, "") {
+			return true
+		}
+	}
+	return htmxVals(e)[csrfFieldName] != nil
 }
 
 // encodedVariants returns v and its percent-encoded forms, as they appear
@@ -436,16 +607,26 @@ func firstChild(n ct.Node, tag string) ct.Node {
 // NotInURLs forbids each of values in every URL attribute ([SafeURLs]
 // lists them), also percent-encoded: values that belong in form bodies,
 // such as file paths or search terms of private data, must not reach the
-// location bar, the history or server logs. Messages name a value by its
-// position, never by the value. NotInURLs panics if a value is empty.
+// location bar, the history or server logs. It also reports each of values
+// among what a form submits into a URL: the controls (value attributes,
+// textarea text, every option of a select, every submit button) of a form
+// that submits with GET (its method, the default; a formmethod="get"
+// submit button; or an htmx request of the form that carries its
+// parameters in the URL, see [NoTokenLeaks]), and the merged hx-vals of an
+// htmx request that carries its parameters in the URL. Control values are
+// matched as written, since the browser encodes them when it submits.
+// Messages name a value by its position, never by the value. NotInURLs
+// panics if a value is empty.
 func NotInURLs(values ...string) ct.Rule {
 	checkValues("NotInURLs", values)
 	variants := make([][]string, len(values))
 	for i, v := range values {
 		variants[i] = encodedVariants(v)
 	}
+	values = append([]string(nil), values...)
 	return ct.CustomRule(fmt.Sprintf("notInURLs(%d values)", len(values)), func(root ct.Node) []string {
 		var out []string
+		urlMethods := htmxURLMethods(root)
 		for e := range Elements(root, "") {
 			for _, u := range urlAttrs(e) {
 				for i, vs := range variants {
@@ -454,7 +635,93 @@ func NotInURLs(values ...string) ct.Rule {
 					}
 				}
 			}
+			for _, name := range htmxRequestAttrs {
+				_, attr, ok := hxAttrOf(e, name)
+				if !ok || !urlMethods[strings.TrimPrefix(name, "hx-")] {
+					continue
+				}
+				vals := htmxVals(e)
+				for i := range values {
+					if valsHave(vals, []string{values[i]}) {
+						out = append(out, fmt.Sprintf("value %d in the hx-vals that %s at %s sends in the URL", i+1, attr, loc(e)))
+					}
+				}
+			}
+		}
+		idx := indexForms(root)
+		for _, f := range idx.forms {
+			if !submitsInURL(f, idx, urlMethods) {
+				continue
+			}
+			for _, c := range idx.controls[f] {
+				for _, v := range controlValues(c) {
+					for i := range values {
+						if strings.Contains(v, values[i]) {
+							out = append(out, fmt.Sprintf("value %d in a field of %s at %s, which the form at %s submits in the URL", i+1, c.Tag(), loc(c), loc(f)))
+						}
+					}
+				}
+			}
 		}
 		return out
 	})
+}
+
+// submitsInURL reports whether a form can submit its fields in a URL: its
+// method is GET, a submit button of it has formmethod="get", or the form
+// itself makes an htmx request whose method carries its parameters in the
+// URL. The declared method counts also for a form with hx-post: it is the
+// form's submission without script.
+func submitsInURL(f ct.Node, idx formIndex, urlMethods map[string]bool) bool {
+	if formMethod(f) == "get" {
+		return true
+	}
+	for _, c := range idx.controls[f] {
+		if m, ok := attrOf(c, "formmethod"); ok && submitButton(c) && normMethod(m) == "get" {
+			return true
+		}
+	}
+	for _, name := range htmxRequestAttrs {
+		if _, _, ok := hxAttrOf(f, name); ok && urlMethods[strings.TrimPrefix(name, "hx-")] {
+			return true
+		}
+	}
+	return false
+}
+
+// controlValues returns the values that a named, enabled control can put
+// into a form submission: its value attribute (for any submit button or
+// checkable input, not only a checked or pressed one), the text of a
+// textarea, and every option of a select, which a user may pick.
+func controlValues(c ct.Node) []string {
+	if name, _ := attrOf(c, "name"); name == "" || disabledControl(c) || inside(c, "datalist") != nil {
+		return nil
+	}
+	switch c.Tag() {
+	case "textarea":
+		return []string{rawText(c)}
+	case "select":
+		var out []string
+		for o := range Elements(c, "option") {
+			v, ok := attrOf(o, "value")
+			if !ok {
+				v = collapse(rawText(o))
+			}
+			out = append(out, v)
+		}
+		return out
+	case "button":
+		if !submitButton(c) {
+			return nil
+		}
+	case "input":
+		switch inputType(c) {
+		case "file", "image", "reset", "button":
+			return nil
+		}
+	default:
+		return nil
+	}
+	v, _ := attrOf(c, "value")
+	return []string{v}
 }

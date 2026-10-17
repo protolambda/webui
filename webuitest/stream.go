@@ -72,9 +72,10 @@ type Stream struct {
 	closeOnce sync.Once
 	closeFn   func()
 
-	// For ServeStream: closed when the handler returned; panicValue and
-	// panicStack are written before.
+	// For ServeStream: closed when the handler returned; aborted,
+	// panicValue and panicStack are written before.
 	handlerDone <-chan struct{}
+	aborted     bool // the handler panicked, so net/http would cut the response off
 	panicValue  any
 	panicStack  []byte
 	reported    bool
@@ -183,8 +184,19 @@ func (s *Stream) next(ctx context.Context) (Event, error) {
 
 // endErr describes why the body ended. It must only be called after events
 // was closed, which orders it after the reader's write of s.err.
+//
+// The body of a ServeStream stream reaches its end (s.err nil or
+// ErrUnterminated) only after the handler returned and the connection was
+// closed, which happens after the write of s.aborted, so reading it then is
+// ordered. Other errors may come while the handler runs, so s.aborted is
+// read for the end of the body only.
 func (s *Stream) endErr() error {
+	ended := s.err == nil || errors.Is(s.err, ErrUnterminated)
 	switch {
+	case ended && s.handlerDone != nil && s.aborted:
+		// Over HTTP the connection is cut without the end of the body, so
+		// the client sees a failed read, not the end of the stream.
+		return errors.New("the handler aborted the response")
 	case s.err == nil:
 		return errEnded
 	case errors.Is(s.err, ErrUnterminated):
@@ -319,10 +331,13 @@ func (c streamCheck) Check(context.Context) error { return c.check() }
 
 // ServeStream runs a streaming handler, such as a server-sent event
 // stream, in a goroutine over an in-memory connection, and returns a
-// [Stream] of its response once the handler has written the response
-// header (or returned). No network is involved, only net.Pipe and the
-// time package, so it works inside testing/synctest bubbles, where the
-// handler's timers run in fake time.
+// [Stream] of its response once the response header is sent, as net/http
+// sends it: at the first flush, when the 4 KiB buffer fills, or when the
+// handler returns. WriteHeader alone sends nothing, so a handler that
+// writes the header and then waits without a flush fails here as its
+// EventSource would wait over a real connection. No network is involved,
+// only net.Pipe and the time package, so it works inside testing/synctest
+// bubbles, where the handler's timers run in fake time.
 //
 // The handler gets a ResponseWriter that buffers like net/http's (4 KiB)
 // and implements Flush, FlushError and SetWriteDeadline (enforced on the
@@ -336,8 +351,10 @@ func (c streamCheck) Check(context.Context) error { return c.check() }
 // connection, as a browser leaving the page does, and it is canceled when
 // the handler returns. At the end of the test the stream is closed, and
 // the test fails if the handler does not return within the timeout or
-// panicked. A handler that panics with http.ErrAbortHandler just ends the
-// stream, abruptly.
+// panicked. A handler that panics with http.ErrAbortHandler cuts the
+// response off as net/http does: the test does not report a panic, but
+// [Stream.Next], [Stream.Expect] and [Stream.ExpectEnd] then fail, as they
+// do on a [Browser] stream.
 func ServeStream(t TB, h http.Handler, req *http.Request, opts ...StreamOption) *Stream {
 	t.Helper()
 	if h == nil || req == nil {
@@ -352,12 +369,12 @@ func ServeStream(t TB, h http.Handler, req *http.Request, opts ...StreamOption) 
 	req = req.WithContext(ctx)
 	srv, cli := net.Pipe()
 	w := &streamWriter{
-		conn:        srv,
-		buf:         bufio.NewWriterSize(srv, 4096),
-		header:      make(http.Header),
-		head:        req.Method == http.MethodHead,
-		headerReady: make(chan struct{}),
+		conn:       srv,
+		header:     make(http.Header),
+		head:       req.Method == http.MethodHead,
+		headerSent: make(chan struct{}),
 	}
+	w.buf = bufio.NewWriterSize(sendWriter{w}, 4096)
 	handlerDone := make(chan struct{})
 	s := &Stream{
 		desc:        req.Method + " " + req.URL.RequestURI(),
@@ -374,6 +391,7 @@ func ServeStream(t TB, h http.Handler, req *http.Request, opts ...StreamOption) 
 		aborted := true
 		defer func() {
 			if aborted {
+				s.aborted = true
 				if v := recover(); v != nil && v != http.ErrAbortHandler {
 					s.panicValue, s.panicStack = v, debug.Stack()
 				}
@@ -406,12 +424,17 @@ func ServeStream(t TB, h http.Handler, req *http.Request, opts ...StreamOption) 
 	})
 	timer := time.NewTimer(cfg.timeout)
 	defer timer.Stop()
+	sent := false
 	select {
-	case <-w.headerReady:
+	case <-w.headerSent:
+		sent = true
 	case <-handlerDone:
+		// A handler that returned has its header sent when the connection
+		// is finished; one that panicked only if it was sent before.
+		sent = !s.aborted || w.isSent()
 	case <-timer.C:
 		s.Close()
-		fatalf(t, "webuitest: %s: the handler wrote no response header within %v", s.desc, cfg.timeout)
+		fatalf(t, "webuitest: %s: the handler sent no response header within %v (WriteHeader alone sends none: flush)", s.desc, cfg.timeout)
 		return nil
 	case <-t.Context().Done():
 		s.Close()
@@ -419,8 +442,8 @@ func ServeStream(t TB, h http.Handler, req *http.Request, opts ...StreamOption) 
 		return nil
 	}
 	status, header, ok := w.response()
-	if !ok {
-		// The handler panicked before it wrote a header: net/http would
+	if !ok || !sent {
+		// The handler panicked before its header was sent: net/http would
 		// close the connection without a response.
 		s.Close()
 		if !s.checkPanic(t) {
@@ -445,20 +468,51 @@ func ServeStream(t TB, h http.Handler, req *http.Request, opts ...StreamOption) 
 // streamWriter is the ResponseWriter of [ServeStream]. mu guards the
 // response header state and is never held during I/O, so ServeStream can
 // read the header while a flush waits for the reader; ioMu serializes the
-// body writes.
+// body writes. The lock order is ioMu, then mu.
 type streamWriter struct {
-	mu          sync.Mutex
-	header      http.Header
-	head        bool
-	wrote       bool
-	status      int
-	snapshot    http.Header
-	headerReady chan struct{}
+	mu       sync.Mutex
+	header   http.Header
+	head     bool
+	wrote    bool
+	status   int
+	snapshot http.Header
+	// sent is set, and headerSent closed, when the header is sent: before
+	// the first bytes reach the connection, or at a flush.
+	sent       bool
+	headerSent chan struct{}
 
 	ioMu sync.Mutex
 	conn net.Conn
 	buf  *bufio.Writer
 	err  error
+}
+
+// sendWriter is the connection below the buffer of a streamWriter: it marks
+// the header sent before the first bytes go out. It signals before the
+// write, since the reader of a ServeStream starts only once the header is
+// sent, and a write to the net.Pipe would wait for it forever.
+type sendWriter struct{ w *streamWriter }
+
+func (s sendWriter) Write(p []byte) (int, error) {
+	s.w.send()
+	return s.w.conn.Write(p)
+}
+
+// send marks the header sent, once.
+func (w *streamWriter) send() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.sent {
+		w.sent = true
+		close(w.headerSent)
+	}
+}
+
+// isSent reports whether the header was sent.
+func (w *streamWriter) isSent() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.sent
 }
 
 var (
@@ -474,7 +528,9 @@ func (w *streamWriter) WriteHeader(code int) {
 	w.writeHeader(code)
 }
 
-// writeHeader records the response header; w.mu must be held.
+// writeHeader records the response header, as net/http does: the status
+// and a copy of the header, which later changes do not affect. It is sent
+// with the body or at a flush. w.mu must be held.
 func (w *streamWriter) writeHeader(code int) {
 	if w.wrote {
 		return
@@ -490,7 +546,6 @@ func (w *streamWriter) writeHeader(code int) {
 	w.wrote = true
 	w.status = code
 	w.snapshot = w.header.Clone()
-	close(w.headerReady)
 }
 
 // started writes the header with status 200 if it was not written, and
@@ -531,9 +586,11 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// FlushError writes the buffered body to the connection.
+// FlushError sends the header and writes the buffered body to the
+// connection.
 func (w *streamWriter) FlushError() error {
 	w.started(nil)
+	w.send()
 	w.ioMu.Lock()
 	defer w.ioMu.Unlock()
 	if w.err != nil {

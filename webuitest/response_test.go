@@ -102,6 +102,25 @@ func TestCookie(gt *testing.T) {
 			t.Must(webuitest.Cookie(serve(c), "s", webuitest.CookieWant{Cleared: true}))
 		}
 	})
+	t.Run("max-age wins over expires", func(t devtest.T) {
+		// A positive Max-Age keeps the cookie whatever Expires says (RFC
+		// 6265, section 5.3): not a logout, and not a cleared cookie.
+		kept := &http.Cookie{Name: "s", Value: cookieValue, MaxAge: 3600, Expires: time.Unix(1, 0)}
+		err := webuitest.Cookie(serve(kept), "s", webuitest.CookieWant{Cleared: true}).Check(t.Context())
+		t.Must(be.ErrorContains(err, "not cleared"))
+		t.Must(webuitest.Cookie(serve(kept), "s", webuitest.CookieWant{MaxAge: time.Hour}))
+		// Max-Age=0 clears it even with a future Expires.
+		gone := &http.Cookie{Name: "s", MaxAge: -1, Expires: time.Now().Add(time.Hour)}
+		t.Must(webuitest.Cookie(serve(gone), "s", webuitest.CookieWant{Cleared: true}))
+	})
+	t.Run("expires against the application clock", func(t devtest.T) {
+		now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		c := &http.Cookie{Name: "s", Value: cookieValue, Expires: now.Add(time.Hour)}
+		t.Must(webuitest.Cookie(serve(c), "s", webuitest.CookieWant{Now: now}))
+		err := webuitest.Cookie(serve(c), "s", webuitest.CookieWant{}).Check(t.Context())
+		t.Must(be.ErrorContains(err, "the cookie is cleared"))
+		t.Must(webuitest.Cookie(serve(c), "s", webuitest.CookieWant{Cleared: true, Now: now.Add(time.Hour)}))
+	})
 	t.Run("twice", func(t devtest.T) {
 		res := respond(t, func(w http.ResponseWriter) {
 			http.SetCookie(w, &http.Cookie{Name: "s", Value: "1"})
@@ -179,6 +198,31 @@ func TestSecurityHeaders(gt *testing.T) {
 		} {
 			t.Must(be.ErrorContains(err, want))
 		}
+	})
+	t.Run("frame options follow frame-ancestors", func(t devtest.T) {
+		for _, c := range []struct {
+			name string
+			csp  mw.CSP
+			want string
+		}{
+			{"absent", mw.StrictCSP().Without(mw.FrameAncestors), "DENY"},
+			{"upper-case none", mw.StrictCSP().With(mw.FrameAncestors, "'NONE'"), "DENY"},
+			{"upper-case self", mw.StrictCSP().With(mw.FrameAncestors, "'SELF'"), "SAMEORIGIN"},
+			{"other origin", mw.StrictCSP().With(mw.FrameAncestors, mw.SourceSelf, "https://embed.example.test"), ""},
+		} {
+			t.Run(c.name, func(t devtest.T) {
+				cfg := mw.Headers{CSP: c.csp}
+				res := secured(t, cfg, plain)
+				t.Must(be.Equal(c.want, res.Headers().Get("X-Frame-Options")))
+				t.Must(webuitest.SecurityHeaders(res, webuitest.PolicyFor(cfg)))
+			})
+		}
+		// Without frame-ancestors, a response that drops X-Frame-Options
+		// can be framed by any site.
+		cfg := mw.Headers{CSP: mw.StrictCSP().Without(mw.FrameAncestors)}
+		res := secured(t, cfg, func(w http.ResponseWriter) { w.Header().Del("X-Frame-Options") })
+		err := webuitest.SecurityHeaders(res, webuitest.PolicyFor(cfg)).Check(t.Context())
+		t.Must(be.ErrorContains(err, `has no X-Frame-Options, want "DENY"`))
 	})
 	t.Run("no headers", func(t devtest.T) {
 		err := webuitest.SecurityHeaders(respond(t, plain), webuitest.StrictPolicy()).Check(t.Context())

@@ -4,24 +4,31 @@ import (
 	"strings"
 
 	"github.com/protolambda/chord/ct"
+
+	"github.com/protolambda/webui/page"
 )
 
-// Layout ids of webui's page shell, which every full page renders, so that
-// fragments may target them: the main landmark, the alerts region, the
-// dialogs region and the page header.
+// Layout ids of webui's page layout, kept for compatibility.
+//
+// Deprecated: use the constants of the page package, which owns them:
+// [page.MainID], [page.AlertsID], [page.DialogsID] and [page.HeaderID].
 const (
-	MainID    = "main"
-	AlertsID  = "alerts"
-	DialogsID = "dialogs"
-	HeaderID  = "page-header"
+	MainID    = page.MainID
+	AlertsID  = page.AlertsID
+	DialogsID = page.DialogsID
+	HeaderID  = page.HeaderID
 )
 
-// DocumentTargets returns the ids of the page layout that a fragment may
-// reference without containing them ([MainID], [AlertsID], [DialogsID],
-// [HeaderID]): the default document targets of [HXTargets] in [Rules].
-// Each call returns a new slice.
+// DocumentTargets returns the ids of the regions of page.Layout that a
+// fragment may reference without containing them: [page.MainID],
+// [page.AlertsID], [page.DialogsID], [page.HeaderID], and the default ids
+// of the navbar and the sidebar, [page.NavbarID] and [page.SidebarID],
+// which fragments update out of band (for example a badge). These are the
+// default document targets of [HXTargets] in [Rules]; a navbar or sidebar
+// with another id needs [WithDocumentTargets]. Each call returns a new
+// slice.
 func DocumentTargets() []string {
-	return []string{MainID, AlertsID, DialogsID, HeaderID}
+	return []string{page.MainID, page.AlertsID, page.DialogsID, page.HeaderID, page.NavbarID, page.SidebarID}
 }
 
 // RuleOption configures [Rules].

@@ -145,6 +145,46 @@ func TestClient(gt *testing.T) {
 	t.Must(frag.Find(ct.Role("listitem")).Texts("x"))
 }
 
+func TestClientSubmitSendsTheFormOnly(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	var got url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /tasks", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		got = r.PostForm
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /projects/7/done", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	c := &webuitest.Client{Handler: mux, CSRF: "client-token"}
+	// A form that forgot its CSRF field is sent without one, as a browser
+	// sends it, so the end-to-end test sees the missing field.
+	page := cthtml.PageString(htmlPage(`<form method="post" action="/tasks"><input name="title" value="x"><button type="submit">Add</button></form>` +
+		`<form id="multi" method="post" action="/tasks" enctype="multipart/form-data"><input name="title" value="y"></form>` +
+		`<form id="list" method="post" action="/tasks"><datalist id="l"><input type="hidden" name="csrf" value="client-token"></datalist></form>`))
+	t.Must(c.Submit(t, page, page.Find(ct.Tag("form")).First(), nil, nil).Status(http.StatusNoContent))
+	t.Must(be.DeepEqual(url.Values{"title": {"x"}}, got))
+	t.Must(c.Submit(t, page, page.Find(ct.ID("multi")), nil, nil).Status(http.StatusNoContent))
+	t.Must(be.DeepEqual(url.Values{"title": {"y"}}, got))
+	t.Must(c.Submit(t, page, page.Find(ct.ID("list")), nil, nil).Status(http.StatusNoContent))
+	t.Must(be.False(got.Has(session.CSRFField)))
+	// Hand-built posts still get the client's field.
+	t.Must(c.Post(t, "/tasks", webuitest.Form(url.Values{"title": {"z"}})).Status(http.StatusNoContent))
+	t.Must(be.Equal("client-token", got.Get(session.CSRFField)))
+
+	// A relative action is resolved against the page's URL.
+	rel := cthtml.PageString(htmlPage(`<form method="post" action="done"></form>`))
+	t.Must(c.Submit(t, rel, rel.Find(ct.Tag("form")), nil, nil, webuitest.PageURL("/projects/7/")).Status(http.StatusAccepted))
+	r := newRecordT(t.Context())
+	t.Must(be.True(c.Submit(r, rel, rel.Find(ct.Tag("form")), nil, nil) == nil))
+	t.Must(be.Substring(r.output(), "webuitest: cannot compute form data: the action is relative to the page's URL; pass PageURL with it"))
+	t.Must(be.False(strings.Contains(r.output(), "webuitest: webuitest:")))
+}
+
 func TestClientOptions(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	var seen http.Header

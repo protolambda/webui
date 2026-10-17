@@ -1,6 +1,7 @@
 package webuitest_test
 
 import (
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -176,6 +177,24 @@ func TestBrowserHTTP2AndInsecure(gt *testing.T) {
 		t.Must(webuitest.Cookie(res, "session", webuitest.CookieWant{HttpOnly: true}))
 		t.Must(b.Get(t, "/").Status(http.StatusOK))
 	})
+	t.Run("tls server name is the site", func(t devtest.T) {
+		sni := func(w http.ResponseWriter, r *http.Request) {
+			if r.TLS == nil {
+				http.Error(w, "no tls", http.StatusBadRequest)
+				return
+			}
+			_, _ = io.WriteString(w, r.Host+" "+r.TLS.ServerName)
+		}
+		for _, o := range []webuitest.BrowserOptions{{}, {HTTP2: true}} {
+			b := webuitest.NewBrowser(t, http.HandlerFunc(sni), o)
+			res := b.Get(t, "/")
+			t.Must(res.Status(http.StatusOK))
+			t.Must(be.Equal("app.example.test app.example.test", string(res.Bytes())))
+			// Requests built for handlers agree.
+			res = webuitest.Serve(t, http.HandlerFunc(sni), webuitest.Get(t, "/"))
+			t.Must(be.Equal("app.example.test app.example.test", string(res.Bytes())))
+		}
+	})
 	t.Run("configure", func(t devtest.T) {
 		configured := false
 		b := webuitest.NewBrowser(t, http.NotFoundHandler(), webuitest.BrowserOptions{Configure: func(s *http.Server) { configured = s != nil }})
@@ -240,6 +259,31 @@ func TestCrossSiteProbes(gt *testing.T) {
 	} {
 		t.Must(be.ErrorContains(err, want))
 	}
+	// An origin check by prefix (or by host without the port), behind fetch
+	// metadata, passes the probes with foreign origins but not the
+	// lookalikes.
+	calls.Store(0)
+	prefix := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch site := r.Header.Get("Sec-Fetch-Site"); {
+		case site == "same-origin" || site == "none":
+		case site != "":
+			http.Error(w, "cross-site", http.StatusForbidden)
+			return
+		case !strings.HasPrefix(r.Header.Get("Origin"), webuitest.BaseURL) && !strings.HasPrefix(r.Header.Get("Referer"), webuitest.BaseURL):
+			http.Error(w, "no origin", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	lax := &webuitest.Client{Handler: mw.Chain(prefix, mw.HostCheck(mw.MustParseSite(webuitest.BaseURL)))}
+	err = webuitest.RejectsCrossSite(t, lax, http.MethodPost, "/tasks", webuitest.Body{}, nil).Check(t.Context())
+	for _, want := range []string{`probe "lookalike origin"`, `probe "other port origin"`, `probe "lookalike referer only"`} {
+		t.Must(be.ErrorContains(err, want))
+	}
+	for _, refused := range []string{`probe "cross-site"`, `probe "foreign origin without fetch metadata"`, `probe "suffix origin"`, `probe "null origin"`} {
+		t.Must(be.False(strings.Contains(err.Error(), refused)))
+	}
+
 	names := map[string]bool{}
 	for _, p := range webuitest.CrossSiteProbes() {
 		t.Must(be.False(names[p.Name]))

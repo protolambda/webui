@@ -204,10 +204,3 @@ func mediaEssence(v string) string {
 	t, _, _ := strings.Cut(v, ";")
 	return strings.ToLower(strings.TrimSpace(t))
 }
-
-// viewNode reports whether n comes from a chord view rather than a parsed
-// page: only view nodes tell boolean attributes apart ([ct.BoolAttrNode]).
-func viewNode(n ct.Node) bool {
-	_, ok := n.(ct.BoolAttrNode)
-	return ok
-}

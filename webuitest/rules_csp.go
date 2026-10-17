@@ -66,9 +66,10 @@ func NoInlineStyles() ct.Rule {
 // NoHTMXScripting forbids htmx attributes that make htmx compile and run
 // JavaScript from the page: hx-on attributes (hx-on:click, hx-on::after-swap,
 // hx-on-click, the htmx 1 hx-on), hx-vars, "js:" and "javascript:" values of
-// hx-vals and hx-headers, and event filters in square brackets in
-// hx-trigger, each also with a data- prefix. [ct.NoInlineHandlers] does not
-// catch them, as their names do not start with "on". webui's htmx
+// hx-vals, hx-headers and hx-request (which htmx reads with one evaluator),
+// and event filters in square brackets in hx-trigger, each also with a
+// data- prefix. [ct.NoInlineHandlers] does not catch them, as their names
+// do not start with "on". webui's htmx
 // configuration (allowEval false) makes htmx ignore them, and a strict
 // script-src would block them, so they would only fail silently. Square
 // brackets in an hx-trigger value are reported even inside a from: or
@@ -84,7 +85,7 @@ func NoHTMXScripting() ct.Rule {
 					out = append(out, fmt.Sprintf("%s at %s is an htmx script handler", key, loc(e)))
 				case name == "hx-vars":
 					out = append(out, fmt.Sprintf("%s at %s evaluates script", key, loc(e)))
-				case name == "hx-vals" || name == "hx-headers":
+				case name == "hx-vals" || name == "hx-headers" || name == "hx-request":
 					if scriptValue(v) {
 						out = append(out, fmt.Sprintf("%s at %s has a script value", key, loc(e)))
 					}
@@ -99,8 +100,9 @@ func NoHTMXScripting() ct.Rule {
 	})
 }
 
-// scriptValue reports whether an hx-vals or hx-headers value is evaluated
-// as script.
+// scriptValue reports whether an hx-vals, hx-headers or hx-request value
+// is evaluated as script. htmx matches the prefixes case-sensitively; this
+// matches them in any case, which over-reports harmlessly.
 func scriptValue(v string) bool {
 	v = strings.ToLower(strings.TrimSpace(v))
 	return strings.HasPrefix(v, "js:") || strings.HasPrefix(v, "javascript:")

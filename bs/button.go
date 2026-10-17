@@ -23,7 +23,9 @@ func btn(class attr.Node, attrs []attr.Node) elem.Scope {
 // does not submit an enclosing form. To make a submit (or reset) button,
 // pass the type among attrs, e.g. bs.BtnPrimary(button.Type(button.TypeSubmit)).
 // The type is detected wherever it is among attrs: in a bundle, a sequence,
-// or a lazy [attr.Fn] (which is evaluated once, during the render).
+// or a lazy [attr.Fn] (which is evaluated once, during the render). Give a
+// submit button an id when htmx replaces its form in place, so that the
+// focus stays on it (see Forms in the package documentation).
 func Btn(attrs ...attr.Node) elem.Scope {
 	return btn(rawClass("btn"), attrs)
 }

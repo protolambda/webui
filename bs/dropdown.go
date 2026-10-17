@@ -86,6 +86,15 @@ func dropdownToggleClass(component string, v Variant) (string, error) {
 // does not close it, and arrow keys do not move between the items (Tab
 // does). The dropdown needs the webui theme CSS, which shows the menu of an
 // open details.dropdown.
+//
+// The menu opens below the toggle, aligned to its start, or to its end with
+// the dropdown-menu-end class in MenuAttrs. Unlike Bootstrap's script (with
+// Popper), nothing shifts or flips it to stay in the window: a menu aligned
+// to the end of a toggle near the left edge of the window, or to the start
+// of one near the right edge, reaches past that edge when it is wider than
+// the room there, as it is likely to be on a phone. Choose the alignment by
+// where the toggle sits (end-aligned at the end of a toolbar or navbar,
+// start-aligned elsewhere), and keep the items short.
 type DetailsDropdown struct {
 	// Toggle is the content of the summary, its accessible name. Without
 	// it, ToggleAttrs must give an aria-label.

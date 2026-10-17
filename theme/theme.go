@@ -26,9 +26,15 @@
 // dark. On a dark page, elements marked dark again keep the theme; a light
 // region inside a dark page is not supported. Classes with fixed colors keep
 // Bootstrap's colors, which glare or fall short on black: the .bg-* utilities,
-// .text-secondary, .btn-light, .btn-dark and the contextual table variants
-// (.table-light and the others). Prefer those that follow the theme:
-// .text-bg-*, .text-body-secondary, .bg-body-tertiary, .border.
+// .text-secondary, .btn-light, .text-bg-light, the contextual table variants
+// (.table-light and the others), and .text-dark, .link-dark and .border-dark,
+// which are for light backgrounds (Bootstrap's dark is 1.3:1 on black);
+// .text-bg-dark keeps its fill, a box that barely shows, with readable white
+// text. Prefer those that follow the theme: .text-bg-* (but light and dark),
+// .text-body-secondary, .text-body-emphasis, .bg-body-tertiary, .border. The
+// buttons of every variant keep readable text and a visible edge on black:
+// the dark ones take the border of a control, and .btn-outline-dark light
+// text.
 //
 // # Tuning
 //

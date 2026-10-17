@@ -41,7 +41,10 @@ import (
 // empty and let the user type it.
 type Field struct {
 	// ID is the input's id: a token, see ValidID. The help and error ids
-	// derive from it (ID-help, ID-error).
+	// derive from it (ID-help, ID-error). Keep it the same when the form
+	// is rendered again: htmx moves the focus back to the input by its id
+	// when a swap replaces the form (see Forms in the package
+	// documentation).
 	ID string
 	// Name is the form field name; empty renders no name, so that the
 	// value is not submitted.

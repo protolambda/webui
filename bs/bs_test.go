@@ -14,6 +14,7 @@ import (
 	"github.com/protolambda/chord/html/form"
 	"github.com/protolambda/chord/html/form/button"
 	"github.com/protolambda/chord/html/form/input"
+	"github.com/protolambda/chord/html/group/div"
 	"github.com/protolambda/chord/html/text"
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
@@ -143,6 +144,44 @@ func TestToastMarkup(gt *testing.T) {
 		`<div class="toast show" role="alert" aria-live="assertive" aria-atomic="true"><div class="toast-header">Saved`+
 			`<button class="btn-close" type="button" aria-label="Close" hx-delete="/toasts/1"></button></div></div>`,
 		render(t, bs.Toast{Header: text.Text("Saved"), Shown: true, Close: bs.CloseButton(attr.KV("hx-delete", "/toasts/1"))})))
+}
+
+// The container is the one live region of the toasts in it: they render no
+// live region attributes of their own, wherever they are below it, while a
+// toast outside a container keeps Bootstrap's.
+func TestToastContainerAnnounces(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	toast := bs.Toast{Body: text.Text("Saved"), Shown: true, Polite: true}
+	t.Must(be.Equal(
+		`<div class="toast-container" aria-live="polite" id="toasts" hx-swap-oob="beforeend">`+
+			`<div class="toast show"><div class="toast-body">Saved</div></div>`+
+			`<div class="wrap"><div class="toast"><div class="toast-body">Deeper</div></div></div></div>`+
+			`<div class="toast show" role="status" aria-live="polite" aria-atomic="true"><div class="toast-body">Saved</div></div>`,
+		render(t, elem.Bundle{
+			bs.ToastContainer(attr.ID("toasts"), attr.KV("hx-swap-oob", "beforeend"))(
+				toast,
+				div.Div(attr.Class("wrap"))(bs.Toast{Body: text.Text("Deeper")}),
+			),
+			toast,
+		})))
+
+	// The container's politeness decides; a caller may still give a toast in
+	// it attributes of its own.
+	t.Must(be.Equal(
+		`<div class="toast-container" aria-live="assertive"><div class="toast" id="t"></div></div>`,
+		render(t, bs.ToastContainer(aria.Live("assertive"))(bs.Toast{Attrs: attr.ID("t")}))))
+
+	// One live region per toast in the page, never one inside another.
+	page := ct.View(elem.Bundle{
+		bs.ToastContainer(attr.ID("toasts"))(
+			bs.Toast{Header: text.Text("One"), Body: text.Text("A"), Shown: true},
+			bs.Toast{Header: text.Text("Two"), Body: text.Text("B"), Shown: true, Polite: true},
+		),
+		bs.Toast{Header: text.Text("Three"), Body: text.Text("C"), Shown: true},
+	})
+	live := ct.HasAttr("aria-live").Or(ct.Attr("role", "alert"), ct.Attr("role", "status"))
+	t.Must(page.Find(live).Count(2))
+	t.Must(page.Find(live).Find(live).None())
 }
 
 func TestPaginationMarkup(gt *testing.T) {
@@ -720,6 +759,33 @@ func TestCardImage(gt *testing.T) {
 		`<div class="x card"><img class="card-img-top" alt=""/><div class="card-body"><h6 class="card-subtitle mb-2 text-body-secondary">Sub</h6>More</div></div>`,
 		render(t, bs.Card{Attrs: attr.Class("x"), Img: elem.Name("img").Void(attr.Class("card-img-top"), attr.KV("alt", "")),
 			Body: bs.CardBody{Subtitle: text.Text("Sub"), Content: text.Text("More")}})))
+}
+
+// A card heading at another level than the default keeps the default's
+// size class, as the titles of dialogs and modals keep h5.
+func TestCardBodyHeadingSizes(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, tc := range []struct {
+		name string
+		body bs.CardBody
+		want string
+	}{
+		{"defaults", bs.CardBody{Title: text.Text("T"), Subtitle: text.Text("S")},
+			`<h5 class="card-title">T</h5><h6 class="card-subtitle mb-2 text-body-secondary">S</h6>`},
+		{"explicit defaults", bs.CardBody{Title: text.Text("T"), TitleLevel: 5, Subtitle: text.Text("S"), SubtitleLevel: 6},
+			`<h5 class="card-title">T</h5><h6 class="card-subtitle mb-2 text-body-secondary">S</h6>`},
+		{"higher", bs.CardBody{Title: text.Text("T"), TitleLevel: 2, Subtitle: text.Text("S"), SubtitleLevel: 3},
+			`<h2 class="card-title h5">T</h2><h3 class="card-subtitle h6 mb-2 text-body-secondary">S</h3>`},
+		{"lower", bs.CardBody{Title: text.Text("T"), TitleLevel: 6, Subtitle: text.Text("S"), SubtitleLevel: 5},
+			`<h6 class="card-title h5">T</h6><h5 class="card-subtitle h6 mb-2 text-body-secondary">S</h5>`},
+	} {
+		t.Run(tc.name, func(t devtest.T) {
+			t.Must(be.Equal(tc.want, render(t, tc.body)))
+		})
+	}
+	// The level, not the size class, is what assistive technology reads.
+	page := ct.View(bs.CardBody{Title: text.Text("Projects"), TitleLevel: 2})
+	t.Must(page.Find(ct.Role("heading", ct.Named("Projects"))).Matches(ct.Tag("h2"), ct.Class("h5")))
 }
 
 // Column.Attrs go on the header cell and every body cell, evaluated once

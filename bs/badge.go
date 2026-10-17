@@ -56,7 +56,9 @@ func BadgeLight(attrs ...attr.Node) elem.Scope {
 	return text.Span(attr.Cons(rawClass("badge text-bg-light"), attrs...))
 }
 
-// BadgeDark creates a dark Bootstrap badge.
+// BadgeDark creates a dark Bootstrap badge. On the webui theme's black
+// page its fill (Bootstrap's dark) barely shows, while its white text
+// reads; [BadgeSecondary] is a neutral badge that stands out.
 func BadgeDark(attrs ...attr.Node) elem.Scope {
 	return text.Span(attr.Cons(rawClass("badge text-bg-dark"), attrs...))
 }

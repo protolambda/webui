@@ -2,6 +2,7 @@ package bs
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/protolambda/chord/core/attr"
 	"github.com/protolambda/chord/core/elem"
@@ -53,26 +54,33 @@ type CardBody struct {
 	Text     elem.Node // p.card-text content
 	Content  elem.Node // additional body content
 
-	// TitleLevel is the heading level of the title; zero means h5.
+	// TitleLevel is the heading level of the title; zero means h5. The
+	// level places the title in the page's outline; the title keeps the
+	// size of an h5, which another level gets from the h5 class, as the
+	// titles of a [Dialog] and a [Modal] do.
 	TitleLevel HeadingLevel
 	// SubtitleLevel is the heading level of the subtitle; zero means h6.
+	// Another level gets the h6 class, so that the size stays that of an
+	// h6.
 	SubtitleLevel HeadingLevel
 }
 
 // Eval builds the card body structure as a fragment. A heading level out of
 // range fails with [ErrInvalidOption].
 func (cb CardBody) Eval(ctx context.Context) (elem.Obj, error) {
+	const component = "bs.CardBody"
 	var children []elem.Node
 
 	if cb.Title != nil {
-		h, err := heading("bs.CardBody", cb.TitleLevel, 5, rawClass("card-title"))
+		h, err := heading(component, cb.TitleLevel, 5, rawClass(sizedHeadingClass("card-title", cb.TitleLevel, 5)))
 		if err != nil {
 			return elem.Obj{}, err
 		}
 		children = append(children, h(cb.Title))
 	}
 	if cb.Subtitle != nil {
-		h, err := heading("bs.CardBody", cb.SubtitleLevel, 6, rawClass("card-subtitle mb-2 text-body-secondary"))
+		class := sizedHeadingClass("card-subtitle", cb.SubtitleLevel, 6) + " mb-2 text-body-secondary"
+		h, err := heading(component, cb.SubtitleLevel, 6, rawClass(class))
 		if err != nil {
 			return elem.Obj{}, err
 		}
@@ -86,6 +94,16 @@ func (cb CardBody) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 
 	return elem.Bundle(children).Eval(ctx)
+}
+
+// sizedHeadingClass returns class, followed by the size class of the default
+// level def (h5 for 5) when level is another one, so that the heading keeps
+// the size of the default level. An invalid level is left to heading.
+func sizedHeadingClass(class string, level, def HeadingLevel) string {
+	if level == 0 || level == def {
+		return class
+	}
+	return class + " h" + strconv.Itoa(int(def))
 }
 
 // CardImgOverlay creates a card image overlay wrapper (div.card-img-overlay).

@@ -136,7 +136,11 @@ func TestLandmarksAndStatusRoles(gt *testing.T) {
 	t.Must(page.Find(ct.Role("progressbar", ct.Named("Upload"))).Matches(
 		ct.Attr("aria-valuenow", "25"), ct.Attr("aria-valuemin", "0"), ct.Attr("aria-valuemax", "100")))
 	t.Must(page.Find(ct.Role("status"), ct.Class("spinner-border")).Matches(ct.TextContent("Loading...")))
-	t.Must(page.Find(ct.Role("alert"), ct.Class("toast")).Matches(ct.Attr("aria-live", "assertive"), ct.Attr("aria-atomic", "true")))
+	// The toast container is the live region of its toasts, which declare none of their own.
+	toasts := page.Find(ct.Class("toast-container"))
+	t.Must(toasts.Matches(ct.Attr("aria-live", "polite"), ct.HasAttr("role").Not()))
+	t.Must(toasts.Find(ct.Class("toast")).Matches(
+		ct.HasAttr("role").Not(), ct.HasAttr("aria-live").Not(), ct.HasAttr("aria-atomic").Not()))
 	t.Must(page.Find(ct.Role("alert"), ct.Class("alert")).Count(2))
 	t.Must(page.Find(ct.Role("listitem"), ct.Class("breadcrumb-item"), ct.Attr("aria-current", "page")).Matches(ct.TextContent("Here")))
 	t.Must(page.Find(ct.Role("link", ct.Named("1"))).Matches(ct.Attr("aria-current", "page")))

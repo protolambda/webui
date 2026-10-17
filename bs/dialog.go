@@ -42,6 +42,12 @@ import (
 // close button has autofocus because a popover moves the focus only to an
 // autofocus descendant.
 //
+// Browsers with invoker commands follow commandfor and ignore
+// popovertarget. Chromium says so in the console, "popovertarget is ignored
+// on elements with commandfor.", whenever such an opener or closer is used.
+// The warning is expected: it is the price of the fallback, and browser
+// checks that fail on console messages should allow it.
+//
 // The dialog needs the webui theme CSS: Bootstrap hides .modal elements
 // (display: none), and the theme shows an open dialog.modal and resets the
 // browser's own dialog box. The dialog is never rendered open, which would
@@ -138,6 +144,8 @@ func (d Dialog) Eval(ctx context.Context) (elem.Obj, error) {
 //
 //	bs.BtnPrimary(bs.DialogOpen("edit-note"))(text.Text("Edit"))
 //
+// popovertarget is the fallback for browsers without invoker commands; on
+// each use, Chromium logs that it ignores it, as expected (see [Dialog]).
 // An invalid id fails the render with [ErrInvalidID].
 func DialogOpen(id string) attr.Node {
 	if !ValidID(id) {
@@ -157,7 +165,9 @@ func DialogOpen(id string) attr.Node {
 //
 //	bs.BtnSecondary(bs.DialogClose("edit-note"))(text.Text("Cancel"))
 //
-// An invalid id fails the render with [ErrInvalidID].
+// As with [DialogOpen], Chromium logs on each use that it ignores the
+// popovertarget fallback, as expected. An invalid id fails the render with
+// [ErrInvalidID].
 func DialogClose(id string) attr.Node {
 	if !ValidID(id) {
 		return errAttr{fmt.Errorf("bs.DialogClose: %w", ErrInvalidID)}
@@ -174,8 +184,9 @@ func DialogClose(id string) attr.Node {
 // id: <button type="button" commandfor="id" command="show-modal"
 // popovertarget="id">. It has no classes; add them among attrs (e.g.
 // attr.Class("btn btn-primary")), or use [DialogOpen] on a Btn* button. A
-// type among attrs replaces the default. An invalid id fails the render
-// with [ErrInvalidID].
+// type among attrs replaces the default. Chromium logs on each use that it
+// ignores the popovertarget fallback, as expected (see [Dialog]). An
+// invalid id fails the render with [ErrInvalidID].
 func DialogButton(id string, attrs ...attr.Node) elem.Scope {
 	return button.Button(compose(attrs, typeButton, DialogOpen(id)))
 }

@@ -2,7 +2,10 @@ package bs_test
 
 import (
 	"github.com/protolambda/chord/core"
+	"github.com/protolambda/chord/core/attr"
 	"github.com/protolambda/chord/core/elem"
+	"github.com/protolambda/chord/html/form"
+	"github.com/protolambda/chord/html/form/button"
 	"github.com/protolambda/chord/html/form/input"
 	"github.com/protolambda/chord/html/text"
 
@@ -102,4 +105,16 @@ func ExampleRadio() {
 		bs.Radio{ID: "view-board", Name: "view", Value: "board", Label: text.Text("Board"), Inline: true},
 	})
 	// Output: <div class="form-check form-check-inline"><input class="form-check-input" type="radio" id="view-list" name="view" value="list" checked/><label class="form-check-label" for="view-list">List</label></div><div class="form-check form-check-inline"><input class="form-check-input" type="radio" id="view-board" name="view" value="board"/><label class="form-check-label" for="view-board">Board</label></div>
+}
+
+// A form that htmx replaces in place with the answer to its submission,
+// rendered again with the error. The field and the submit button have ids
+// that stay the same in every rendering, so that htmx gives the focus back
+// to the control that had it (see Forms in the package documentation).
+func ExampleBtnPrimary_htmxForm() {
+	core.Dump(form.Form(attr.KV("hx-post", "/notes"), attr.KV("hx-swap", "outerHTML"))(
+		bs.Field{ID: "note-title", Name: "title", Label: text.Text("Title"), Error: text.Text("Enter a title.")},
+		bs.BtnPrimary(button.Type(button.TypeSubmit), attr.ID("note-save"))(text.Text("Save")),
+	))
+	// Output: <form hx-post="/notes" hx-swap="outerHTML"><div class="mb-3"><label class="form-label" for="note-title">Title</label><input class="form-control is-invalid" type="text" id="note-title" name="title" aria-invalid="true" aria-describedby="note-title-error"/><div class="invalid-feedback" id="note-title-error">Enter a title.</div></div><button class="btn btn-primary" type="submit" id="note-save">Save</button></form>
 }

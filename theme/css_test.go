@@ -676,13 +676,17 @@ func load(t devtest.T) *themeSheets {
 	return s
 }
 
-var varOnly = regexp.MustCompile(`^var\(\s*(--[_a-zA-Z0-9-]+)\s*\)$`)
+var (
+	varOnly = regexp.MustCompile(`^var\(\s*(--[_a-zA-Z0-9-]+)\s*\)$`)
+	// translucentVar is a color such as Bootstrap's muted text: rgba(var(--bs-body-color-rgb), 0.75).
+	translucentVar = regexp.MustCompile(`^rgba\(\s*var\(\s*(--[_a-zA-Z0-9-]+)\s*\)\s*,\s*([0-9.]+)\s*\)$`)
+)
 
-// darkColor returns the color that the custom property prop has on an element with the class cls, on a page in the
+// darkValue returns the value that the custom property prop has on an element with the class cls, on a page in the
 // dark color mode: the theme's declaration for cls, else Bootstrap's for cls, else the dark mode's global value (the
-// theme's, else Bootstrap's dark one, else Bootstrap's root one), following var() references. It understands just
-// what the color checks need: values that are a single var() or a hex color.
-func (s *themeSheets) darkColor(cls, prop string) (rgb [3]uint8, err error) {
+// theme's, else Bootstrap's dark one, else Bootstrap's root one), following the references of values that are a single
+// var().
+func (s *themeSheets) darkValue(cls, prop string) (string, error) {
 	name := prop
 	for range 10 {
 		value, ok := s.theme.lookup(darkScope+cls, name)
@@ -699,15 +703,70 @@ func (s *themeSheets) darkColor(cls, prop string) (rgb [3]uint8, err error) {
 			value, ok = s.bootstrap.lookup(":root", name)
 		}
 		if !ok {
-			return rgb, fmt.Errorf("%s: %s is declared nowhere", prop, name)
+			return "", fmt.Errorf("%s: %s is declared nowhere", prop, name)
 		}
 		if m := varOnly.FindStringSubmatch(value); m != nil {
 			name = m[1]
 			continue
 		}
+		return value, nil
+	}
+	return "", fmt.Errorf("%s: too many var() references", prop)
+}
+
+// darkColor returns the color that the custom property prop has on an element with the class cls, as darkValue finds
+// it. It understands just what the color checks need: a hex color, after var() references.
+func (s *themeSheets) darkColor(cls, prop string) (rgb [3]uint8, err error) {
+	value, err := s.darkValue(cls, prop)
+	if err != nil {
+		return rgb, err
+	}
+	return parseHex(value)
+}
+
+// darkColorOn is darkColor for a color drawn on bg: it also understands a translucent color written as
+// rgba(var(--x-rgb), alpha), where --x-rgb is a triple such as "236, 239, 243", and composites it over bg.
+func (s *themeSheets) darkColorOn(cls, prop string, bg [3]uint8) (rgb [3]uint8, err error) {
+	value, err := s.darkValue(cls, prop)
+	if err != nil {
+		return rgb, err
+	}
+	m := translucentVar.FindStringSubmatch(value)
+	if m == nil {
 		return parseHex(value)
 	}
-	return rgb, fmt.Errorf("%s: too many var() references", prop)
+	alpha, err := strconv.ParseFloat(m[2], 64)
+	if err != nil || alpha < 0 || alpha > 1 {
+		return rgb, fmt.Errorf("%w: not an alpha: %q", errSyntax, m[2])
+	}
+	triple, err := s.darkValue(cls, m[1])
+	if err != nil {
+		return rgb, err
+	}
+	fg, err := parseTriple(triple)
+	if err != nil {
+		return rgb, err
+	}
+	for i := range rgb {
+		rgb[i] = uint8(math.Round(alpha*float64(fg[i]) + (1-alpha)*float64(bg[i])))
+	}
+	return rgb, nil
+}
+
+// parseTriple parses the "r, g, b" value of one of Bootstrap's -rgb properties.
+func parseTriple(value string) (rgb [3]uint8, err error) {
+	parts := strings.Split(value, ",")
+	if len(parts) != 3 {
+		return rgb, fmt.Errorf("%w: not an r, g, b triple: %q", errSyntax, value)
+	}
+	for i, p := range parts {
+		n, err := strconv.ParseUint(strings.TrimSpace(p), 10, 8)
+		if err != nil {
+			return rgb, fmt.Errorf("%w: not an r, g, b triple: %q", errSyntax, value)
+		}
+		rgb[i] = uint8(n)
+	}
+	return rgb, nil
 }
 
 // parseHex parses a #rgb or #rrggbb color.
@@ -910,6 +969,112 @@ func TestThemeContrast(gt *testing.T) {
 		got, ok := s.theme.lookup(want.selector, "border")
 		t.Mustf(be.True(ok), "%s { border }", want.selector)
 		t.Mustf(be.Equal(want.value, got), "%s { border }", want.selector)
+	}
+}
+
+// buttonVariants are Bootstrap's button variants: .btn-{v} and .btn-outline-{v}.
+var buttonVariants = []string{"primary", "secondary", "success", "danger", "warning", "info", "light", "dark"}
+
+// TestThemeButtons checks the buttons of every variant, filled and outline, on the black body and on a bar (a navbar,
+// a card header): the text 4.5:1 or more at rest, on the hover fill and on the fill when pressed (.active, or a checked
+// .btn-check), and the edge, the border, 3:1 or more. A disabled outline button keeps its text visible: 3:1 or more
+// before Bootstrap's opacity, which a disabled control is exempt from raising. Bootstrap's dark (#212529) fails these on
+// black, which the theme makes up for.
+func TestThemeButtons(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	s := load(t)
+	backgrounds := []struct {
+		name string
+		prop string
+	}{{"body", "--bs-body-bg"}, {"bar", "--bs-tertiary-bg"}}
+	for _, v := range buttonVariants {
+		for _, cls := range []string{".btn-" + v, ".btn-outline-" + v} {
+			t.Run(cls, func(t devtest.T) {
+				color := func(prop string, bg [3]uint8) [3]uint8 {
+					t.Helper()
+					c, err := s.darkColorOn(cls, prop, bg)
+					t.Must(be.NoError(err))
+					return c
+				}
+				check := func(what string, fg, bg [3]uint8, minRatio float64) {
+					t.Helper()
+					ratio := contrast(fg, bg)
+					t.Mustf(be.GreaterOrEq(ratio, minRatio), "%s %s: %.2f:1", cls, what, ratio)
+				}
+				outline := strings.HasPrefix(cls, ".btn-outline-")
+				for _, b := range backgrounds {
+					page := color(b.prop, [3]uint8{})
+					check("border on the "+b.name, color("--bs-btn-border-color", page), page, 3)
+					rest := page // an outline button is transparent at rest
+					if !outline {
+						rest = color("--bs-btn-bg", page)
+					}
+					check("text on the "+b.name, color("--bs-btn-color", rest), rest, 4.5)
+					if outline {
+						check("disabled text on the "+b.name, color("--bs-btn-disabled-color", page), page, 3)
+					}
+				}
+				hover := color("--bs-btn-hover-bg", [3]uint8{})
+				check("text on hover", color("--bs-btn-hover-color", hover), hover, 4.5)
+				active := color("--bs-btn-active-bg", [3]uint8{})
+				check("text when pressed", color("--bs-btn-active-color", active), active, 4.5)
+			})
+		}
+	}
+
+	// The dark buttons: Bootstrap's dark would be their edge (and the outline one's text) at 1.3:1 on black.
+	body, err := s.darkColor(".x", "--bs-body-bg")
+	t.Must(be.NoError(err))
+	dark, err := s.darkColor(".x", "--bs-dark")
+	t.Must(be.NoError(err))
+	t.Must(be.Equal([3]uint8{0x21, 0x25, 0x29}, dark))
+	t.Must(be.Less(contrast(dark, body), 1.4))
+	for _, want := range []struct{ cls, prop, value string }{
+		{".btn-dark", "--bs-btn-border-color", "var(--webui-control-border)"},
+		{".btn-outline-dark", "--bs-btn-border-color", "var(--webui-control-border)"},
+		{".btn-outline-dark", "--bs-btn-color", "var(--bs-dark-text-emphasis)"},
+		{".btn-outline-dark", "--bs-btn-hover-bg", "var(--webui-fill-secondary)"},
+	} {
+		got, ok := s.theme.lookup(darkScope+want.cls, want.prop)
+		t.Mustf(be.True(ok), "%s { %s }", want.cls, want.prop)
+		t.Mustf(be.Equal(want.value, got), "%s { %s }", want.cls, want.prop)
+	}
+}
+
+// fixedColorClasses are Bootstrap classes with fixed colors that the theme leaves alone on purpose: they glare or fall
+// short on black, or are meant for light backgrounds, and the header comment of webui.css says so.
+// (The contextual table variants are also fixed; TestThemeTableVariants checks them.)
+var fixedColorClasses = []string{
+	"bg-primary", "text-secondary", "btn-light", "text-bg-light", "text-dark", "link-dark", "border-dark",
+	"text-bg-dark", "btn-outline-light",
+}
+
+// namesClass reports whether text names the class cls as .cls, not as the start of a longer class name.
+func namesClass(text, cls string) bool {
+	return regexp.MustCompile(`\.` + regexp.QuoteMeta(cls) + `([^_a-zA-Z0-9-]|$)`).MatchString(text)
+}
+
+// TestThemeFixedColors checks that the theme selects none of the fixed-color classes, and that the paragraph of the
+// header comment on them names each, so that a reader knows which classes not to rely on.
+func TestThemeFixedColors(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	s := load(t)
+	start := strings.Index(s.src, "Fixed-color classes")
+	t.Must(be.GreaterOrEq(start, 0))
+	end := strings.Index(s.src[start:], "*/")
+	t.Must(be.Greater(end, 0))
+	paragraph := s.src[start : start+end]
+	selected := s.theme.classes()
+	known := s.bootstrap.classes()
+	for _, c := range fixedColorClasses {
+		t.Mustf(be.True(known[c]), "Bootstrap class %q", c)
+		t.Mustf(be.False(selected[c]), "the theme selects .%s", c)
+		t.Mustf(be.True(namesClass(paragraph, c)), "the header comment does not name .%s", c)
+	}
+	// The dark buttons are themed (see TestThemeButtons), so the paragraph does not list them as fixed.
+	for _, c := range []string{"btn-dark", "btn-outline-dark"} {
+		t.Mustf(be.True(selected[c]), "the theme does not select .%s", c)
+		t.Mustf(be.False(namesClass(paragraph, c)), "the header comment lists .%s as fixed", c)
 	}
 }
 
@@ -1118,6 +1283,33 @@ func TestCheckers(gt *testing.T) {
 		t.Must(be.Error(err))
 		_, err = sheets.darkColor(".loop", "--bs-e")
 		t.Must(be.Error(err))
+
+		// Translucent colors, composited over the background they are drawn on.
+		sheets = &themeSheets{
+			theme: parse(t, `[data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *){--bs-fg-rgb:200, 100, 0}
+				[data-bs-theme="dark"]:where(:root) .c{--bs-c:var(--bs-muted)}`),
+			bootstrap: parse(t, `:root{--bs-muted:rgba(var(--bs-fg-rgb), 0.5);--bs-solid:#102030;--bs-bad:rgba(var(--bs-fg-rgb), 2);
+				--bs-short:rgba(var(--bs-bad-rgb), 0.5);--bs-bad-rgb:1, 2}`),
+		}
+		got, err = sheets.darkColorOn(".c", "--bs-c", [3]uint8{0, 0, 0})
+		t.Must(be.NoError(err))
+		t.Must(be.Equal([3]uint8{100, 50, 0}, got))
+		got, err = sheets.darkColorOn(".c", "--bs-c", [3]uint8{0, 100, 200})
+		t.Must(be.NoError(err))
+		t.Must(be.Equal([3]uint8{100, 100, 100}, got))
+		got, err = sheets.darkColorOn(".c", "--bs-solid", [3]uint8{255, 255, 255})
+		t.Must(be.NoError(err))
+		t.Must(be.Equal([3]uint8{0x10, 0x20, 0x30}, got))
+		_, err = sheets.darkColor(".c", "--bs-c")
+		t.Must(be.ErrorIs(err, errSyntax))
+		for _, bad := range []string{"--bs-bad", "--bs-short"} {
+			_, err = sheets.darkColorOn(".c", bad, [3]uint8{})
+			t.Mustf(be.ErrorIs(err, errSyntax), "%s", bad)
+		}
+		for _, bad := range []string{"1, 2", "1, 2, 300", "a, b, c", "1, 2, 3, 4"} {
+			_, err = parseTriple(bad)
+			t.Mustf(be.ErrorIs(err, errSyntax), "%q", bad)
+		}
 	})
 	t.Run("forbidden", func(t devtest.T) {
 		src := `/* url( and @import in a comment are prose */

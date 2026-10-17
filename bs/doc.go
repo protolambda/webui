@@ -69,6 +69,25 @@
 // their callers must then give the name themselves, with an aria-label in
 // Attrs (ToggleAttrs for a Dropdown).
 //
+// # Forms
+//
+// The field components ([Field], [Textarea], [Select], [Checkbox] and
+// [Radio]) render a label, the control, help text and a server-side
+// validation error, tied together by ids (for, aria-describedby). To
+// report errors, the server renders the form again with Error set and the
+// submitted values (never a secret), for example as the answer to an htmx
+// request that replaces the form in place.
+//
+// Such a swap removes the element that has the keyboard focus, often the
+// submit button. htmx then focuses the element of the new content that
+// has the same id, if there is one; otherwise the focus falls back to the
+// document body, and a keyboard or screen reader user starts over at the
+// top of the page. The fields have ids already. Give the submit button, and
+// any other control that sends the form, an id as well, the same in every
+// rendering of the form and unique in the page:
+//
+//	bs.BtnPrimary(button.Type(button.TypeSubmit), attr.ID("note-save"))(text.Text("Save"))
+//
 // # Components
 //
 //   - Grid: [Container], [Row], [Col], [Col1] to [Col12], [ColSM], [ColMD],

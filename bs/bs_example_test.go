@@ -137,13 +137,18 @@ func ExampleCard_full() {
 	// Output: <div class="card"><div class="card-header">Header</div><div class="card-body">Body content</div><div class="card-footer">Footer</div></div>
 }
 
+// The heading levels follow the page's outline; the title and subtitle keep
+// the sizes of Bootstrap's h5 and h6 at any level.
 func ExampleCardBody() {
 	core.Dump(bs.Card{Body: bs.CardBody{
 		Title:      text.Text("Notes"),
 		TitleLevel: 3,
 		Text:       text.Text("Three notes this week."),
 	}})
-	// Output: <div class="card"><div class="card-body"><h3 class="card-title">Notes</h3><p class="card-text">Three notes this week.</p></div></div>
+	core.Dump(bs.CardBody{Title: text.Text("Tasks"), Subtitle: text.Text("Today"), SubtitleLevel: 3})
+	// Output:
+	// <div class="card"><div class="card-body"><h3 class="card-title h5">Notes</h3><p class="card-text">Three notes this week.</p></div></div>
+	// <h5 class="card-title">Tasks</h5><h3 class="card-subtitle h6 mb-2 text-body-secondary">Today</h3>
 }
 
 // Nav
@@ -223,18 +228,29 @@ func ExampleProgress() {
 
 // Toasts rendered visible by the server, without Bootstrap's script. The
 // page renders an empty container, a polite live region; an htmx response
-// then appends a toast to it with an out-of-band swap, so that screen
-// readers announce it.
+// then appends a toast to it with an out-of-band swap, and the container
+// announces it. A toast inside a container is no live region of its own,
+// so that it is announced once.
 func ExampleToast() {
 	// In the page:
 	core.Dump(bs.ToastContainer(attr.Class("position-fixed bottom-0 end-0 p-3"), attr.ID("toasts"))())
 	// In an htmx response:
 	core.Dump(bs.ToastContainer(attr.ID("toasts"), attr.KV("hx-swap-oob", "beforeend"))(
-		bs.Toast{Body: text.Text("Note saved."), Shown: true, Polite: true},
+		bs.Toast{Body: text.Text("Note saved."), Shown: true},
 	))
 	// Output:
 	// <div class="toast-container position-fixed bottom-0 end-0 p-3" aria-live="polite" id="toasts"></div>
-	// <div class="toast-container" aria-live="polite" id="toasts" hx-swap-oob="beforeend"><div class="toast show" role="status" aria-live="polite" aria-atomic="true"><div class="toast-body">Note saved.</div></div></div>
+	// <div class="toast-container" aria-live="polite" id="toasts" hx-swap-oob="beforeend"><div class="toast show"><div class="toast-body">Note saved.</div></div></div>
+}
+
+// A toast outside a container is its own live region, with Bootstrap's
+// attributes: assertive, or polite with Polite.
+func ExampleToast_standalone() {
+	core.Dump(bs.Toast{Body: text.Text("The sync failed."), Shown: true})
+	core.Dump(bs.Toast{Body: text.Text("Note saved."), Shown: true, Polite: true})
+	// Output:
+	// <div class="toast show" role="alert" aria-live="assertive" aria-atomic="true"><div class="toast-body">The sync failed.</div></div>
+	// <div class="toast show" role="status" aria-live="polite" aria-atomic="true"><div class="toast-body">Note saved.</div></div>
 }
 
 // Bootstrap JS components

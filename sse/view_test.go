@@ -49,6 +49,8 @@ func TestRegionRejectsURLs(gt *testing.T) {
 		"", "live", "//other.example/live", "/\\other.example", "https://other.example/live",
 		"javascript:alert(1)", "/\t/other.example", "/\n/other.example", "/a\rb", "/a b", "/a\\b",
 		" /live", "/a\x00", "/a\x7f", "/日本", "/\xff", "/a%zz", "/x?y=日",
+		// url.Parse leaves the query's escapes unchecked; Region does not.
+		"/x?y=%zz", "/x?y=%2", "/x?y=%", "/live?q=100%", "/x?y=%zz#f", "/x#%zz",
 	} {
 		for _, n := range []attr.Node{sse.Region(url), sse.Connect(url)} {
 			_, err := renderString(t.Context(), n)
@@ -60,9 +62,21 @@ func TestRegionRejectsURLs(gt *testing.T) {
 	t.Must(be.ErrorIs(err, sse.ErrInvalidURL))
 	t.Must(be.False(strings.Contains(err.Error(), "7f3a9c")))
 
-	for _, url := range []string{"/", "/live", "/a/b?c=d&e=%20#f", "/%E6%97%A5%E6%9C%AC"} {
-		_, err := renderString(t.Context(), sse.Region(url))
-		t.Must(be.Annotate(be.NoError(err), "url %q", url))
+	_, err = renderString(t.Context(), sse.Region("/live?token=7f3a9c%"))
+	t.Must(be.ErrorIs(err, sse.ErrInvalidURL))
+	t.Must(be.False(strings.Contains(err.Error(), "7f3a9c")))
+
+	for _, url := range []string{
+		"/", "/live", "/a/b?c=d&e=%20#f", "/%E6%97%A5%E6%9C%AC",
+		"/x?a=1;b=2", "/x?a=b+c", "/x?y=%41#%42", "/x#?y=1", "/x?", "/x?#",
+		// No length limit, unlike web.SafeNext (web.MaxNextLen is 2048):
+		// the application writes stream URLs.
+		"/" + strings.Repeat("a", 4096), "/x?q=" + strings.Repeat("%41", 2048),
+	} {
+		for _, n := range []attr.Node{sse.Region(url), sse.Connect(url)} {
+			_, err := renderString(t.Context(), n)
+			t.Must(be.Annotate(be.NoError(err), "url %q", url))
+		}
 	}
 }
 

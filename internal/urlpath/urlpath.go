@@ -30,12 +30,20 @@ func Printable(s string) bool {
 
 // Local reports whether s is a path on the page's own origin, with an
 // optional query and fragment: it is [Printable], starts with a single
-// "/", parses as a URL reference (percent escapes included), and has no
-// scheme, host or user information.
+// "/", parses as a URL reference with complete percent escapes in the
+// path, query and fragment, and has no scheme, host or user information.
+// A ';' in the query is allowed.
 func Local(s string) bool {
 	if !Printable(s) || s[0] != '/' || strings.HasPrefix(s, "//") {
 		return false
 	}
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "" && u.Host == "" && u.Opaque == "" && u.User == nil
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil {
+		return false
+	}
+	// url.Parse checks the escapes of the path and fragment but keeps the
+	// raw query unchecked. url.QueryUnescape checks them without
+	// url.ParseQuery's refusal of ';'.
+	_, err = url.QueryUnescape(u.RawQuery)
+	return err == nil
 }

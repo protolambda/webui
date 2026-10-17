@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/protolambda/chord/core/attr"
@@ -30,10 +31,12 @@ var ErrInvalidURL = errors.New("sse: invalid stream URL")
 // and backslash (URL parsers drop tabs and line breaks, and read a
 // backslash as a slash, which could turn the path into another host).
 // Percent-encode other characters, for example with [net/url.PathEscape]
-// or [net/url.QueryEscape]; percent escapes must be complete. This is the
-// rule of web.SafeNext. Otherwise the attributes fail to render with an
-// error wrapping [ErrInvalidURL]. Use [hx2.SSEConnect] directly for
-// anything else.
+// or [net/url.QueryEscape]; percent escapes must be complete, in the query
+// too (a raw "100%" in a query value fails). This is the rule of
+// web.SafeNext, without its length limit (web.MaxNextLen): the stream URL
+// is written by the application, not taken from a request. Otherwise the
+// attributes fail to render with an error wrapping [ErrInvalidURL]. Use
+// [hx2.SSEConnect] directly for anything else.
 func Region(url string) attr.Node {
 	if err := checkURL(url); err != nil {
 		return failed{err}
@@ -79,20 +82,36 @@ func Swap(event string, more ...string) attr.Node {
 }
 
 // checkURL accepts same-origin paths, with the rule of web.SafeNext and
-// page links (internal/urlpath), and says why it refuses others without
-// repeating the URL, which may carry a token.
-func checkURL(url string) error {
+// page links (internal/urlpath) but without SafeNext's length limit, and
+// says why it refuses others without repeating the URL, which may carry a
+// token.
+func checkURL(s string) error {
 	switch {
-	case url == "" || url[0] != '/':
+	case s == "" || s[0] != '/':
 		return fmt.Errorf("%w: not a path starting with '/'", ErrInvalidURL)
-	case len(url) > 1 && url[1] == '/':
+	case len(s) > 1 && s[1] == '/':
 		return fmt.Errorf("%w: starts with '//', which names another host", ErrInvalidURL)
-	case !urlpath.Printable(url):
+	case !urlpath.Printable(s):
 		return fmt.Errorf("%w: not printable ASCII without spaces or backslashes", ErrInvalidURL)
-	case !urlpath.Local(url):
+	case !queryEscaped(s):
+		return fmt.Errorf("%w: incomplete percent escape in the query", ErrInvalidURL)
+	case !urlpath.Local(s):
 		return fmt.Errorf("%w: not a valid path, query and fragment", ErrInvalidURL)
 	}
 	return nil
+}
+
+// queryEscaped reports whether the percent escapes in the query of s are
+// complete. url.Parse checks those of the path and fragment but keeps the
+// raw query unchecked; the browser would send a broken escape unchanged
+// and net/url's Query would then drop the pair. url.QueryUnescape checks
+// the escapes without url.ParseQuery's refusal of ';'. urlpath.Local
+// checks the same; this check runs first for a more specific error.
+func queryEscaped(s string) bool {
+	beforeFragment, _, _ := strings.Cut(s, "#")
+	_, query, _ := strings.Cut(beforeFragment, "?")
+	_, err := url.QueryUnescape(query)
+	return err == nil
 }
 
 var _ attr.Node = failed{}

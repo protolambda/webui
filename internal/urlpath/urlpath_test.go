@@ -15,6 +15,7 @@ func TestLocal(gt *testing.T) {
 	for _, s := range []string{
 		"/", "/live", "/a/b?c=d&e=%20#f", "/%E6%97%A5", "/tasks?next=%2F%2Fother.example",
 		"/a:b", "/?", "/#", "/" + strings.Repeat("a", 4096),
+		"/x?a=1;b=2", "/x?a=b+c", "/x?y=%41#%42", "/x#?y=1",
 	} {
 		t.Must(be.Annotate(be.True(urlpath.Local(s)), "%q", s))
 		t.Must(be.Annotate(be.True(urlpath.Printable(s)), "%q", s))
@@ -24,7 +25,7 @@ func TestLocal(gt *testing.T) {
 		"//other.example", "///other.example", "/\\other.example", "\\/other.example",
 		"/\t/other.example", "/\n/other.example", "/\r/other.example", " /x", "/x ", "/a b",
 		"/a\x00", "/a\x7f", "/日本", "/\xff", "/x?y=日",
-		"/a%zz", "/a%2",
+		"/a%zz", "/a%2", "/x?y=%zz", "/x?y=%2", "/x?y=%", "/live?q=100%", "/x?y=%zz#f", "/x#%zz",
 		"https://other.example/x", "javascript:alert(1)", "data:,x", "mailto:a@b.example",
 	} {
 		t.Must(be.Annotate(be.False(urlpath.Local(s)), "%q", s))

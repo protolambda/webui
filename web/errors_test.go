@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -93,9 +94,13 @@ func TestErrorFragment(gt *testing.T) {
 	t.Must(res.Header("HX-Push-Url", ct.Exact("false")))
 	t.Must(res.HeaderAbsent("HX-Trigger"))
 	t.Must(res.Header("Vary", ct.Exact("HX-Request")))
-	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger" role="alert">` + web.DefaultMessage(http.StatusConflict) + `</div>`)))
+	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger">` + web.DefaultMessage(http.StatusConflict) + `</div>`)))
+	// The alerts region is a live region, which announces the alert: the
+	// alert has no role of its own, which would nest a second one.
 	frag := res.HTMLFragment("div")
-	t.Must(frag.Find(ct.Role("alert")))
+	t.Must(frag.Find(ct.Class("alert-danger")).Texts(web.DefaultMessage(http.StatusConflict)))
+	t.Must(frag.Find(ct.Role("alert")).None())
+	t.Must(frag.Find(ct.Attr("aria-live", "")).None())
 	t.Must(frag.Find(ct.Tag("html")).None())
 }
 
@@ -139,7 +144,7 @@ func TestClassification(gt *testing.T) {
 
 			htmx := cthttp.Serve(web.Errors{}.Handle(failWith(c.err)), asHTMX(request(t, nil, http.MethodPost, "/tasks", nil), ""))
 			t.Must(htmx.Status(c.status))
-			t.Must(htmx.HTMLFragment("div").Find(ct.Role("alert")).Texts(c.message))
+			t.Must(htmx.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(c.message))
 
 			recs := l.all()
 			t.Must(be.Equal(1, len(recs)))
@@ -303,7 +308,7 @@ func TestServerSideDeadline(gt *testing.T) {
 				htmx := cthttp.Serve(h, asHTMX(request(t, l, http.MethodPost, "/tasks", nil), ""))
 				t.Must(htmx.Status(c.status))
 				t.Must(htmx.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
-				t.Must(htmx.HTMLFragment("div").Find(ct.Role("alert")).Texts(c.message))
+				t.Must(htmx.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(c.message))
 
 				// One record per request, none about a failed render.
 				recs := l.all()
@@ -473,10 +478,60 @@ func TestErrorHooks(gt *testing.T) {
 	res := cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPost, "/tasks/7/edit", nil), ""))
 	t.Must(res.Header("HX-Retarget", ct.Exact("#errors")))
 	t.Must(res.Header("HX-Reswap", ct.Exact("afterbegin")))
-	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger" role="alert">403 Forbidden: Only the owner can do this.</div>`)))
+	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger">403 Forbidden: Only the owner can do this.</div>`)))
 
 	want := web.ErrorView{Status: 403, Title: "403 Forbidden", Message: "Only the owner can do this.", Home: "/app/"}
 	t.Must(be.DeepEqual([]web.ErrorView{want, want}, seen))
+}
+
+// TestTargetFor checks that TargetFor chooses the target of every htmx
+// answer of the policy, with Target as the fallback.
+func TestTargetFor(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	var calls atomic.Int32
+	dialogAlerts := map[string]string{"rename-form": "#rename-alerts"}
+	errs := web.Errors{
+		Target: "#errors",
+		TargetFor: func(r *http.Request) string {
+			calls.Add(1)
+			return dialogAlerts[hx2.ParseRequestHeaders(r.Header).Trigger]
+		},
+	}
+	fromDialog := func(method, target string) *http.Request {
+		r := asHTMX(request(t, nil, method, target, nil), "https://app.example/projects")
+		r.Header.Set(hx2.HeaderTrigger, "rename-form")
+		return r
+	}
+	mux := http.NewServeMux()
+	mux.Handle("POST /rename", errs.Handle(failWith(web.Conflict("", nil))))
+	mux.HandleFunc("POST /boom", func(http.ResponseWriter, *http.Request) { panic("boom") })
+	mux.HandleFunc("POST /plain", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "plain", http.StatusBadRequest)
+	})
+	h := mw.Chain(mux, errs.Recover, errs.Intercept)
+
+	for _, path := range []string{"/rename", "/boom", "/plain"} {
+		res := cthttp.Serve(h, fromDialog(http.MethodPost, path))
+		t.Mustf(res.Header("HX-Retarget", ct.Exact("#rename-alerts")), "%s from the dialog", path)
+
+		// Another element, or a forged trigger, gets the fallback.
+		r := fromDialog(http.MethodPost, path)
+		r.Header.Set(hx2.HeaderTrigger, `x"><i hx-get=/x>`)
+		res = cthttp.Serve(h, r)
+		t.Mustf(res.Header("HX-Retarget", ct.Exact("#errors")), "%s from elsewhere", path)
+	}
+	t.Must(be.Equal(int32(6), calls.Load()))
+
+	// Plain requests get the error page; TargetFor is not asked.
+	res := cthttp.Serve(h, request(t, nil, http.MethodPost, "/rename", nil))
+	t.Must(res.Status(http.StatusConflict))
+	t.Must(res.HeaderAbsent("HX-Retarget"))
+	t.Must(be.Equal(int32(6), calls.Load()))
+
+	// Without Target, an empty choice means the page's alerts region.
+	errs.Target = ""
+	res = cthttp.Serve(errs.Handle(failWith(web.Conflict("", nil))), asHTMX(request(t, nil, http.MethodPost, "/", nil), ""))
+	t.Must(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
 }
 
 func TestErrorHookRenderFails(gt *testing.T) {
@@ -591,7 +646,7 @@ func TestNotFoundAnswers(gt *testing.T) {
 	t.Must(htmx.Header("HX-Reswap", ct.Exact(web.ErrorReswap)))
 	t.Must(htmx.Header("HX-Reselect", ct.Exact("unset")))
 	t.Must(htmx.Header("HX-Push-Url", ct.Exact("false")))
-	t.Must(htmx.HTMLFragment("div").Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusNotFound)))
+	t.Must(htmx.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(web.DefaultMessage(http.StatusNotFound)))
 }
 
 func TestWriteNilError(gt *testing.T) {
@@ -618,7 +673,10 @@ func TestRecover(gt *testing.T) {
 	t.Must(be.Equal(1, len(recs)))
 	t.Must(be.Equal("handler panic", recs[0].msg))
 	t.Must(be.Equal(slog.LevelError, recs[0].level))
-	t.Must(be.Equal("broken invariant", recs[0].attrs["panic"]))
+	// panic is the flag of mw.LogRequests' request record too; the value
+	// has a key of its own.
+	t.Must(be.Equal("true", recs[0].attrs["panic"]))
+	t.Must(be.Equal("broken invariant", recs[0].attrs["panic_value"]))
 	t.Must(be.Substring(recs[0].attrs["stack"], "goroutine"))
 
 	htmx := cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPost, "/tasks", nil), ""))
@@ -626,6 +684,52 @@ func TestRecover(gt *testing.T) {
 	t.Must(htmx.Header("HX-Retarget", ct.Exact("#alerts")))
 	t.Must(htmx.Header("HX-Reselect", ct.Exact("unset")))
 	t.Must(htmx.Header("HX-Push-Url", ct.Exact("false")))
+}
+
+// TestRecoverLogsValueAsText checks that panic_value is text whatever the
+// type of the panic value, so that it has one type in every record.
+func TestRecoverLogsValueAsText(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, c := range []struct {
+		value any
+		want  string
+	}{
+		{"broken", "broken"},
+		{errors.New("store closed"), "store closed"},
+		{42, "42"},
+		{struct{ ID int }{7}, "{7}"},
+	} {
+		l := new(logs)
+		h := web.Errors{}.Recover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(c.value) }))
+		res := cthttp.Serve(h, request(t, l, http.MethodGet, "/", nil))
+		t.Must(res.Status(http.StatusInternalServerError))
+		recs := l.all()
+		t.Must(be.Equal(1, len(recs)))
+		t.Mustf(be.Equal(c.want, recs[0].attrs["panic_value"]), "panic value %v", c.value)
+		t.Must(be.Equal("true", recs[0].attrs["panic"]))
+	}
+}
+
+// TestRecoverPanicKeyMatchesRequestLog checks that the panic record of
+// Recover and the request record of mw.LogRequests give the key panic the
+// same meaning, for a panic after the response started, which both log.
+func TestRecoverPanicKeyMatchesRequestLog(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	l := new(logs)
+	h := mw.Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "half")
+		panic("late")
+	}), mw.LogRequests(mw.RequestLog{Logger: slog.New(l.handler())}), web.Errors{}.Recover)
+	v := recovered(func() {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	})
+	t.Must(be.True(v == http.ErrAbortHandler))
+	recs := l.all()
+	t.Must(be.Equal(2, len(recs)))
+	for _, rec := range recs {
+		t.Mustf(be.Equal("true", rec.attrs["panic"]), "record %q", rec.msg)
+	}
+	t.Must(be.Equal("late", recs[0].attrs["panic_value"]))
 }
 
 // recovered runs fn and returns the value it panics with.
@@ -674,6 +778,8 @@ func TestPanicsOnMisuse(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Must(be.Panic(func() { web.Errors{}.Handle(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.Recover(nil) }))
+	t.Must(be.Panic(func() { web.Errors{}.Intercept(nil) }))
+	t.Must(be.Panic(func() { web.Errors{}.Answer(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.RequireAuth("/login", nil) }))
 	t.Must(be.Panic(func() {
 		web.Errors{}.RequireAuth("https://idp.example/login", func(*http.Request) bool { return true })

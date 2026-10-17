@@ -2,8 +2,11 @@ package webuitest
 
 import (
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
+	"time"
 
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthttp"
@@ -47,9 +50,9 @@ type Client struct {
 	// CSRF, when set, is added as the CSRF field ([session.CSRFField]) to
 	// the hand-built form bodies of requests other than GET and HEAD
 	// ([Client.Request], [Client.Send], [Client.Post]) that do not carry
-	// the field yet, as the page's forms would. [Client.Submit] sends what
-	// a form submits and never adds it. It is also the token of the
-	// default Contract.
+	// the field yet, as the page's forms would. [Client.Submit] and
+	// [Client.SubmitHTMX] send what the page sends and never add it. It
+	// is also the token of the default contracts.
 	CSRF string
 	// Contract checks the pages that [Client.Page] returns; nil means
 	// [PageContract] with [DefaultShell]() and [Rules]([WithCSRF](CSRF)).
@@ -60,6 +63,9 @@ type Client struct {
 	FragmentContract Contract
 	// Options apply to every request, before the options of each call.
 	Options []ReqOption
+	// StreamTimeout is the timeout of [Client.Stream] streams, see
+	// [StreamTimeout]; zero means [DefaultStreamTimeout].
+	StreamTimeout time.Duration
 }
 
 var _ Sender = (*Client)(nil)
@@ -83,6 +89,16 @@ func (c *Client) options(opts []ReqOption) []ReqOption {
 // or a Prepare that returns nil fails the test.
 func (c *Client) Do(t TB, req *http.Request) *cthttp.Result {
 	t.Helper()
+	if req = c.prepare(t, req); req == nil {
+		return nil
+	}
+	return cthttp.Serve(c.Handler, req)
+}
+
+// prepare checks the handler and req, and applies Prepare. It returns nil
+// after failing the test.
+func (c *Client) prepare(t TB, req *http.Request) *http.Request {
+	t.Helper()
 	if c.Handler == nil {
 		fatalf(t, "webuitest.Client: no handler")
 		return nil
@@ -97,7 +113,27 @@ func (c *Client) Do(t TB, req *http.Request) *cthttp.Result {
 			return nil
 		}
 	}
-	return cthttp.Serve(c.Handler, req)
+	return req
+}
+
+// Stream builds a GET request for target as a browser's EventSource sends
+// it (the client's Options, then [EventSource], then opts), prepares it
+// (see [Client.Prepare], for example to attach a session) and serves it
+// with [ServeStream], whose contract applies: the stream returns once the
+// response header is sent, is closed at the end of the test, and the test
+// fails if the handler does not return in time or panics. Streams wait at
+// most [Client.StreamTimeout]. A missing handler or a Prepare that returns
+// nil fails the test.
+func (c *Client) Stream(t TB, target string, opts ...ReqOption) *Stream {
+	t.Helper()
+	req := c.Request(t, http.MethodGet, target, Body{}, append([]ReqOption{EventSource()}, opts...)...)
+	if req == nil {
+		return nil
+	}
+	if req = c.prepare(t, req); req == nil {
+		return nil
+	}
+	return ServeStream(t, c.Handler, req, StreamTimeout(c.StreamTimeout))
 }
 
 // Send builds a request ([Client.Request]) and serves it ([Client.Do]).
@@ -166,6 +202,14 @@ func (c *Client) Fragment(t TB, res *cthttp.Result, status int, contextTag strin
 // form whose action is relative to the page ("done", "?page=2") or empty.
 // Editing a name that is no control of the form, a relative or empty
 // action without PageURL, or a dialog form fails the test.
+//
+// Submit sends the submission of the form without script. With [HTMX] (or
+// [HXTarget], [HXCurrentURL]) it adds htmx's headers to that submission,
+// which models an htmx form whose request attribute (hx-post, ...) has
+// the form's method and action; it fails the test when the htmx request
+// of the form or of the submitter has another method or URL, such as an
+// hx-delete beside a POST fallback. [Client.SubmitHTMX] sends what htmx
+// sends, with hx-vals, hx-include and hx-params applied.
 func (c *Client) Submit(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
 	all := c.options(opts)
@@ -189,12 +233,13 @@ func submission(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url
 		fatalf(t, "%v", prefixed(err))
 		return "", "", Body{}, false
 	}
-	for name, values := range edits {
+	// In name order, so that fields added at the end have a stable order.
+	for _, name := range slices.Sorted(maps.Keys(edits)) {
 		if !s.HasControl(name) {
 			fatalf(t, "webuitest: the form has no control %q to edit", name)
 			return "", "", Body{}, false
 		}
-		s.Set(name, values...)
+		s.Set(name, edits[name]...)
 	}
 	method, target, body, err = s.target(opts)
 	if err != nil {

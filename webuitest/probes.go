@@ -188,6 +188,16 @@ func LocalRedirectTargets() []string {
 // one must show it as text: check that it appears in the text, not in a
 // tag or attribute name, and that the page still satisfies [Rules]. Each
 // call returns a new slice.
+//
+// Showing these inputs as text keeps them from becoming markup. It does
+// not keep the direction overrides and invisible characters among them
+// from misleading a reader: as text they display as the attacker intends,
+// and an unclosed override reorders the page text that follows it in the
+// same block. Render untrusted names and titles with
+// [github.com/protolambda/webui/visible.Text] or
+// [github.com/protolambda/webui/visible.Code], which escape such
+// characters, mark the value as escaped and isolate its direction, and
+// refuse or flag them where a name decides what a user trusts.
 func Hostile() []string {
 	return []string{
 		"<script>alert(1)</script>",

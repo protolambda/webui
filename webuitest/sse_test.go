@@ -150,6 +150,52 @@ func TestServeStream(gt *testing.T) {
 	t.Must(be.ErrorContains(err, `header Content-Type of GET /tasks/live is ["text/event-stream; charset=utf-8"]`))
 }
 
+// ctxKey is the type of a context key of the tests.
+type ctxKey struct{}
+
+func TestClientStream(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	var seen http.Header
+	c := &webuitest.Client{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = r.Header.Clone()
+			account, _ := r.Context().Value(ctxKey{}).(string)
+			s := sse.New(w)
+			_ = s.Send(r.Context(), "account", text.Text(account))
+			_ = s.End(r.Context(), text.P()(text.Text("Done.")))
+		}),
+		// Prepare attaches state to the request, as for any client request.
+		Prepare: func(r *http.Request) *http.Request {
+			return r.WithContext(context.WithValue(r.Context(), ctxKey{}, "account-1"))
+		},
+		Options:       []webuitest.ReqOption{webuitest.Header("X-Client", "1")},
+		StreamTimeout: time.Minute,
+	}
+	st := c.Stream(t, "/tasks/live", webuitest.Header("Cache-Control", "max-age=0"))
+	t.Must(st.Header("Content-Type", ct.Prefix("text/event-stream")))
+	t.Must(be.Equal("account-1", st.Expect(t, "account").Data))
+	st.Expect(t, sse.EventEnd)
+	st.ExpectEnd(t)
+	st.Returned(t)
+	t.Must(be.Equal("text/event-stream", seen.Get("Accept")))
+	t.Must(be.Equal("max-age=0", seen.Get("Cache-Control")))
+	t.Must(be.Equal("1", seen.Get("X-Client")))
+
+	t.Run("failures", func(t devtest.T) {
+		r := newRecordT(t.Context())
+		var none webuitest.Client
+		t.Must(be.True(none.Stream(r, "/live") == nil))
+		t.Must(be.Substring(r.output(), "webuitest.Client: no handler"))
+		r = newRecordT(t.Context())
+		nilPrepare := webuitest.Client{Handler: http.NotFoundHandler(), Prepare: func(*http.Request) *http.Request { return nil }}
+		t.Must(be.True(nilPrepare.Stream(r, "/live") == nil))
+		t.Must(be.Substring(r.output(), "Prepare returned no request"))
+		r = newRecordT(t.Context())
+		t.Must(be.True(nilPrepare.Stream(r, "%zz") == nil))
+		t.Must(be.True(r.failed))
+	})
+}
+
 func TestServeStreamHEAD(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	st := webuitest.ServeStream(t, http.HandlerFunc(liveTasks), webuitest.Request(t, http.MethodHead, "/tasks/live", webuitest.Body{}))

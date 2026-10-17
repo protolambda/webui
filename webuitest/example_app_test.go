@@ -65,7 +65,7 @@ func notesApp(set *asset.Set, csrf string, notes *[]string) http.Handler {
 		_ = web.Render(w, r, http.StatusOK, notesPage(set, csrf, "publish"))
 	})
 	add := func(w http.ResponseWriter, r *http.Request) {
-		if r.ParseForm() != nil || r.PostForm.Get(session.CSRFField) != csrf {
+		if r.ParseForm() != nil || session.CheckCSRF(csrf, r.PostForm.Get(session.CSRFField)) != nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -253,7 +253,8 @@ func ExampleLogs_NotLogged() {
 }
 
 // Fragment checks the answer to an htmx request: web.Errors retargets an
-// error to the alerts region of page.Layout, keeping the status.
+// error to the alerts region of page.Layout, keeping the status. The alert
+// has no role of its own: the region, a live region, announces it.
 func ExampleClient_Fragment() {
 	t := webuitest.PrintT{}
 	errs := web.Errors{}
@@ -264,7 +265,7 @@ func ExampleClient_Fragment() {
 	res := c.Get(t, "/notes/3", webuitest.HTMX())
 	frag := c.Fragment(t, res, http.StatusConflict, "div")
 	t.Must(webuitest.HXRetarget(res, ct.Exact("#"+page.AlertsID)))
-	t.Must(frag.Find(ct.Role("alert")).Count(1))
+	t.Must(frag.Find(ct.Class("alert-danger")).Count(1))
 	fmt.Println(res.Headers().Get("HX-Retarget"), res.Headers().Get("HX-Reswap"))
 	// Output:
 	// #alerts innerHTML show:top

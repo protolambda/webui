@@ -6,11 +6,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/protolambda/chord/core"
+	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthttp"
+	"github.com/protolambda/chord/html/group/div"
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
 
+	"github.com/protolambda/webui/page"
+	"github.com/protolambda/webui/sse"
 	"github.com/protolambda/webui/web"
 )
 
@@ -91,10 +96,9 @@ func TestRedirectHistoryRestoreIsPlain(gt *testing.T) {
 	t.Must(res.HeaderAbsent("HX-Redirect"))
 }
 
-func TestSafeNext(gt *testing.T) {
-	t := devtest.ParallelT(gt)
-	const fallback = "/home"
-	good := []string{
+// safeNextCases returns values that SafeNext accepts and refuses.
+func safeNextCases() (good, bad []string) {
+	good = []string{
 		"/",
 		"/tasks",
 		"/tasks/",
@@ -111,7 +115,7 @@ func TestSafeNext(gt *testing.T) {
 		"/tasks?q=a+b&x=%20",
 		"/" + strings.Repeat("a", web.MaxNextLen-1),
 	}
-	bad := []string{
+	bad = []string{
 		"",
 		"tasks",
 		"./tasks",
@@ -146,11 +150,49 @@ func TestSafeNext(gt *testing.T) {
 		"/tasks%",
 		"/" + strings.Repeat("a", web.MaxNextLen),
 	}
+	return good, bad
+}
+
+func TestSafeNext(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	const fallback = "/home"
+	good, bad := safeNextCases()
 	for _, v := range good {
 		t.Mustf(be.Equal(v, web.SafeNext(v, fallback)), "SafeNext(%q)", v)
 	}
 	for _, v := range bad {
 		t.Mustf(be.Equal(fallback, web.SafeNext(v, fallback)), "SafeNext(%q)", v)
+	}
+}
+
+// SafeNext, the stream URLs of sse.Region and the favicon of page.Document
+// share one rule for a path on the page's own origin (internal/urlpath);
+// only SafeNext adds a length limit.
+func TestLocalPathRuleIsShared(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	good, bad := safeNextCases()
+	render := func(n elem.Node) error {
+		var b strings.Builder
+		return core.Render(t.Context(), n, &b)
+	}
+	for _, v := range append(good, bad...) {
+		if len(v) > web.MaxNextLen {
+			continue
+		}
+		want := web.SafeNext(v, "") != ""
+		streamErr := render(div.Div(sse.Region(v))())
+		t.Mustf(be.Equal(want, streamErr == nil), "sse.Region(%q): %v", v, streamErr)
+		if !want {
+			t.Mustf(be.ErrorIs(streamErr, sse.ErrInvalidURL), "sse.Region(%q)", v)
+		}
+		if v == "" || strings.HasPrefix(v, "data:") {
+			continue // the default icon, or a data: URL, which a favicon may be
+		}
+		iconErr := render(page.Document{Title: "x", Favicon: v})
+		t.Mustf(be.Equal(want, iconErr == nil), "page.Document{Favicon: %q}: %v", v, iconErr)
+		if !want {
+			t.Mustf(be.ErrorIs(iconErr, page.ErrInvalid), "page.Document{Favicon: %q}", v)
+		}
 	}
 }
 

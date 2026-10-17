@@ -12,7 +12,8 @@ import (
 	"github.com/protolambda/chord/ct"
 )
 
-// ErrFormData reports a form or submitter that [FormData] cannot submit.
+// ErrFormData reports a form or submitter that [FormData] cannot submit,
+// or an element whose htmx request [HTMXData] cannot compute.
 var ErrFormData = errors.New("webuitest: cannot compute form data")
 
 // Encoding types of form submissions.
@@ -46,6 +47,15 @@ type Submission struct {
 
 	// names are the names of the form's controls, successful or not.
 	names map[string]bool
+	// hx is the htmx request that the form or its submitter makes instead
+	// of the submission, or nil.
+	hx *htmxIntent
+}
+
+// htmxIntent is the method and URL of the htmx request of a form or its
+// submitter, for the check that Submit with HTMX sends that request.
+type htmxIntent struct {
+	method, path, attr string
 }
 
 // Values returns the text fields of the submission.
@@ -82,9 +92,15 @@ func (s *Submission) SetFile(name, filename, contentType string, content []byte)
 }
 
 func (s *Submission) replace(name string, parts []Part) {
-	out := make([]Part, 0, len(s.Fields)+len(parts))
+	s.Fields = replaceFields(s.Fields, name, parts)
+}
+
+// replaceFields returns fields with the fields called name replaced by
+// parts, at the position of the first, or at the end when there is none.
+func replaceFields(fields []Part, name string, parts []Part) []Part {
+	out := make([]Part, 0, len(fields)+len(parts))
 	done := false
-	for _, p := range s.Fields {
+	for _, p := range fields {
 		if p.Name != name {
 			out = append(out, p)
 			continue
@@ -97,7 +113,7 @@ func (s *Submission) replace(name string, parts []Part) {
 	if !done {
 		out = append(out, parts...)
 	}
-	s.Fields = out
+	return out
 }
 
 // Body returns the request body of a POST submission in its encoding.
@@ -115,7 +131,8 @@ func (s Submission) Body() Body {
 // target returns the method, URL and body of the submission's request: a
 // GET submission replaces the query of the action with the fields. An
 // action relative to the page's URL needs [PageURL] among opts, against
-// which the request target is resolved.
+// which the request target is resolved. With [HTMX] among opts, the htmx
+// request of the form, if it has one, must be the submission's.
 func (s Submission) target(opts []ReqOption) (method, target string, body Body, err error) {
 	switch s.Method {
 	case "DIALOG":
@@ -124,19 +141,18 @@ func (s Submission) target(opts []ReqOption) (method, target string, body Body, 
 	default:
 		return "", "", Body{}, fmt.Errorf("%w: unknown method %q", ErrFormData, s.Method)
 	}
+	rs := settings(opts)
 	// Browsers strip leading and trailing ASCII white space from URLs.
-	action := strings.Trim(s.Action, "\t\n\f\r ")
+	action := trimURL(s.Action)
+	if hx := s.hx; rs.htmx && hx != nil && (hx.method != s.Method || trimURL(hx.path) != action) {
+		return "", "", Body{}, fmt.Errorf("%w: htmx sends %s %q for the %s of the form, not the form's %s %q; send it with SubmitHTMX",
+			ErrFormData, hx.method, hx.path, hx.attr, s.Method, s.Action)
+	}
 	u, err := url.Parse(action)
 	if err != nil {
 		return "", "", Body{}, fmt.Errorf("%w: invalid action: %w", ErrFormData, err)
 	}
 	if u.Scheme == "" && u.Host == "" && !strings.HasPrefix(u.Path, "/") {
-		var rs reqSettings
-		for _, o := range opts {
-			if o != nil {
-				o(&rs)
-			}
-		}
 		switch {
 		case rs.page != nil:
 		case action == "":
@@ -240,6 +256,7 @@ func FormData(ctx context.Context, page *ct.Subject, form, submitter *ct.Selecti
 		Action:  override("action", "formaction"),
 		Enctype: normEnctype(override("enctype", "formenctype")),
 		names:   make(map[string]bool),
+		hx:      formHTMX(f, sub),
 	}
 	radios := checkedRadios(idx.controls[f])
 	for _, c := range idx.controls[f] {
@@ -256,6 +273,36 @@ func FormData(ctx context.Context, page *ct.Subject, form, submitter *ct.Selecti
 	}
 	return s, nil
 }
+
+// formHTMX returns the htmx request that replaces the submission of form f
+// by submitter sub (nil for none): the submitter's own, which htmx sends
+// when it is clicked, else the form's, with the formaction and formmethod
+// of the submitter, as htmx applies them. It is nil when neither makes an
+// htmx request.
+func formHTMX(f, sub ct.Node) *htmxIntent {
+	if sub != nil {
+		if verb, attr, path, ok := firstRequestAttr(sub); ok {
+			return &htmxIntent{method: strings.ToUpper(verb), path: path, attr: attr}
+		}
+	}
+	verb, attr, path, ok := firstRequestAttr(f)
+	if !ok {
+		return nil
+	}
+	if sub != nil {
+		if a, ok := attrOf(sub, "formaction"); ok {
+			path = a
+		}
+		if m, ok := attrOf(sub, "formmethod"); ok {
+			verb = strings.ToLower(m)
+		}
+	}
+	return &htmxIntent{method: strings.ToUpper(verb), path: path, attr: attr}
+}
+
+// trimURL strips leading and trailing ASCII white space from a URL, as
+// browsers do.
+func trimURL(u string) string { return strings.Trim(u, "\t\n\f\r ") }
 
 // one returns the single node of a selection.
 func one(ctx context.Context, sel *ct.Selection, what string) (ct.Node, error) {

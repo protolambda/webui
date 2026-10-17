@@ -149,11 +149,7 @@ func TestPageAgreement(gt *testing.T) {
 		err := webuitest.ShellContract(ct.View(eval), webuitest.DefaultShell()).Check(t.Context())
 		t.Must(be.ErrorContains(err, `htmx-config "allowEval" is true, want false`))
 	})
-	t.Run("deprecated ids are the page ids", func(t devtest.T) {
-		t.Must(be.Equal(page.MainID, webuitest.MainID))
-		t.Must(be.Equal(page.AlertsID, webuitest.AlertsID))
-		t.Must(be.Equal(page.DialogsID, webuitest.DialogsID))
-		t.Must(be.Equal(page.HeaderID, webuitest.HeaderID))
+	t.Run("document targets are the page ids", func(t devtest.T) {
 		t.Must(be.DeepEqual([]string{page.MainID, page.AlertsID, page.DialogsID, page.HeaderID, page.NavbarID, page.SidebarID}, webuitest.DocumentTargets()))
 	})
 	t.Run("fragments may target the layout", func(t devtest.T) {
@@ -226,7 +222,10 @@ func TestWebErrorsAgreement(gt *testing.T) {
 	t.Run("htmx fragment", func(t devtest.T) {
 		res := c.Get(t, "/tasks/7", webuitest.HTMX(), webuitest.HXTarget("list"))
 		frag := c.Fragment(t, res, http.StatusConflict, "div")
-		t.Must(frag.Find(ct.Role("alert")).Matches(ct.InnerTextMatches(ct.Contains("The task changed meanwhile."))))
+		t.Must(frag.Find(ct.Class("alert-danger")).Matches(ct.InnerTextMatches(ct.Contains("The task changed meanwhile."))))
+		// The alerts region announces the alert; a role would nest a
+		// second live region in it.
+		t.Must(frag.Find(ct.Role("alert")).None())
 		t.Must(webuitest.HXRetarget(res, ct.Exact("#"+page.AlertsID)))
 		t.Must(res.Header(hx2.HeaderReswap, ct.Exact(web.ErrorReswap)))
 		t.Must(be.False(strings.Contains(string(res.Bytes()), "version mismatch")))

@@ -27,7 +27,9 @@ type Notice struct {
 	Variant bs.Variant
 }
 
-// Alert renders the notice as an alert with role="status" ([page.Notice]).
+// Alert renders the notice as an alert ([page.Notice]): with role="status"
+// in the page it comes with, and without a role inside page.AlertsOOB or
+// page.AlertsContent, whose live region announces it.
 func (n Notice) Alert() elem.Node {
 	return page.Notice(n.Variant, text.Text(n.Message))
 }

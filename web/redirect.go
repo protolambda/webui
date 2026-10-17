@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/internal/urlpath"
 )
 
 // Redirect answers r with a redirect to target, after a successful form
@@ -91,16 +92,7 @@ const MaxNextLen = 2048
 // "//host", which is another host. Non-ASCII characters must arrive
 // percent-encoded, as browsers send them.
 func SafeNext(value, fallback string) string {
-	if value == "" || len(value) > MaxNextLen || value[0] != '/' || strings.HasPrefix(value, "//") {
-		return fallback
-	}
-	for i := 0; i < len(value); i++ {
-		if c := value[i]; c <= ' ' || c >= 0x7f || c == '\\' {
-			return fallback
-		}
-	}
-	u, err := url.Parse(value)
-	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil {
+	if len(value) > MaxNextLen || !urlpath.Local(value) {
 		return fallback
 	}
 	return value

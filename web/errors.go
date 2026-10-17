@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"log/slog"
@@ -30,7 +31,9 @@ const (
 	MessageForm = "The form is not valid."
 	// MessageForged answers a request with an invalid CSRF token or from
 	// another origin.
-	MessageForged = "The form expired or came from another site. Reload the page and try again."
+	// The advice works for an htmx alert and for an error page alike: a
+	// reload of the error page would post the expired form again.
+	MessageForged = "The form expired or came from another site. Open the form again and retry."
 	// MessageInterrupted answers a request that failed with
 	// context.Canceled or context.DeadlineExceeded, such as one that ran
 	// past the deadline that a timeout middleware set on its context.
@@ -73,15 +76,21 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 //   - anything else gives 500 with the [DefaultMessage], which never
 //     reveals the error.
 //
+// mw.SameOrigin refuses with a plain-text 403 of its own unless its Deny
+// handler answers through the policy, as
+// mw.OriginPolicy{Deny: errs.Answer(mw.ErrCrossOrigin)} does ([Errors.Answer]).
+// [Errors.Intercept] turns plain-text refusals that reach htmx into the
+// alert of their status.
+//
 // # Answers
 //
 // A plain request gets a full error page: the Document hook, or by default
 // a [page.Document] with the policy's Assets and HTMX configuration around
 // [ErrorView.Layout]. An htmx request ([IsHTMX]) gets the alert of
 // [ErrorView.Alert] (or the Fragment hook) with HX-Retarget set to the
-// alerts region of the page ([page.AlertsID]), HX-Reswap [ErrorReswap]
-// (innerHTML show:top), HX-Reselect unset and HX-Push-Url false, keeping
-// the real status: webui's htmx configuration (hx2.Config) swaps 4xx and
+// alerts region of the page ([page.AlertsID]; see Target and TargetFor),
+// HX-Reswap [ErrorReswap] (innerHTML show:top), HX-Reselect unset and
+// HX-Push-Url false, keeping the real status: webui's htmx configuration (hx2.Config) swaps 4xx and
 // 5xx responses, so the message shows without script, htmx scrolls it into
 // view, and the URL does not change. HX-Reselect unset turns off an
 // hx-select that the triggering element has or inherits (such as a boosted
@@ -104,6 +113,11 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // page that made the request, with the error above its content, and a
 // boosted form keeps what was typed into it.
 //
+// htmx inserts every answer that it swaps as HTML, whatever its
+// Content-Type, error answers included: see "htmx reads every answer as
+// HTML" in the package documentation, and [Errors.Intercept], which keeps
+// the plain-text errors of other code out of the page.
+//
 // Headers that the handler set for the response it meant to send, which
 // would contradict the error page, are removed first: the content
 // headers (Content-Length, Content-Encoding, Content-Disposition,
@@ -124,6 +138,27 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // other error, a context error with 503 and [MessageInterrupted]. The
 // answer is then rendered with the context's values but without its
 // cancellation, which would stop the render.
+//
+// # Forms in dialogs
+//
+// While a modal dialog (bs.Dialog) is open, the rest of the page is inert:
+// dimmed under the backdrop and left out of the accessibility tree. An
+// alert swapped into the page's alerts region is then neither seen nor
+// announced, and the dialog stays open as if nothing happened. An htmx
+// form inside a dialog therefore needs an alerts region of its own at the
+// top of the dialog's body, such as
+// <div id="rename-alerts" aria-live="polite"></div>, rendered with the
+// dialog so that it is in the page before an answer arrives, and its error
+// answers must target that region. Set TargetFor to map the requests of
+// dialog forms to their regions (see the dialog example). It covers every
+// answer of the policy, those of [Errors.Recover] and [Errors.Intercept]
+// included, and routes that both a dialog and the page post to. For a
+// route that only a dialog posts to, a copy of the policy (an Errors is a
+// value) with that region as its Target works too, for the errors that its
+// handler returns only. The show:top of [ErrorReswap] then scrolls the
+// region inside the dialog. An alert stays in the region after the dialog
+// closes; a successful answer that leaves the dialog in the page can empty
+// the region out of band.
 //
 // # Logging
 //
@@ -147,18 +182,36 @@ type Errors struct {
 	// application's navbar. Nil means a page.Document with the Assets and
 	// HTMX fields below.
 	Document func(r *http.Request, v ErrorView) elem.Node
-	// Fragment renders the content swapped into the alerts region for an
-	// htmx request; htmx swaps all of it, without the hx-select of the
-	// page. Nil means v.Alert().
+	// Fragment renders the content swapped into Target for an htmx
+	// request; htmx swaps all of it, without the hx-select of the page.
+	// Nil means v.Alert(). The policy renders it inside
+	// page.AlertsContent, as content for a live region already in the
+	// page: the page.ErrorAlert and page.Notice values in it render no
+	// role of their own, and the region announces them once.
 	Fragment func(r *http.Request, v ErrorView) elem.Node
 	// Assets and HTMX configure the default error document.
 	Assets []*asset.Set
 	HTMX   hx2.Config
 	// Home is the href of the link back on error pages. Empty means "/".
 	Home string
-	// Target is the CSS selector that htmx error answers are swapped into.
-	// Empty means "#" + page.AlertsID.
+	// Target is the CSS selector that htmx error answers are swapped into:
+	// a live region (aria-live) rendered with the page, which announces
+	// the alert, as the alerts region of page.Layout does. Empty means
+	// "#" + page.AlertsID.
 	Target string
+	// TargetFor, when set, chooses the target of the htmx error answer to
+	// r: the CSS selector of an alerts region that the user sees while
+	// making the request, such as one inside the open dialog whose form
+	// made it (see "Forms in dialogs" above). An empty result, or a nil
+	// TargetFor, means Target. It is called for htmx requests only.
+	//
+	// It typically maps the id of the element that made the request
+	// (HX-Trigger, hx2.RequestHeaders.Trigger) or of its target
+	// (HX-Target) to one of a fixed set of the application's selectors.
+	// Those headers are set by the client: they choose where a message
+	// shows, a presentation, never an authorization. Return a selector of
+	// the application's own, not the header's value.
+	TargetFor func(r *http.Request) string
 	// Reswap is the HX-Reswap of htmx error answers: how htmx swaps the
 	// answer into Target, with the syntax of hx-swap. Empty means
 	// [ErrorReswap], which scrolls Target into view. A Target that is
@@ -186,7 +239,9 @@ func (v ErrorView) Header() elem.Node {
 	return page.Header{Title: text.Text(v.Title)}
 }
 
-// Alert returns the message as a danger alert with role="alert".
+// Alert returns the message as a danger alert ([page.ErrorAlert]): with
+// role="alert" in the error page, and without a role in the htmx answer,
+// which the live region that it is swapped into announces.
 func (v ErrorView) Alert() elem.Node {
 	return page.ErrorAlert(text.Text(v.Message))
 }
@@ -253,12 +308,14 @@ func (e Errors) Write(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // Recover returns a handler that answers a panic of next with a 500 error
-// page, and logs the panic value with the stack at error level. It
-// re-panics [http.ErrAbortHandler], which net/http uses to abort a
-// response quietly. When the response had started before the panic, it
-// logs and then aborts the response with http.ErrAbortHandler, so the
-// client sees a broken response rather than a truncated one that looks
-// complete.
+// page. It logs the record "handler panic" at error level with the
+// attributes panic (the bool true, as in the request record of
+// mw.LogRequests), panic_value (the recovered value as text, fmt.Sprint)
+// and stack, so that every key has one type in every record. It re-panics
+// [http.ErrAbortHandler], which net/http uses to abort a response
+// quietly. When the response had started before the panic, it logs and
+// then aborts the response with http.ErrAbortHandler, so the client sees a
+// broken response rather than a truncated one that looks complete.
 //
 // Place it inside mw.LogRequests (after it in mw.Chain), so the request
 // log records the 500 and the panic log carries the request's logger.
@@ -279,7 +336,8 @@ func (e Errors) Recover(next http.Handler) http.Handler {
 			}
 			ctx := r.Context()
 			mw.Logger(ctx).LogAttrs(ctx, slog.LevelError, "handler panic",
-				slog.Any("panic", v),
+				slog.Bool("panic", true),
+				slog.String("panic_value", fmt.Sprint(v)),
 				slog.String("stack", string(debug.Stack())),
 			)
 			if t.started {
@@ -295,8 +353,24 @@ func (e Errors) Recover(next http.Handler) http.Handler {
 // page, without naming the path. Register it for the patterns that no
 // other route matches, e.g. mux.Handle("/", errs.NotFound()).
 func (e Errors) NotFound() http.Handler {
+	return e.Answer(&Error{Status: http.StatusNotFound})
+}
+
+// Answer returns a handler that answers every request with err, through
+// [Errors.Write]: an error page, or the alert for htmx requests. It suits
+// the refusal hooks of middleware, such as the Deny handler of
+// mw.SameOrigin, which then answers with [MessageForged]:
+//
+//	mw.SameOrigin(mw.OriginPolicy{Deny: errs.Answer(mw.ErrCrossOrigin)})
+//
+// The same err answers every request: it is fixed when the handler is
+// made, without request data. Answer panics if err is nil.
+func (e Errors) Answer(err error) http.Handler {
+	if err == nil {
+		panic("web: Answer of a nil error")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		e.Write(w, r, &Error{Status: http.StatusNotFound})
+		e.Write(w, r, err)
 	})
 }
 
@@ -391,6 +465,20 @@ func (e Errors) log(r *http.Request, level slog.Level, msg string, status int, e
 	mw.Logger(ctx).LogAttrs(ctx, level, msg, attrs...)
 }
 
+// target returns the selector that the htmx error answer to r is swapped
+// into: TargetFor's choice, Target, or the alerts region of the page.
+func (e Errors) target(r *http.Request) string {
+	if e.TargetFor != nil {
+		if t := e.TargetFor(r); t != "" {
+			return t
+		}
+	}
+	if e.Target != "" {
+		return e.Target
+	}
+	return "#" + page.AlertsID
+}
+
 // answer writes the error answer of a.
 func (e Errors) answer(w http.ResponseWriter, r *http.Request, a answer) {
 	home := e.Home
@@ -405,10 +493,7 @@ func (e Errors) answer(w http.ResponseWriter, r *http.Request, a answer) {
 
 	var node elem.Node
 	if IsHTMX(r) {
-		target := e.Target
-		if target == "" {
-			target = "#" + page.AlertsID
-		}
+		target := e.target(r)
 		reswap := e.Reswap
 		if reswap == "" {
 			reswap = ErrorReswap
@@ -424,6 +509,10 @@ func (e Errors) answer(w http.ResponseWriter, r *http.Request, a answer) {
 		} else {
 			node = v.Alert()
 		}
+		// Target is a live region already in the page, which announces
+		// what is swapped into it: an alert with a role of its own would
+		// be a second live region inside it.
+		node = page.AlertsContent(node)
 	} else if e.Document != nil {
 		node = e.Document(r, v)
 	} else {

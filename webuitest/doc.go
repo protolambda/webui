@@ -16,9 +16,11 @@
 // CSRF fields and token leaks, htmx targets and SSE wiring, the no-JS
 // dialog markup, and accessibility (icons hidden, controls named, no
 // nested controls, rectangular tables, safe external links). Each rule is
-// also available alone. Rules are pure values: they never call the test,
-// and their messages name locations and attribute names, never secret
-// values.
+// also available alone. A fragment is checked as htmx runs it, under the
+// htmx configuration of the page around it: webui's, the zero hx2.Config,
+// unless [WithHTMXConfig] names another. Rules are pure values: they never
+// call the test, and their messages name locations and attribute names,
+// never secret values.
 //
 // [Shell] describes what every page of an application has in common: the
 // document head that webui's page.Document renders (charset, viewport,
@@ -40,9 +42,12 @@
 // [Client] is the handler-level harness: it serves requests through a
 // handler, prepares them (for example to attach a session), adds the
 // CSRF field to hand-built posts, checks pages against a contract
-// ([Client.Page]), and submits the page's own forms as a browser would
+// ([Client.Page]), submits the page's own forms as a browser would
 // ([FormData], [Client.Submit], with [PageURL] for actions relative to the
-// page). A Client keeps no cookies: attach state to its requests (Prepare,
+// page), and sends the requests that htmx sends for the page's elements
+// ([HTMXData], [Client.SubmitHTMX]: method and URL of hx-post, hx-delete
+// and the others, hx-vals, hx-include, hx-params, and the HX-* headers). A
+// Client keeps no cookies: attach state to its requests (Prepare,
 // [SendCookie]). [Browser] is the same harness over a real test server
 // with TLS and a cookie jar, for full-stack tests and for flows that need
 // cookies, such as logins.
@@ -66,7 +71,8 @@
 // [Event.Fragment] parses an event's data as HTML. [ServeStream] runs a
 // streaming handler over an in-memory connection, usable inside
 // testing/synctest bubbles, and returns a [Stream] that reads events as
-// they arrive.
+// they arrive; [Client.Stream] does so for a client's handler, with its
+// Prepare and Options, and [Browser.Stream] over the test server.
 //
 // # Runners
 //

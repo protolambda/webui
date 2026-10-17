@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/protolambda/chord/ct"
 
+	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/session"
 )
 
@@ -43,13 +45,17 @@ var htmxUnsafeAttrs = []string{"hx-post", "hx-put", "hx-patch", "hx-delete"}
 // (mw.SameOrigin), which depends on browsers sending fetch metadata.
 // Messages never show the token. A GET form with a formmethod="post"
 // button cannot satisfy both this rule and [NoTokenLeaks]: give the POST
-// action a form of its own. Likewise hx-delete: with htmx's default
-// methodsThatUseUrlParams (["get", "delete"]), a DELETE request has no body
-// and puts its parameters, the CSRF field too, in the URL, which
-// [NoTokenLeaks] reports (and which the form package ignores). Use hx-post,
-// hx-put or hx-patch for requests that need the token, or set
-// methodsThatUseUrlParams to ["get"] (hx2.Config.Extra), which both rules
-// read from the page's htmx-config meta element.
+// action a form of its own.
+//
+// An hx-delete that carries the field satisfies both rules under webui's
+// htmx configuration: the zero hx2.Config (page.Document.HTMX) sends the
+// parameters of DELETE requests in the body (methodsThatUseUrlParams
+// ["get"]), which the form package reads (net/http's ParseForm reads only
+// POST, PUT and PATCH bodies). Under htmx's own default (["get",
+// "delete"]), which hx2.Config.DeleteURLParams restores, a DELETE request
+// has no body and puts its parameters, the CSRF field too, in the URL,
+// which [NoTokenLeaks] reports; use hx-post, hx-put or hx-patch there.
+// [NoTokenLeaks] says where it takes the configuration from.
 func PostFormsCarryCSRF(token string) ct.Rule {
 	desc := "postFormsCarryCSRF()"
 	if token != "" {
@@ -302,28 +308,74 @@ func namesCSRF(list string) bool {
 }
 
 // htmxURLMethods returns the methods whose htmx requests carry their
-// parameters in the URL: the methodsThatUseUrlParams of the document's
-// htmx-config meta element (htmx reads the first one), else htmx's default,
-// GET and DELETE. Fragments have no meta element and get the default.
-func htmxURLMethods(root ct.Node) map[string]bool {
+// parameters in the URL. A complete document runs under its own
+// configuration: the methodsThatUseUrlParams of its htmx-config meta
+// element (htmx reads the first one), else htmx's default, GET and DELETE
+// (also for a meta element without the key or with malformed JSON, which
+// htmx ignores). A fragment runs under the configuration of the page it is
+// swapped into, whose methods fragment holds (nil: the zero hx2.Config);
+// htmx never reads a meta element of swapped content.
+func htmxURLMethods(root ct.Node, fragment map[string]bool) map[string]bool {
+	if isFragment(root) {
+		if fragment == nil {
+			return webuiURLMethods()
+		}
+		return fragment
+	}
 	for m := range Elements(root, "meta") {
 		if n, _ := attrOf(m, "name"); !strings.EqualFold(n, "htmx-config") {
 			continue
 		}
 		content, _ := attrOf(m, "content")
-		var cfg struct {
-			Methods []string `json:"methodsThatUseUrlParams"`
+		if methods, ok := parseURLMethods(content); ok {
+			return methods
 		}
-		if json.Unmarshal([]byte(content), &cfg) != nil || cfg.Methods == nil {
-			break
-		}
-		out := make(map[string]bool, len(cfg.Methods))
-		for _, x := range cfg.Methods {
-			out[strings.ToLower(x)] = true
-		}
-		return out
+		break
 	}
-	return map[string]bool{"get": true, "delete": true}
+	return htmxDefaultURLMethods
+}
+
+// htmxDefaultURLMethods are htmx 2's default methodsThatUseUrlParams. The
+// map is shared: never modify it.
+var htmxDefaultURLMethods = map[string]bool{"get": true, "delete": true}
+
+// webuiURLMethods returns the methodsThatUseUrlParams of the zero
+// hx2.Config. The map is shared: never modify it.
+var webuiURLMethods = sync.OnceValue(func() map[string]bool {
+	return configURLMethods("webuitest", hx2.Config{})
+})
+
+// configURLMethods returns the methodsThatUseUrlParams of an htmx
+// configuration, lower-cased. A config that does not encode panics with
+// the message prefix who: it is a mistake in the test.
+func configURLMethods(who string, c hx2.Config) map[string]bool {
+	content, err := c.JSON()
+	if err != nil {
+		panic(fmt.Sprintf("%s: %v", who, err))
+	}
+	methods, ok := parseURLMethods(content)
+	if !ok {
+		// hx2.Config always writes the key.
+		panic(fmt.Sprintf("%s: the htmx config has no methodsThatUseUrlParams", who))
+	}
+	return methods
+}
+
+// parseURLMethods reads methodsThatUseUrlParams from the JSON of an
+// htmx-config meta element, lower-cased; false when the JSON is malformed
+// or lacks the key.
+func parseURLMethods(content string) (map[string]bool, bool) {
+	var cfg struct {
+		Methods []string `json:"methodsThatUseUrlParams"`
+	}
+	if json.Unmarshal([]byte(content), &cfg) != nil || cfg.Methods == nil {
+		return nil, false
+	}
+	out := make(map[string]bool, len(cfg.Methods))
+	for _, x := range cfg.Methods {
+		out[strings.ToLower(x)] = true
+	}
+	return out, true
 }
 
 // includeTargets resolves the elements of the nearest hx-include of e that
@@ -362,15 +414,18 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 //   - a form with method GET (the default) that owns a control named
 //     [session.CSRFField];
 //   - a submit button with formmethod="get" in a form that owns one;
-//   - an htmx request that puts its parameters in the URL, with hx-get or
-//     hx-delete (also with a data- prefix; htmx's default
-//     methodsThatUseUrlParams, or the list of the page's htmx-config meta
-//     element), that sends the field: the element is such a form or the
+//   - an htmx request that puts its parameters in the URL (also with a
+//     data- prefix) and sends the field: the element is such a form or the
 //     field, its related form owns it (htmx includes it for every method
 //     but GET), the nearest hx-include names the field or an element
 //     containing it, or the merged hx-vals of the element and its
 //     ancestors have it (or, when token is not "", the token anywhere),
-//     unless the nearest hx-params drops it;
+//     unless the nearest hx-params drops it. The methods that put their
+//     parameters in the URL are the methodsThatUseUrlParams of the htmx
+//     configuration: in a complete document, of its first htmx-config
+//     meta element, else htmx's default (hx-get and hx-delete); in a
+//     fragment, of the page it is swapped into, which is the zero
+//     hx2.Config here (hx-get only) and [WithHTMXConfig] in [Rules];
 //   - a field of that name that is not of type hidden;
 //   - when token is not "": the token in any attribute other than the value
 //     of the CSRF field, hx-vals and hx-headers (URL attributes are named as
@@ -379,6 +434,12 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 // Fields in template content or in a datalist are never submitted and do
 // not count. Messages never show the token.
 func NoTokenLeaks(token string) ct.Rule {
+	return noTokenLeaks(token, nil)
+}
+
+// noTokenLeaks is [NoTokenLeaks] for fragments of pages whose
+// methodsThatUseUrlParams are fragmentMethods (nil: the zero hx2.Config).
+func noTokenLeaks(token string, fragmentMethods map[string]bool) ct.Rule {
 	desc := "noTokenLeaks()"
 	if token != "" {
 		desc = "noTokenLeaks(token)"
@@ -390,7 +451,7 @@ func NoTokenLeaks(token string) ct.Rule {
 	return ct.CustomRule(desc, func(root ct.Node) []string {
 		idx := indexForms(root)
 		ids := documentIDs(root)
-		urlMethods := htmxURLMethods(root)
+		urlMethods := htmxURLMethods(root, fragmentMethods)
 		var out []string
 		for _, f := range idx.forms {
 			has := false
@@ -612,12 +673,18 @@ func firstChild(n ct.Node, tag string) ct.Node {
 // textarea text, every option of a select, every submit button) of a form
 // that submits with GET (its method, the default; a formmethod="get"
 // submit button; or an htmx request of the form that carries its
-// parameters in the URL, see [NoTokenLeaks]), and the merged hx-vals of an
-// htmx request that carries its parameters in the URL. Control values are
-// matched as written, since the browser encodes them when it submits.
-// Messages name a value by its position, never by the value. NotInURLs
-// panics if a value is empty.
+// parameters in the URL, see [NoTokenLeaks] for which do, in documents and
+// in fragments), and the merged hx-vals of an htmx request that carries its
+// parameters in the URL. Control values are matched as written, since the
+// browser encodes them when it submits. Messages name a value by its
+// position, never by the value. NotInURLs panics if a value is empty.
 func NotInURLs(values ...string) ct.Rule {
+	return notInURLs(nil, values...)
+}
+
+// notInURLs is [NotInURLs] for fragments of pages whose
+// methodsThatUseUrlParams are fragmentMethods (nil: the zero hx2.Config).
+func notInURLs(fragmentMethods map[string]bool, values ...string) ct.Rule {
 	checkValues("NotInURLs", values)
 	variants := make([][]string, len(values))
 	for i, v := range values {
@@ -626,7 +693,7 @@ func NotInURLs(values ...string) ct.Rule {
 	values = append([]string(nil), values...)
 	return ct.CustomRule(fmt.Sprintf("notInURLs(%d values)", len(values)), func(root ct.Node) []string {
 		var out []string
-		urlMethods := htmxURLMethods(root)
+		urlMethods := htmxURLMethods(root, fragmentMethods)
 		for e := range Elements(root, "") {
 			for _, u := range urlAttrs(e) {
 				for i, vs := range variants {

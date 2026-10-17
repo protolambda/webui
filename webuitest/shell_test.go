@@ -22,6 +22,7 @@ import (
 
 	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/theme"
 	"github.com/protolambda/webui/webuitest"
 )
@@ -228,6 +229,24 @@ func TestShellContractParsed(gt *testing.T) {
 	err := webuitest.ShellContract(broken, webuitest.DefaultShell()).Check(t.Context())
 	t.Must(be.ErrorIs(err, ct.ErrRule))
 	t.Must(be.ErrorContains(err, `shell(): html element has lang "fr", want "en"`))
+}
+
+// A Shell takes the color mode of a page.Document as it is: a light page
+// passes with page.ColorModeLight, and fails against the default shell.
+func TestShellColorModeOfDocument(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	doc := ct.View(page.Document{
+		Title:     "Notes",
+		ColorMode: page.ColorModeLight,
+		Assets:    []*asset.Set{theme.MustAssets(theme.Options{})},
+		Body:      section.Main()(text.Text("x")),
+	})
+	shell := webuitest.DefaultShell()
+	shell.ColorMode = page.ColorModeLight
+	t.Must(webuitest.ShellContract(doc, shell))
+	err := webuitest.ShellContract(doc, webuitest.DefaultShell()).Check(t.Context())
+	t.Must(be.ErrorIs(err, ct.ErrRule))
+	t.Must(be.ErrorContains(err, `data-bs-theme`))
 }
 
 func TestDefaultShell(gt *testing.T) {

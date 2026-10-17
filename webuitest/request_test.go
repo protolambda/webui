@@ -67,6 +67,15 @@ func TestRequestOptions(gt *testing.T) {
 		t.Must(be.Equal("", h.Get("Content-Type")))
 		t.Must(be.True(req.Body == http.NoBody))
 	})
+	t.Run("htmx current URL from the page URL", func(t devtest.T) {
+		h := webuitest.Get(t, "list", webuitest.HTMX(), webuitest.PageURL("/tasks/?page=2")).Header
+		t.Must(be.Equal(webuitest.BaseURL+"/tasks/?page=2", h.Get("HX-Current-URL")))
+		h = webuitest.Get(t, "list", webuitest.HTMX(), webuitest.PageURL("/tasks/"), webuitest.HXCurrentURL("/other")).Header
+		t.Must(be.Equal(webuitest.BaseURL+"/other", h.Get("HX-Current-URL")))
+		// A navigation from the page sends none.
+		h = webuitest.Get(t, "list", webuitest.PageURL("/tasks/")).Header
+		t.Must(be.Equal("", h.Get("HX-Current-URL")))
+	})
 	t.Run("history restore", func(t devtest.T) {
 		h := webuitest.Get(t, "/", webuitest.HXHistoryRestore()).Header
 		t.Must(be.Equal("true", h.Get("HX-History-Restore-Request")))

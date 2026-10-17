@@ -5,18 +5,8 @@ import (
 
 	"github.com/protolambda/chord/ct"
 
+	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/page"
-)
-
-// Layout ids of webui's page layout, kept for compatibility.
-//
-// Deprecated: use the constants of the page package, which owns them:
-// [page.MainID], [page.AlertsID], [page.DialogsID] and [page.HeaderID].
-const (
-	MainID    = page.MainID
-	AlertsID  = page.AlertsID
-	DialogsID = page.DialogsID
-	HeaderID  = page.HeaderID
 )
 
 // DocumentTargets returns the ids of the regions of page.Layout that a
@@ -39,6 +29,7 @@ type ruleConfig struct {
 	secrets     []string
 	targets     []string
 	bootstrapJS bool
+	urlMethods  map[string]bool // of the page around fragments; nil: the zero hx2.Config
 	without     map[string]bool
 }
 
@@ -53,6 +44,22 @@ func WithCSRF(token string) RuleOption {
 // are a programming error: the rules panic when they are built.
 func WithSecrets(values ...string) RuleOption {
 	return func(c *ruleConfig) { c.secrets = append(c.secrets, values...) }
+}
+
+// WithHTMXConfig sets the htmx configuration of the pages that fragments
+// are swapped into (page.Document.HTMX), for [NoTokenLeaks] and
+// [NotInURLs]: a fragment has no htmx-config meta element of its own, and
+// runs under the configuration of the page around it. The default is the
+// zero hx2.Config, whose DELETE requests carry their parameters in the
+// body; only hx2.Config.DeleteURLParams changes what the rules check, and
+// hx2.Config{DeleteURLParams: true} checks fragments under htmx's own
+// default (GET and DELETE parameters in the URL). Complete documents always use their own htmx-config meta element, or
+// htmx's defaults without one. It is the rule counterpart of
+// [Shell.HTMXConfig] and [PageHTMXConfig]. A config that does not encode
+// (hx2.Config.JSON fails) is a programming error: WithHTMXConfig panics.
+func WithHTMXConfig(c hx2.Config) RuleOption {
+	methods := configURLMethods("webuitest.WithHTMXConfig", c)
+	return func(rc *ruleConfig) { rc.urlMethods = methods }
 }
 
 // WithDocumentTargets replaces the ids that a fragment may reference
@@ -99,7 +106,9 @@ func RuleName(r ct.Rule) string {
 //   - the content security policy: [NoInlineScripts], [NoInlineStyles],
 //     [NoHTMXScripting], [SafeURLs], [LocalResources] and
 //     [SubresourceIntegrity];
-//   - CSRF: [PostFormsCarryCSRF] and [NoTokenLeaks] (see [WithCSRF]);
+//   - CSRF: [PostFormsCarryCSRF] and [NoTokenLeaks] (see [WithCSRF], and
+//     [WithHTMXConfig] for fragments of pages with a non-default htmx
+//     configuration);
 //   - htmx and components: [HXTargets] (with [DocumentTargets], see
 //     [WithDocumentTargets]), [SSEWiring], [ModalDialogs] and
 //     [NoBootstrapJSHooks] (see [WithBootstrapJS]);
@@ -129,7 +138,7 @@ func Rules(opts ...RuleOption) []ct.Rule {
 		LocalResources(),
 		SubresourceIntegrity(),
 		PostFormsCarryCSRF(cfg.csrf),
-		NoTokenLeaks(cfg.csrf),
+		noTokenLeaks(cfg.csrf, cfg.urlMethods),
 		HXTargets(cfg.targets...),
 		SSEWiring(),
 		ModalDialogs(),
@@ -143,7 +152,7 @@ func Rules(opts ...RuleOption) []ct.Rule {
 		rules = append(rules, NoBootstrapJSHooks())
 	}
 	if len(cfg.secrets) > 0 {
-		rules = append(rules, SecretsHidden(cfg.secrets...), NotInURLs(cfg.secrets...))
+		rules = append(rules, SecretsHidden(cfg.secrets...), notInURLs(cfg.urlMethods, cfg.secrets...))
 	}
 	if len(cfg.without) == 0 {
 		return rules

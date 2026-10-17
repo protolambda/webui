@@ -6,14 +6,23 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
+	"github.com/protolambda/chord/core"
+	"github.com/protolambda/chord/core/attr"
 	"github.com/protolambda/chord/core/elem"
+	"github.com/protolambda/chord/html/aria"
+	"github.com/protolambda/chord/html/form"
+	"github.com/protolambda/chord/html/form/button"
+	"github.com/protolambda/chord/html/group/div"
 	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/text"
 
 	"github.com/protolambda/webui/bs"
+	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/web"
@@ -145,12 +154,13 @@ func ExampleErrors_Handle_htmx() {
 	// HX-Reswap: innerHTML show:top
 	// HX-Reselect: unset
 	// HX-Push-Url: false
-	// <div class="alert alert-danger" role="alert">The request failed. The server log has details.</div>
+	// <div class="alert alert-danger">The request failed. The server log has details.</div>
 }
 
 // Recover answers a panic with the 500 error page; the panic value goes to
-// the log only. Placed inside mw.LogRequests, the request record has the
-// 500, and the panic record carries the request's method and pattern.
+// the log only, as panic_value next to the panic flag that mw.LogRequests
+// uses too. Placed inside mw.LogRequests, the request record has the 500,
+// and the panic record carries the request's method and pattern.
 func ExampleErrors_Recover() {
 	// Print the records without their varying attributes.
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -170,7 +180,7 @@ func ExampleErrors_Recover() {
 	h := mw.Chain(mux, mw.LogRequests(mw.RequestLog{Logger: logger, Routes: mux}), errs.Recover)
 	serve(h, httptest.NewRequest(http.MethodGet, "/tasks/7", nil))
 	// Output:
-	// level=ERROR msg="handler panic" method=GET pattern="GET /tasks/{id}" panic="task store not opened"
+	// level=ERROR msg="handler panic" method=GET pattern="GET /tasks/{id}" panic=true panic_value="task store not opened"
 	// level=INFO msg="http request" method=GET pattern="GET /tasks/{id}" status=500
 	// 500
 	// <main id="main" class="flex-grow-1"><div class="container py-3"><header id="page-header" class="mb-3"><h1 class="h4 mb-0">500 Internal Server Error</h1></header><div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">The request failed. The server log has details.</div></div><p><a href="/">Go to the start page</a></p></div></main>
@@ -194,7 +204,101 @@ func ExampleErrors_NotFound() {
 	// 404
 	// HX-Retarget: #alerts
 	// HX-Push-Url: false
-	// <div class="alert alert-danger" role="alert">Nothing was found here.</div>
+	// <div class="alert alert-danger">Nothing was found here.</div>
+}
+
+// Intercept keeps the plain-text errors of other code out of htmx swaps:
+// htmx would insert the text, and the markup that it quotes from the
+// request, into the page. An htmx request gets the policy's alert of the
+// status instead; a plain request gets the text, which a browser shows as
+// text.
+func ExampleErrors_Intercept() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := strconv.Atoi(r.FormValue("page")); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest) // quotes the request
+			return
+		}
+	})
+	h := mw.Chain(mux, web.Errors{}.Intercept)
+	target := "/tasks?page=" + url.QueryEscape(`<i hx-get="/x" hx-trigger="load">`)
+	serve(h, htmxRequest(http.MethodGet, target, "https://app.example/tasks"), "Content-Type", "HX-Retarget")
+	serve(h, httptest.NewRequest(http.MethodGet, target, nil), "Content-Type", "Vary")
+	// The 404 and 405 answers of http.ServeMux are plain text too.
+	serve(h, htmxRequest(http.MethodPost, "/tasks", "https://app.example/tasks"), "HX-Retarget", "Allow")
+	// Output:
+	// 400
+	// Content-Type: text/html; charset=utf-8
+	// HX-Retarget: #alerts
+	// <div class="alert alert-danger">The request is not valid.</div>
+	// 400
+	// Content-Type: text/plain; charset=utf-8
+	// Vary: HX-Request
+	// strconv.Atoi: parsing "<i hx-get=\"/x\" hx-trigger=\"load\">": invalid syntax
+	// 405
+	// HX-Retarget: #alerts
+	// Allow: GET, HEAD
+	// <div class="alert alert-danger">This action is not available here.</div>
+}
+
+// Answer turns an error into a handler for the refusal hooks of
+// middleware: a refusal of mw.SameOrigin gets the policy's answer, here the
+// alert of mw.ErrCrossOrigin for an htmx request.
+func ExampleErrors_Answer() {
+	errs := web.Errors{}
+	tasks := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := mw.Chain(tasks,
+		mw.HostCheck(mw.MustParseSite("https://app.example")),
+		mw.SameOrigin(mw.OriginPolicy{Deny: errs.Answer(mw.ErrCrossOrigin)}),
+	)
+	r := htmxRequest(http.MethodPost, "https://app.example/tasks", "https://app.example/tasks")
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	serve(h, r, "HX-Retarget")
+	// Output:
+	// 403
+	// HX-Retarget: #alerts
+	// <div class="alert alert-danger">The form expired or came from another site. Open the form again and retry.</div>
+}
+
+// A form in a modal dialog shows its errors inside the dialog: the page
+// behind an open modal is inert, so an alert in the page's alerts region
+// would be neither seen nor announced. The dialog's body starts with an
+// alerts region of its own, and TargetFor sends the error answers to the
+// dialog's form there. Other requests keep the page's alerts region.
+func ExampleErrors_dialog() {
+	rename := bs.Dialog{
+		ID:    "rename",
+		Title: text.Text("Rename the project"),
+		Body: elem.Bundle{
+			div.Div(attr.ID("rename-alerts"), aria.Live("polite"))(),
+			form.Form(attr.ID("rename-form"), form.Method(form.MethodPost), form.Action("/projects/7/name"), hx2.Post("/projects/7/name"))(
+				bs.BtnPrimary(button.Type(button.TypeSubmit))(text.Text("Rename")),
+			),
+		},
+	}
+	core.Dump(rename) // in page.Layout's Dialogs
+
+	dialogAlerts := map[string]string{"rename-form": "#rename-alerts"}
+	errs := web.Errors{TargetFor: func(r *http.Request) string {
+		// HX-Trigger, the id of the form, picks one of the application's
+		// own regions: a presentation, never an authorization.
+		return dialogAlerts[hx2.ParseRequestHeaders(r.Header).Trigger]
+	}}
+	save := errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Conflict("", errors.New("project 7 renamed meanwhile"))
+	})
+	r := htmxRequest(http.MethodPost, "/projects/7/name", "https://app.example/projects/7")
+	r.Header.Set("HX-Trigger", "rename-form")
+	serve(save, r, "HX-Retarget")
+	serve(save, htmxRequest(http.MethodPost, "/projects/7/name", "https://app.example/projects/7"), "HX-Retarget")
+	// Output:
+	// <dialog id="rename" class="modal" popover aria-labelledby="rename-title"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h2 class="modal-title h5" id="rename-title">Rename the project</h2><button class="btn-close" type="button" aria-label="Close" commandfor="rename" command="close" popovertarget="rename" popovertargetaction="hide" autofocus></button></div><div class="modal-body"><div id="rename-alerts" aria-live="polite"></div><form id="rename-form" method="post" action="/projects/7/name" hx-post="/projects/7/name"><button class="btn btn-primary" type="submit">Rename</button></form></div></div></div></dialog>
+	// 409
+	// HX-Retarget: #rename-alerts
+	// <div class="alert alert-danger">The item changed meanwhile. Reload the page and try again.</div>
+	// 409
+	// HX-Retarget: #alerts
+	// <div class="alert alert-danger">The item changed meanwhile. Reload the page and try again.</div>
 }
 
 // Applications map their own errors before the defaults.
@@ -212,7 +316,7 @@ func ExampleErrors_classify() {
 	serve(save, htmxRequest(http.MethodPost, "/tasks/7", "https://app.example/tasks/7"))
 	// Output:
 	// 409
-	// <div class="alert alert-danger" role="alert">The task changed meanwhile. Reload it and try again.</div>
+	// <div class="alert alert-danger">The task changed meanwhile. Reload it and try again.</div>
 }
 
 // Pages behind the guard send visitors without a session to the login

@@ -74,6 +74,8 @@ const (
 	TargetRedirect
 )
 
+// String returns the lowercase name of the kind, such as "link", or
+// "TargetKind(n)" for other values.
 func (k TargetKind) String() string {
 	switch k {
 	case TargetLink:

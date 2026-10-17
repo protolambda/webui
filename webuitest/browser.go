@@ -219,7 +219,9 @@ func (b *Browser) Post(t TB, target string, body Body, opts ...ReqOption) *cthtt
 
 // Submit submits a form of page as [Client.Submit] does, and sends the
 // request: what the form submits, with the action resolved against the
-// page's URL of [PageURL] when it is relative or empty.
+// page's URL of [PageURL] when it is relative or empty. With [HTMX], the
+// form's htmx request must have its method and action, as for
+// Client.Submit; [Browser.SubmitHTMX] sends what htmx sends.
 func (b *Browser) Submit(t TB, page *ct.Subject, form, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
 	all := append(append([]ReqOption(nil), b.Options...), opts...)

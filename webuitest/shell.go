@@ -13,6 +13,7 @@ import (
 
 	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/theme"
 )
 
@@ -50,8 +51,9 @@ type Shell struct {
 	// Lang is the lang attribute of the html element; "" means "en".
 	Lang string
 	// ColorMode is the data-bs-theme attribute of the html element, also
-	// listed by the color-scheme meta element; "" means [theme.ColorMode].
-	ColorMode string
+	// listed by the color-scheme meta element, with the type of
+	// page.Document's field; "" means [theme.ColorMode].
+	ColorMode page.ColorMode
 	// Icon is the exact href of the icon link; "" requires a data: URL,
 	// such as the empty "data:,", which keeps the browser from requesting
 	// /favicon.ico.
@@ -158,7 +160,7 @@ func (s Shell) colorMode() string {
 	if s.ColorMode == "" {
 		return theme.ColorMode
 	}
-	return s.ColorMode
+	return string(s.ColorMode)
 }
 
 func (s Shell) htmxConfig() string {

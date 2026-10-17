@@ -218,12 +218,14 @@ func ExampleClient() {
 	t := webuitest.PrintT{}
 	sess := session.NewDetached("account", "csrf-token")
 	mux := http.NewServeMux()
+	forms := session.Forms[string]{} // checks the token of the context's session
 	mux.HandleFunc("POST /notes", func(w http.ResponseWriter, r *http.Request) {
-		s, ok := session.FromContext[string](r.Context())
-		if !ok || s.CheckCSRF(r.PostFormValue(session.CSRFField)) != nil {
+		f, err := forms.Read(w, r)
+		if err != nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		defer f.Zero()
 		http.Redirect(w, r, "/notes/1", http.StatusSeeOther)
 	})
 	c := &webuitest.Client{

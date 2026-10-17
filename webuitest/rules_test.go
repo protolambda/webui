@@ -18,6 +18,7 @@ import (
 
 	"github.com/protolambda/webui/bi"
 	"github.com/protolambda/webui/bs"
+	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/webuitest"
 )
 
@@ -309,6 +310,61 @@ func TestNoTokenLeaks(gt *testing.T) {
 		for _, g := range got {
 			t.Must(be.False(strings.Contains(g, testToken)))
 		}
+	})
+}
+
+// A fragment runs under the htmx configuration of its page: the zero
+// hx2.Config, whose DELETE requests carry their parameters in the body,
+// unless WithHTMXConfig names another.
+func TestFragmentHTMXConfig(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	csrf := `<input type="hidden" name="csrf" value="` + testToken + `">`
+	deleteForm := `<form method="post" action="/notes/1/delete">` + csrf + `<button type="button" hx-delete="/notes/1">Delete</button></form>`
+	deleteVals := `<button type="button" hx-delete="/notes/1" hx-vals='{"csrf":"` + testToken + `"}'>Delete</button>`
+	leaky := webuitest.WithHTMXConfig(hx2.Config{DeleteURLParams: true})
+	fragment := func(body string) *ct.Subject { return cthtml.FragmentString("div", body) }
+	t.Run("default config", func(t devtest.T) {
+		for _, body := range []string{deleteForm, deleteVals} {
+			t.Must(be.Len(violations(t, fragment(body), webuitest.NoTokenLeaks(testToken)), 0))
+			t.Must(webuitest.FragmentContract(fragment(body), webuitest.Rules(webuitest.WithCSRF(testToken))...))
+		}
+	})
+	t.Run("delete URL params", func(t devtest.T) {
+		err := webuitest.FragmentContract(fragment(deleteForm), webuitest.Rules(webuitest.WithCSRF(testToken), leaky)...).Check(t.Context())
+		t.Must(be.ErrorContains(err, `noTokenLeaks(token): hx-delete at form[0]/button[1] sends the "csrf" field in the URL`))
+		err = webuitest.FragmentContract(fragment(deleteVals), webuitest.Rules(webuitest.WithCSRF(testToken), leaky)...).Check(t.Context())
+		t.Must(be.ErrorContains(err, `hx-delete at button[0] sends the "csrf" field in the URL`))
+		// The zero Config again.
+		t.Must(webuitest.FragmentContract(fragment(deleteForm), webuitest.Rules(webuitest.WithCSRF(testToken), leaky, webuitest.WithHTMXConfig(hx2.Config{}))...))
+	})
+	t.Run("hx-get leaks under any config", func(t devtest.T) {
+		got := violations(t, fragment(`<form method="post">`+csrf+`<button type="button" hx-get="/x" hx-include="closest form">x</button></form>`), webuitest.NoTokenLeaks(testToken))
+		t.Must(be.Len(got, 1))
+		t.Must(be.Substring(got[0], `hx-get at form[0]/button[1] sends the "csrf" field in the URL`))
+	})
+	t.Run("a meta element in a fragment is not the config", func(t devtest.T) {
+		body := `<meta name="htmx-config" content='{"methodsThatUseUrlParams":["get","delete"]}'>` + deleteForm
+		t.Must(be.Len(violations(t, fragment(body), webuitest.NoTokenLeaks(testToken)), 0))
+	})
+	t.Run("documents keep their own config", func(t devtest.T) {
+		// Without a meta element a document runs htmx's defaults, whatever
+		// the option says.
+		page := cthtml.PageString(htmlPage(deleteForm))
+		err := page.Valid(webuitest.Rules(webuitest.WithCSRF(testToken), webuitest.WithHTMXConfig(hx2.Config{}))...).Check(t.Context())
+		t.Must(be.ErrorContains(err, `hx-delete at html[1]/body[1]/form[0]/button[1] sends the "csrf" field in the URL`))
+	})
+	t.Run("secrets", func(t devtest.T) {
+		const secret = "docs/report.txt"
+		body := `<button type="button" hx-delete="/files" hx-vals='{"path":"` + secret + `"}'>x</button>`
+		t.Must(fragment(body).Valid(webuitest.Rules(webuitest.WithSecrets(secret), webuitest.Without("secretsHidden", "postFormsCarryCSRF"))...))
+		err := fragment(body).Valid(webuitest.Rules(webuitest.WithSecrets(secret), webuitest.Without("secretsHidden", "postFormsCarryCSRF"), leaky)...).Check(t.Context())
+		t.Must(be.ErrorContains(err, "notInURLs(1 values): value 1 in the hx-vals that hx-delete at button[0] sends in the URL"))
+		t.Must(be.Len(violations(t, fragment(body), webuitest.NotInURLs(secret)), 0))
+	})
+	t.Run("invalid config", func(t devtest.T) {
+		t.Must(be.Panic(func() {
+			webuitest.WithHTMXConfig(hx2.Config{Extra: map[string]any{"methodsThatUseUrlParams": []string{"get"}}})
+		}))
 	})
 }
 

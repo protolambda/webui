@@ -27,8 +27,10 @@ const ContentType = "text/html; charset=utf-8"
 // (not 1xx, 204 or 304). Other headers, such as Cache-Control, are left to
 // the caller and the middleware.
 //
-// Render does not add Vary: use [Choose], or call hx2.AddVary, when the
-// content depends on whether htmx made the request.
+// Render does not add Vary: use [Choose] when the content depends on
+// whether htmx made the request, or add the request headers it depends on
+// yourself, HX-Request and also HX-Boosted when [WantsFragment] chooses:
+// hx2.AddVaryHeaders(w.Header(), hx2.HeaderRequest, hx2.HeaderBoosted).
 func Render(w http.ResponseWriter, r *http.Request, status int, node elem.Node) error {
 	var buf bytes.Buffer
 	if err := core.Render(r.Context(), node, &buf); err != nil {
@@ -56,26 +58,11 @@ func Render(w http.ResponseWriter, r *http.Request, status int, node elem.Node) 
 // A boosted link inside an element with hx-target swaps into that target
 // instead; give it hx-select, which picks the part from the full page.
 func Choose(w http.ResponseWriter, r *http.Request, status int, fragment, full elem.Node) error {
-	h := w.Header()
-	hx2.AddVary(h)
-	addVary(h, hx2.HeaderBoosted)
+	hx2.AddVaryHeaders(w.Header(), hx2.HeaderRequest, hx2.HeaderBoosted)
 	if WantsFragment(r) {
 		return Render(w, r, status, fragment)
 	}
 	return Render(w, r, status, full)
-}
-
-// addVary adds name to the Vary header of h, unless a Vary value already
-// names it (in any letter case) or is "*".
-func addVary(h http.Header, name string) {
-	for _, line := range h.Values("Vary") {
-		for v := range strings.SplitSeq(line, ",") {
-			if v = strings.TrimSpace(v); v == "*" || strings.EqualFold(v, name) {
-				return
-			}
-		}
-	}
-	h.Add("Vary", name)
 }
 
 // IsHTMX reports whether r is an htmx request whose answer htmx handles: it

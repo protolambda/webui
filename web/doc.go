@@ -1,7 +1,8 @@
 // Package web connects chord views to net/http for server-rendered pages
 // with htmx: handlers that return errors, buffered rendering, htmx-aware
-// redirects and error answers, an open-redirect guard, an authentication
-// guard, and notices for Post/Redirect/Get.
+// redirects and error answers, a safety net that keeps plain-text errors
+// out of htmx swaps, an open-redirect guard, an authentication guard, and
+// notices for Post/Redirect/Get.
 //
 // # Handlers and errors
 //
@@ -11,7 +12,7 @@
 //	errs := web.Errors{Document: appErrorPage}
 //	mux.Handle("GET /tasks/{id}", errs.Handle(showTask))
 //	mux.Handle("/", errs.NotFound())
-//	handler := mw.Chain(mux, mw.LogRequests(mw.RequestLog{Routes: mux}), errs.Recover, ...)
+//	handler := mw.Chain(mux, mw.LogRequests(mw.RequestLog{Routes: mux}), errs.Recover, errs.Intercept, ...)
 //
 // A handler returns an [*Error] (see [NotFound], [BadRequest] and the
 // other constructors) for an answer with a public message, or any other
@@ -19,17 +20,61 @@
 // errors get their 4xx status, an interrupted request 503, and anything
 // else 500 with a fixed message. Public messages never contain request
 // data; causes are logged, never the path or query (mw.LogRequests with
-// RequestLog.Routes tags the records with the route pattern).
+// RequestLog.Routes tags the records with the route pattern). A form
+// handler returns the errors of form.Read or session.Forms.Read as they are
+// (see the form example of [Errors]).
 //
 // A plain request gets a full error page in the application's layout. An
 // htmx request, boosted or not, gets an alert that htmx swaps into the
 // alerts region of the page (page.AlertsID), whatever hx-select the page
 // uses, and scrolls into view, with the real status: webui's htmx
 // configuration swaps 4xx and 5xx responses, so the message shows without
-// client-side script. A client
-// that went away gets nothing, while a request whose context ended on the
-// server's side, such as past the deadline of a timeout middleware, still
-// gets its answer (503 for the context error).
+// client-side script. A client that went away gets nothing, while a
+// request whose context ended on the server's side, such as past the
+// deadline of a timeout middleware, still gets its answer (503 for the
+// context error).
+//
+// [Errors.Recover] answers panics. [Errors.Intercept] answers, for htmx
+// requests, the error responses that are not HTML which code outside the
+// policy writes (http.Error, the refusals of mw.HostCheck and
+// mw.SameOrigin, the 404 and 405 of http.ServeMux), so that no raw error
+// text is ever swapped into the page as markup (see below).
+// [Errors.Answer] makes a handler of an error, for the refusal hooks of
+// middleware such as the Deny handler of mw.SameOrigin.
+//
+// # htmx reads every answer as HTML
+//
+// htmx inserts the body of every answer that it swaps as HTML, whatever
+// its Content-Type, and processes the hx-* attributes in it. Those
+// attributes send requests without any script, so a strict
+// Content-Security-Policy does not stop them. webui's htmx configuration
+// (hx2.Config) swaps 4xx and 5xx answers as well, which is how error alerts
+// show without script. A plain-text error such as
+//
+//	http.Error(w, err.Error(), http.StatusBadRequest)
+//
+// whose err quotes the request, as the errors of strconv, time.Parse and
+// url.Parse do, is inert in a browser tab (text/plain, nosniff) but becomes
+// markup in the page when htmx made the request. An element that an
+// attacker gets into such a request, for example through a link that
+// prefills a field of a form that a load trigger submits, such as
+//
+//	<i hx-post="/archive" hx-include="[name=csrf]" hx-trigger="load"></i>
+//
+// then sends a same-origin request with the page's CSRF token, which
+// passes the same-origin and CSRF checks.
+//
+// On routes that htmx requests, never write request data into an error
+// body: return errors to an [Errors] policy, whose messages never contain
+// request data. [Errors.Intercept] is the safety net for code that writes
+// its own error responses: for htmx requests it replaces 4xx and 5xx
+// responses with a Content-Type other than text/html by the policy's alert
+// of their status. It trusts text/html, and passes responses without a
+// Content-Type, which net/http sniffs; see its documentation for the
+// exact rules. hx2.Config.NoErrorSwap turns error swapping off for pages
+// whose htmx requests reach handlers that neither covers. Successful
+// answers are swapped as HTML under any configuration: render them with
+// chord, which escapes text.
 //
 // # Rendering
 //
@@ -70,9 +115,10 @@
 // reads hx-swap-oob="innerHTML show:top" as the selector "top", finds no
 // such element and drops the notice). The main swap of the answer can
 // scroll it instead, with the modifier
-// show:#alerts:top on the hx-swap of the element that made the request:
+// show:#alerts:top (page.ShowAlerts) on the hx-swap of the element that
+// made the request:
 //
-//	hx2.Swap(hx2.SwapOuterHTML + " show:#" + page.AlertsID + ":top")
+//	hx2.Swap(hx2.SwapOuterHTML + " " + page.ShowAlerts)
 //
 // or in an HX-Reswap of the answer (hx2.SetReswap), which replaces the
 // whole hx-swap of that element, its swap style included. Without it, the
@@ -91,6 +137,15 @@
 // to the first invalid field, give that element the autofocus attribute:
 // htmx focuses it after the swap. An error answer swaps the alerts region
 // only, so the form and its focus stay as they were.
+//
+// While a modal dialog is open, the page behind it is inert: an error
+// answer to a form inside the dialog must target an alerts region inside
+// the dialog, or the alert is neither seen nor announced. See "Forms in
+// dialogs" at [Errors] and its TargetFor field. An htmx answer does not
+// close the dialog either: a successful one closes it by replacing the
+// dialogs region out of band (page.DialogsOOB), and gives the focus to an
+// element of the new content (page.FocusTarget), since a removed dialog
+// does not return it to its opener.
 //
 // # Speculative requests
 //

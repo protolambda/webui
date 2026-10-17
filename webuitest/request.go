@@ -246,7 +246,7 @@ type ReqOption func(*reqSettings)
 
 type headerOp struct {
 	name, value string
-	del         bool
+	del, add    bool
 }
 
 type reqSettings struct {
@@ -259,6 +259,18 @@ type reqSettings struct {
 	cookies                           []*http.Cookie
 	headers                           []headerOp
 	logger                            *slog.Logger
+	urlMethods                        map[string]bool // of PageHTMXConfig
+}
+
+// settings applies opts, skipping nil ones.
+func settings(opts []ReqOption) reqSettings {
+	var s reqSettings
+	for _, o := range opts {
+		if o != nil {
+			o(&s)
+		}
+	}
+	return s
 }
 
 func ptr(s string) *string { return &s }
@@ -270,12 +282,39 @@ func ptr(s string) *string { return &s }
 // itself) works. [Client.Submit], [Browser.Submit] and
 // [Submission.Request] need it for a form whose action is relative to the
 // page or empty; without it, such a submission fails the test rather than
-// go to a URL that no browser would request.
+// go to a URL that no browser would request. The same holds for the
+// requests of [Client.SubmitHTMX], [Browser.SubmitHTMX] and
+// [HTMXRequest.Request]. An htmx request ([HTMX]) sends the resolved page
+// URL as HX-Current-URL, as htmx does, unless [HXCurrentURL] sets another.
 func PageURL(u string) ReqOption { return func(s *reqSettings) { s.page = ptr(u) } }
+
+// PageHTMXConfig names the htmx configuration of the page that makes the
+// request (page.Document.HTMX), for [Client.SubmitHTMX] and
+// [Browser.SubmitHTMX] of a fragment: a fragment has no htmx-config meta
+// element of its own and runs under the configuration of its page, by
+// default the zero hx2.Config. Only hx2.Config.DeleteURLParams changes the
+// request (see [HTMXData]); a complete page always uses its own
+// htmx-config meta element. It is the request counterpart of
+// [WithHTMXConfig], and other requests ignore it. A config that does not
+// encode (hx2.Config.JSON fails) is a programming error: PageHTMXConfig
+// panics.
+func PageHTMXConfig(c hx2.Config) ReqOption {
+	methods := configURLMethods("webuitest.PageHTMXConfig", c)
+	return func(s *reqSettings) { s.urlMethods = methods }
+}
 
 // HTMX marks the request as an htmx request: HX-Request: true, and the
 // fetch metadata of a script request (Sec-Fetch-Mode: cors,
-// Sec-Fetch-Dest: empty) instead of a navigation.
+// Sec-Fetch-Dest: empty) instead of a navigation; with [PageURL], also
+// HX-Current-URL.
+//
+// It changes only the headers: [Client.Submit] and [Browser.Submit] with
+// HTMX still send the form's own submission, its method, action and
+// fields, which models an htmx form whose hx-post (or other request
+// attribute) matches its method and action, and they fail when the htmx
+// request of the form or its submitter has another method or URL. hx-vals,
+// hx-include and hx-params are not applied; [Client.SubmitHTMX] and
+// [Browser.SubmitHTMX] send what htmx sends.
 func HTMX() ReqOption { return func(s *reqSettings) { s.htmx = true } }
 
 // HXTarget makes it an htmx request ([HTMX]) with HX-Target: id, the id of
@@ -358,6 +397,14 @@ func Header(name, value string) ReqOption {
 	}
 }
 
+// addHeader adds a value to a request header after every other option, as
+// [Header] sets one.
+func addHeader(name, value string) ReqOption {
+	return func(s *reqSettings) {
+		s.headers = append(s.headers, headerOp{name: name, value: value, add: true})
+	}
+}
+
 // LogTo attaches l to the request context with mw.WithLogger, so handlers
 // that log through mw.Logger write to l (for example a [Logs] handler). A
 // [Browser] ignores it: the server's requests have their own contexts.
@@ -374,12 +421,7 @@ func safeMethod(m string) bool { return m == http.MethodGet || m == http.MethodH
 // receives (origin-form URL, RequestURI, RemoteAddr, TLS state); otherwise
 // it is a client request for an http.Client.
 func buildRequest(ctx context.Context, base *url.URL, method, target string, body Body, opts []ReqOption, server bool) (*http.Request, error) {
-	var s reqSettings
-	for _, o := range opts {
-		if o != nil {
-			o(&s)
-		}
-	}
+	s := settings(opts)
 	from := base
 	if s.page != nil {
 		p, err := url.Parse(*s.page)
@@ -433,12 +475,16 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 	if s.target != nil {
 		h.Set(hx2.HeaderTarget, *s.target)
 	}
-	if s.currentURL != nil {
+	switch {
+	case s.currentURL != nil:
 		cu := *s.currentURL
 		if r, err := url.Parse(cu); err == nil {
 			cu = base.ResolveReference(r).String()
 		}
 		h.Set(hx2.HeaderCurrentURL, cu)
+	case s.htmx && s.page != nil:
+		// htmx sends the page's URL, location.href.
+		h.Set(hx2.HeaderCurrentURL, from.String())
 	}
 	if s.historyRestore {
 		h.Set(hx2.HeaderHistoryRestoreRequest, "true")
@@ -459,9 +505,12 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 		req.AddCookie(c)
 	}
 	for _, op := range s.headers {
-		if op.del {
+		switch {
+		case op.del:
 			h.Del(op.name)
-		} else {
+		case op.add:
+			h.Add(op.name, op.value)
+		default:
 			h.Set(op.name, op.value)
 		}
 	}

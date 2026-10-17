@@ -75,7 +75,8 @@ type PreAuthOptions struct {
 // login or sign-up form, against cross-site request forgery (a page of
 // another site signing the visitor in to an account of the attacker's),
 // without keeping any state per visitor. Create it with [NewPreAuth]. It is
-// safe for concurrent use.
+// safe for concurrent use. Formatting it with any verb prints only its
+// cookie name, never its key.
 //
 // [PreAuth.Issue] sets a cookie that carries a random nonce, the time of
 // issue and an HMAC-SHA256 tag of both, and returns the form token: a second
@@ -155,10 +156,12 @@ func (p *PreAuth) CookieName() string {
 // Issue returns the form token for a pre-authentication form, to render
 // with [CSRFInput], and makes sure the browser holds its cookie. If r
 // already carries a valid cookie with at least half of its lifetime left,
-// Issue returns that cookie's token and sets nothing, so that several open
-// tabs of the form stay valid together; otherwise it sets a new cookie on w
-// (which expires with the form). r may be nil. Issue fails only if the
-// source of randomness fails, without touching w.
+// Issue returns that cookie's token and sets nothing, so that tabs of the
+// form opened within that first half share one cookie and stay valid
+// together. Otherwise it sets a new cookie on w, which expires with the
+// form; the browser then replaces the old cookie, and forms rendered from
+// the old one are refused (the visitor reloads them). r may be nil. Issue
+// fails only if the source of randomness fails, without touching w.
 func (p *PreAuth) Issue(w http.ResponseWriter, r *http.Request) (string, error) {
 	now := p.now()
 	if body, issued, err := p.parse(p.cookie.value(r), now); err == nil && now.Sub(issued) < p.ttl/2 {
@@ -206,6 +209,12 @@ func (p *PreAuth) String() string {
 // GoString is like String, so that %#v does not print the key either.
 func (p *PreAuth) GoString() string {
 	return p.String()
+}
+
+// Format prints String for every verb (fmt would print the key for verbs
+// such as %d), formatted as a string for %v, %s, %q, %x and %X.
+func (p *PreAuth) Format(f fmt.State, verb rune) {
+	formatRedacted(f, verb, p.String())
 }
 
 // parse checks a cookie value at now and returns its authenticated body and

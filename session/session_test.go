@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -171,6 +172,7 @@ func TestNewStoreRejectsBadOptions(gt *testing.T) {
 		{IdleTTL: -time.Second},
 		{AbsoluteTTL: -time.Second},
 		{MaxSessions: -1},
+		{OnEnd: func(string, *account) {}, OnEndReason: func(string, session.EndReason, *account) {}},
 	} {
 		st, err := session.NewStore(opts)
 		t.Mustf(be.Error(err), "options %+v", opts)
@@ -429,13 +431,18 @@ func TestSessionEnd(gt *testing.T) {
 
 func TestStoreEndIsTheLogout(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	st := newStore(t, session.Options[account]{})
-	s, cookie := login(t, st, nil, account{ID: 1})
+	var e ended
+	st := newStore(t, session.Options[account]{OnEnd: e.hook})
+	secret := []byte("key")
+	s, cookie := login(t, st, nil, account{ID: 1, Secret: secret})
 	other, _ := login(t, st, nil, account{ID: 2})
 
 	rec := httptest.NewRecorder()
 	st.End(rec, get(t, "/logout", cookie))
 	t.Must(be.True(closed(s)))
+	t.Must(be.Equal(session.EndLogout, s.EndReason()))
+	t.Must(be.DeepEqual([]string{s.ID()}, e.list()))
+	t.Must(be.DeepEqual([]byte{0, 0, 0}, secret))
 	t.Must(be.False(other.Ended()))
 	t.Must(be.Equal("__Host-session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax", rec.Header().Get("Set-Cookie")))
 	cleared := rec.Result().Cookies()[0]
@@ -672,22 +679,468 @@ func TestFromContext(gt *testing.T) {
 	t.Must(be.False(ok))
 }
 
+// formatVerbs are the verbs the formatting tests try: those fmt sends to
+// String or GoString, and those it would answer by printing the fields.
+var formatVerbs = []string{
+	"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%o", "%O", "%b",
+	"%t", "%e", "%f", "%g", "%c", "%U", "%10v", "%-30s", "%#x",
+}
+
+// leaks returns the forms in which the formatting of a value could show
+// a secret: as text, as its bytes in decimal, and in hex.
+func leaks(secrets ...string) []string {
+	var out []string
+	for _, secret := range secrets {
+		out = append(out, secret, fmt.Sprint([]byte(secret)), hex.EncodeToString([]byte(secret)))
+	}
+	return out
+}
+
 func TestFormattingHidesSecrets(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	st := newStore(t, session.Options[account]{})
 	s, cookie := login(t, st, nil, account{ID: 424242, Secret: []byte("hunter2")})
-	csrf := s.CSRF()
-	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
-		for _, v := range []any{s, st} {
+	forbidden := append(leaks(s.CSRF(), cookie.Value, "hunter2"), "424242")
+	type wrapper struct{ S *session.Session[account] }
+	for _, verb := range formatVerbs {
+		for _, v := range []any{s, st, wrapper{s}, []*session.Session[account]{s}} {
 			out := fmt.Sprintf(verb, v)
-			t.Mustf(be.False(strings.Contains(out, csrf)), "%s: %s", verb, out)
-			t.Mustf(be.False(strings.Contains(out, cookie.Value)), "%s: %s", verb, out)
-			t.Mustf(be.False(strings.Contains(out, "424242")), "%s: %s", verb, out)
-			t.Mustf(be.False(strings.Contains(out, "hunter2")), "%s: %s", verb, out)
+			for _, secret := range forbidden {
+				t.Mustf(be.False(strings.Contains(out, secret)), "%s: %s", verb, out)
+			}
 		}
 	}
 	t.Must(be.Equal("session.Session("+s.ID()+")", fmt.Sprint(s)))
+	t.Must(be.Equal("session.Session("+s.ID()+")", fmt.Sprintf("%#v", s)))
+	t.Must(be.Equal(`"session.Store(__Host-session)"`, fmt.Sprintf("%q", st)))
+	t.Must(be.Equal("session.Store(__Host-session)", fmt.Sprintf("%d", st)))
 	t.Must(be.Equal("session.Store(__Host-session)", fmt.Sprint(st)))
+	t.Must(be.Equal("<nil>", fmt.Sprint((*session.Session[account])(nil))))
+	t.Must(be.Equal(s.String(), s.GoString()))
+	t.Must(be.Equal(st.String(), st.GoString()))
+}
+
+func TestSessionEndsWithAReason(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	var log endLog
+	st := newStore(t, session.Options[account]{
+		Now: clk.Now, IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Hour, MaxSessions: 3, OnEndReason: log.hook,
+	})
+	start := func(id int64) (*session.Session[account], *http.Cookie) {
+		s, cookie := login(t, st, nil, account{ID: id})
+		log.watch(s)
+		return s, cookie
+	}
+	reasons := map[*session.Session[account]]session.EndReason{}
+
+	s, cookie := start(1)
+	t.Must(be.Equal(session.EndReason(0), s.EndReason()))
+	st.End(httptest.NewRecorder(), get(t, "/logout", cookie))
+	reasons[s] = session.EndLogout
+
+	s, _ = start(2)
+	s.End()
+	reasons[s] = session.EndLogout
+
+	s, _ = start(3)
+	t.Must(be.Equal(1, st.EndFunc(func(a account) bool { return a.ID == 3 })))
+	reasons[s] = session.EndRevoked
+
+	s, cookie = start(4)
+	next, _ := login(t, st, get(t, "/login", cookie), account{ID: 40})
+	log.watch(next)
+	reasons[s] = session.EndRotated
+
+	s, cookie = start(5)
+	clk.Advance(time.Hour)
+	_, ok := st.Lookup(get(t, "/", cookie))
+	t.Must(be.False(ok))
+	reasons[s] = session.EndIdle
+	_, ok = st.Lookup(get(t, "/", cookie)) // and stays ended
+	t.Must(be.False(ok))
+
+	// next (created two hours ago) passes its absolute lifetime.
+	s, cookie = start(6)
+	for range 4 {
+		clk.Advance(30 * time.Minute)
+		_, ok = st.Lookup(get(t, "/", cookie))
+		t.Must(be.True(ok))
+	}
+	t.Must(be.Equal(1, st.Sweep())) // next is past both lifetimes: absolute counts first
+	reasons[next] = session.EndAbsolute
+
+	// Fill the store: the least recently used goes.
+	a, _ := start(7)
+	b, _ := start(8)
+	t.Must(be.False(s.Ended()))
+	c, _ := start(9)
+	reasons[s] = session.EndEvicted
+	t.Must(be.True(s.Ended()))
+
+	t.Must(be.Equal(3, st.EndAll()))
+	reasons[a] = session.EndRevoked
+	reasons[b] = session.EndRevoked
+	reasons[c] = session.EndRevoked
+
+	// Ending again changes nothing.
+	for s := range reasons {
+		s.End()
+	}
+	t.Must(be.Equal(0, st.EndAll()))
+	t.Must(be.Equal(0, st.Sweep()))
+
+	for s, reason := range reasons {
+		t.Mustf(be.Equal(reason, s.EndReason()), "session %d", reason)
+		t.Must(be.True(closed(s)))
+		t.Must(be.Equal(1, log.count(s.ID())))
+		t.Must(be.Equal(reason, log.reason(s.ID())))
+	}
+	t.Must(be.Equal(0, log.lateCalls()))
+	t.Must(be.Equal(len(reasons), log.total()))
+}
+
+func TestEndReasonString(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for reason, want := range map[session.EndReason]string{
+		session.EndLogout:   "logout",
+		session.EndRevoked:  "revoked",
+		session.EndIdle:     "idle",
+		session.EndAbsolute: "absolute",
+		session.EndRotated:  "rotated",
+		session.EndEvicted:  "evicted",
+		0:                   "EndReason(0)",
+		200:                 "EndReason(200)",
+	} {
+		t.Must(be.Equal(want, reason.String()))
+	}
+}
+
+// endLog records the calls of an OnEndReason hook, and whether Done was
+// closed already when the hook ran.
+type endLog struct {
+	mu      sync.Mutex
+	done    map[string]<-chan struct{}
+	calls   map[string]int
+	reasons map[string]session.EndReason
+	values  map[int64]int
+	late    int
+}
+
+// watch registers the Done channel of s, for the hook to check.
+func (l *endLog) watch(s *session.Session[account]) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.done == nil {
+		l.done = map[string]<-chan struct{}{}
+	}
+	l.done[s.ID()] = s.Done()
+}
+
+func (l *endLog) hook(id string, reason session.EndReason, data *account) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.calls == nil {
+		l.calls = map[string]int{}
+		l.reasons = map[string]session.EndReason{}
+		l.values = map[int64]int{}
+	}
+	l.calls[id]++
+	l.reasons[id] = reason
+	l.values[data.ID]++
+	select {
+	case <-l.done[id]:
+		l.late++
+	default:
+	}
+}
+
+func (l *endLog) count(id string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls[id]
+}
+
+func (l *endLog) reason(id string) session.EndReason {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.reasons[id]
+}
+
+// valueCount returns how often the hook saw the value with the ID.
+func (l *endLog) valueCount(id int64) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.values[id]
+}
+
+func (l *endLog) lateCalls() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.late
+}
+
+func (l *endLog) total() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, c := range l.calls {
+		n += c
+	}
+	return n
+}
+
+func TestHookPanicStillEndsTheOthers(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, end := range []func(*clock, *session.Store[account]) int{
+		func(clk *clock, st *session.Store[account]) int { clk.Advance(time.Hour); return st.Sweep() },
+		func(_ *clock, st *session.Store[account]) int { return st.EndAll() },
+	} {
+		clk := newClock()
+		var mu sync.Mutex
+		calls := 0
+		st := newStore(t, session.Options[account]{Now: clk.Now, IdleTTL: time.Hour, OnEnd: func(id string, data *account) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			clear(data.Secret)
+			if calls == 1 {
+				panic("hook bug")
+			}
+		}})
+		var all []*session.Session[account]
+		var secrets [][]byte
+		for i := range 3 {
+			secret := []byte("secret")
+			s, _ := login(t, st, nil, account{ID: int64(i), Secret: secret})
+			all = append(all, s)
+			secrets = append(secrets, secret)
+		}
+		t.Must(be.Panic(func() { end(clk, st) }))
+		t.Must(be.Equal(3, calls))
+		t.Must(be.Equal(0, st.Len()))
+		for i, s := range all {
+			t.Must(be.True(s.Ended()))
+			t.Must(be.True(closed(s)))
+			_, ok := s.Data()
+			t.Must(be.False(ok))
+			t.Must(be.DeepEqual(make([]byte, 6), secrets[i]))
+		}
+	}
+}
+
+func TestRotate(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	var log endLog
+	st := newStore(t, session.Options[account]{Now: clk.Now, IdleTTL: 2 * time.Hour, AbsoluteTTL: time.Hour, OnEndReason: func(id string, reason session.EndReason, data *account) {
+		log.hook(id, reason, data)
+		clear(data.Secret)
+	}})
+	secret := []byte("key")
+	old, oldCookie := login(t, st, nil, account{ID: 1, Secret: secret})
+	other, _ := login(t, st, nil, account{ID: 2})
+	oldCSRF := old.CSRF()
+	created := old.Created()
+	clk.Advance(30 * time.Minute)
+
+	rec := httptest.NewRecorder()
+	s, err := st.Rotate(rec, get(t, "/reauth", oldCookie))
+	t.Must(be.NoError(err))
+	cookies := rec.Result().Cookies()
+	t.Must(be.Len(cookies, 1))
+	cookie := cookies[0]
+	t.Must(be.Equal(oldCookie.Name, cookie.Name))
+	t.Must(be.NotEqual(oldCookie.Value, cookie.Value))
+	t.Must(be.Equal("; Path=/; HttpOnly; Secure; SameSite=Lax", strings.TrimPrefix(rec.Header().Get("Set-Cookie"), cookie.Name+"="+cookie.Value)))
+
+	// The value moved, and the hook did not run.
+	data, ok := s.Data()
+	t.Must(be.True(ok))
+	t.Must(be.Equal(int64(1), data.ID))
+	t.Must(be.DeepEqual([]byte("key"), data.Secret))
+	t.Must(be.Equal(0, log.total()))
+	t.Must(be.NotEqual(old.ID(), s.ID()))
+	t.Must(be.Equal(created, s.Created()))
+	t.Must(be.Equal(2, st.Len()))
+	t.Must(be.False(other.Ended()))
+
+	// The old session, cookie and CSRF token are gone.
+	t.Must(be.True(old.Ended()))
+	t.Must(be.True(closed(old)))
+	t.Must(be.Equal(session.EndRotated, old.EndReason()))
+	_, ok = old.Data()
+	t.Must(be.False(ok))
+	t.Must(be.ErrorIs(old.CheckCSRF(oldCSRF), session.ErrCSRF))
+	_, ok = st.Lookup(get(t, "/", oldCookie))
+	t.Must(be.False(ok))
+	t.Must(be.NotEqual(oldCSRF, s.CSRF()))
+	t.Must(be.ErrorIs(s.CheckCSRF(oldCSRF), session.ErrCSRF))
+	t.Must(be.NoError(s.CheckCSRF(s.CSRF())))
+	got, ok := st.Lookup(get(t, "/", cookie))
+	t.Must(be.True(ok))
+	t.Must(be.Same(s, got))
+
+	// Ending the old session again does not touch the new one.
+	old.End()
+	t.Must(be.False(s.Ended()))
+
+	// The absolute lifetime still counts from the login.
+	clk.Advance(30 * time.Minute)
+	_, ok = st.Lookup(get(t, "/", cookie))
+	t.Must(be.False(ok))
+	t.Must(be.Equal(session.EndAbsolute, s.EndReason()))
+	t.Must(be.Equal(1, log.count(s.ID())))
+	t.Must(be.DeepEqual([]byte{0, 0, 0}, secret))
+}
+
+func TestRotateNeedsALiveSession(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	var e ended
+	st := newStore(t, session.Options[account]{Now: clk.Now, IdleTTL: time.Minute, OnEnd: e.hook})
+	s, cookie := login(t, st, nil, account{ID: 1})
+	ended1, endedCookie := login(t, st, nil, account{ID: 2})
+	ended1.End()
+
+	for _, r := range []*http.Request{
+		nil,
+		get(t, "/"),
+		get(t, "/", &http.Cookie{Name: cookie.Name, Value: "bogus"}),
+		get(t, "/", &http.Cookie{Name: cookie.Name, Value: strings.Repeat("A", 43)}),
+		get(t, "/", endedCookie),
+	} {
+		rec := httptest.NewRecorder()
+		got, err := st.Rotate(rec, r)
+		t.Must(be.ErrorIs(err, session.ErrEnded))
+		t.Must(be.NilPtr(got))
+		t.Must(be.Len(rec.Header().Values("Set-Cookie"), 0))
+	}
+	t.Must(be.False(s.Ended()))
+
+	// An expired session ends, as at Lookup.
+	clk.Advance(time.Minute)
+	rec := httptest.NewRecorder()
+	got, err := st.Rotate(rec, get(t, "/", cookie))
+	t.Must(be.ErrorIs(err, session.ErrEnded))
+	t.Must(be.NilPtr(got))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 0))
+	t.Must(be.Equal(session.EndIdle, s.EndReason()))
+	t.Must(be.DeepEqual([]string{ended1.ID(), s.ID()}, e.list()))
+	t.Must(be.Equal(0, st.Len()))
+}
+
+func TestRotateFailsWithoutRandomness(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	cause := errors.New("no entropy")
+	src := &switchable{r: seeded(5)}
+	st := newStore(t, session.Options[account]{Rand: src})
+	s, cookie := login(t, st, nil, account{ID: 1})
+
+	src.set(failingRand{cause})
+	rec := httptest.NewRecorder()
+	got, err := st.Rotate(rec, get(t, "/", cookie))
+	t.Must(be.ErrorIs(err, cause))
+	t.Must(be.NilPtr(got))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 0))
+	t.Must(be.False(s.Ended()))
+
+	// A broken source that repeats the token is refused too.
+	src.set(zeros{})
+	_, zeroCookie := login(t, st, nil, account{ID: 2})
+	got, err = st.Rotate(rec, get(t, "/", zeroCookie))
+	t.Must(be.Error(err))
+	t.Must(be.NilPtr(got))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 0))
+	_, ok := st.Lookup(get(t, "/", zeroCookie))
+	t.Must(be.True(ok))
+	t.Must(be.False(s.Ended()))
+}
+
+func TestEndFuncChecksRotatedSessions(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{})
+	_, bCookie := login(t, st, nil, account{ID: 2})
+	login(t, st, nil, account{ID: 1}) // the most recent: checked first
+
+	// While EndFunc runs, session 2 rotates (match calls the store here
+	// only to make the race deterministic: session 2 is not locked).
+	var rotated *session.Session[account]
+	n := st.EndFunc(func(a account) bool {
+		if a.ID == 1 {
+			var err error
+			rotated, err = st.Rotate(httptest.NewRecorder(), get(t, "/", bCookie))
+			t.Must(be.NoError(err))
+		}
+		return a.ID == 2
+	})
+	t.Must(be.Equal(1, n))
+	t.Must(be.NonNilPtr(rotated))
+	t.Must(be.True(rotated.Ended()))
+	t.Must(be.Equal(session.EndRevoked, rotated.EndReason()))
+	t.Must(be.Equal(1, st.Len()))
+}
+
+func TestOnEndOnceUnderRacingEnders(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	var log endLog
+	st := newStore(t, session.Options[account]{Now: clk.Now, MaxSessions: 56, OnEndReason: log.hook})
+	type started struct {
+		s      *session.Session[account]
+		cookie *http.Cookie
+	}
+	var all []started
+	for i := range 64 {
+		s, cookie := login(t, st, nil, account{ID: int64(i)})
+		log.watch(s)
+		all = append(all, started{s, cookie})
+	}
+	// Every goroutine waits for ready, so that they all race.
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	race := func(fn func()) {
+		wg.Go(func() {
+			<-ready
+			fn()
+		})
+	}
+	rotate := func(cookie *http.Cookie) {
+		rec := httptest.NewRecorder()
+		s, err := st.Rotate(rec, get(t, "/", cookie))
+		if err != nil {
+			return
+		}
+		log.watch(s)
+		// Rotate the new session once more.
+		if s, err := st.Rotate(httptest.NewRecorder(), get(t, "/", rec.Result().Cookies()[0])); err == nil {
+			log.watch(s)
+		}
+	}
+	for i, x := range all {
+		id := int64(i)
+		race(func() { rotate(x.cookie) })
+		race(func() { rotate(x.cookie) })
+		race(func() { x.s.End() })
+		race(func() { st.End(httptest.NewRecorder(), get(t, "/logout", x.cookie)) })
+		race(func() { st.EndFunc(func(a account) bool { return a.ID == id }) })
+		if i%16 == 15 {
+			race(func() { st.EndAll() })
+		}
+		if i%8 == 7 {
+			race(func() { clk.Advance(2 * time.Minute); st.Sweep() })
+			race(func() { _, _ = st.New(httptest.NewRecorder(), nil, account{ID: 1000 + id}) })
+		}
+	}
+	close(ready)
+	wg.Wait()
+	st.EndAll()
+	t.Must(be.Equal(0, st.Len()))
+	for i, x := range all {
+		t.Must(be.True(closed(x.s)))
+		t.Mustf(be.Equal(1, log.valueCount(int64(i))), "value %d", i)
+	}
+	t.Must(be.Equal(0, log.lateCalls()))
 }
 
 func TestConcurrentUse(gt *testing.T) {
@@ -719,6 +1172,10 @@ func TestConcurrentUse(gt *testing.T) {
 					_ = got.CheckCSRF(got.CSRF())
 				}
 				switch i % 50 {
+				case 5:
+					if rotated, err := st.Rotate(httptest.NewRecorder(), lr); err == nil {
+						s = rotated
+					}
 				case 10:
 					s.End()
 				case 20:

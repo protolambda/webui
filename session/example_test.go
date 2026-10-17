@@ -186,3 +186,167 @@ func ExampleOptions_onEnd() {
 	fmt.Println(key)
 	// Output: [0 0 0 0]
 }
+
+// After a re-authentication, Rotate gives the session a new token and CSRF
+// token and keeps its value: the OnEnd hook does not clear it.
+func ExampleStore_Rotate() {
+	type Account struct {
+		Name     string
+		Key      []byte
+		Elevated bool
+	}
+	store, err := session.NewStore(session.Options[Account]{
+		OnEnd: func(id string, v *Account) { clear(v.Key) },
+		Rand:  rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
+	})
+	if err != nil {
+		panic(err)
+	}
+	rec := httptest.NewRecorder()
+	old, err := store.New(rec, nil, Account{Name: "ada", Key: []byte{1, 2, 3}})
+	if err != nil {
+		panic(err)
+	}
+	oldCookie := rec.Result().Cookies()[0]
+
+	// POST /confirm-password, after the password checked out.
+	r := httptest.NewRequest(http.MethodPost, "/confirm-password", nil)
+	r.AddCookie(oldCookie)
+	rec = httptest.NewRecorder()
+	s, err := store.Rotate(rec, r)
+	if err != nil {
+		panic(err)
+	}
+	if err := s.Update(func(v *Account) { v.Elevated = true }); err != nil {
+		panic(err)
+	}
+	newCookie := rec.Result().Cookies()[0]
+
+	account, _ := s.Data()
+	fmt.Println(account.Name, account.Key, account.Elevated)
+	fmt.Println(old.Ended(), old.EndReason(), newCookie.Value != oldCookie.Value)
+	_, ok := store.Lookup(r)
+	fmt.Println("old cookie works:", ok)
+	// Output:
+	// ada [1 2 3] true
+	// true rotated true
+	// old cookie works: false
+}
+
+// Ending the earlier sessions of an account before its login keeps one
+// session per account, so that logging in again and again does not push
+// the sessions of others out of the store.
+func ExampleStore_EndFunc() {
+	type Account struct{ ID int }
+	store, err := session.NewStore(session.Options[Account]{
+		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
+	})
+	if err != nil {
+		panic(err)
+	}
+	login := func(id int) *session.Session[Account] {
+		store.EndFunc(func(a Account) bool { return a.ID == id })
+		s, err := store.New(httptest.NewRecorder(), nil, Account{ID: id})
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}
+
+	other := login(2)
+	first := login(1)
+	for range 100 {
+		login(1)
+	}
+	fmt.Println(store.Len(), first.Ended(), first.EndReason(), other.Ended())
+
+	// After a password change: end every session of the account.
+	fmt.Println(store.EndFunc(func(a Account) bool { return a.ID == 1 }), store.Len())
+	// Output:
+	// 2 true revoked false
+	// 1 1
+}
+
+// The login: the form is protected by PreAuth until the credentials check
+// out, then Store.New starts the session and the pre-auth cookie goes. The
+// next page's forms carry the session's CSRF token.
+func ExamplePreAuth_login() {
+	preauth, err := session.NewPreAuth(session.PreAuthOptions{
+		Rand: rand.NewChaCha8([32]byte{1}), // deterministic for the example; omit in applications
+	})
+	if err != nil {
+		panic(err)
+	}
+	store, err := session.NewStore(session.Options[User]{
+		Rand: rand.NewChaCha8([32]byte{2}),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// GET /login renders the form with the pre-auth token.
+	rec := httptest.NewRecorder()
+	token, err := preauth.Issue(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if err != nil {
+		panic(err)
+	}
+	preauthCookie := rec.Result().Cookies()[0]
+
+	// POST /login with the form's token and valid credentials.
+	r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(session.CSRFField+"="+token))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(preauthCookie)
+	if err := preauth.Verify(r, r.PostFormValue(session.CSRFField)); err != nil {
+		fmt.Println("forged:", err)
+		return
+	}
+	rec = httptest.NewRecorder()
+	s, err := store.New(rec, r, User{Name: "ada"})
+	if err != nil {
+		panic(err)
+	}
+	preauth.ClearCookie(rec)
+	for _, c := range rec.Result().Cookies() {
+		fmt.Println(c.Name, c.MaxAge)
+	}
+
+	// GET /tasks: the forms carry the session's token, which POST checks.
+	fmt.Println(len(s.CSRF()), s.CheckCSRF(s.CSRF()), s.CheckCSRF(token) != nil)
+	// Output:
+	// __Host-session 0
+	// __Host-preauth -1
+	// 43 <nil> true
+}
+
+// OnEndReason logs why sessions end; evictions reveal a store too small for
+// its load, or logins that push other sessions out.
+func ExampleOptions_onEndReason() {
+	store, err := session.NewStore(session.Options[User]{
+		MaxSessions: 2,
+		OnEndReason: func(id string, reason session.EndReason, v *User) {
+			fmt.Println("session of", v.Name, "ended:", reason)
+		},
+		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
+	})
+	if err != nil {
+		panic(err)
+	}
+	login := func(name string) *session.Session[User] {
+		s, err := store.New(httptest.NewRecorder(), nil, User{Name: name})
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}
+	ada := login("ada")
+	login("grace")
+	login("edsger") // the store is full: ada's session goes
+	<-ada.Done()
+	fmt.Println(ada.EndReason())
+	store.EndAll()
+	// Output:
+	// session of ada ended: evicted
+	// evicted
+	// session of edsger ended: revoked
+	// session of grace ended: revoked
+}

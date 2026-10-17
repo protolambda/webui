@@ -8,7 +8,12 @@
 // the application's type T (an account ID, preferences, a cart).
 // Sessions exist only when the application creates one with [Store.New],
 // typically at a login: anonymous requests cost the server no state, and no
-// number of them can push a live session out of the store.
+// number of them can push a live session out of the store. Logins can: the
+// store holds at most [Options.MaxSessions] sessions and ends the least
+// recently used to make room, so a client that can log in, even to a
+// single account, can push the other sessions out by logging in again and
+// again. Throttle logins, successful ones included, and bound the sessions
+// per account (see [Options.MaxSessions]).
 //
 // The cookie carries a session token of 32 bytes from crypto/rand, encoded
 // as base64url. The store keys sessions by the SHA-256 digest of the token
@@ -24,7 +29,13 @@
 // recently used. When it ends, the [Options.OnEnd] hook runs with its value
 // (to clear secrets, for example), its value and CSRF token are dropped, and
 // then its [Session.Done] channel closes (long requests such as event
-// streams select on it).
+// streams select on it). [Session.EndReason] and [Options.OnEndReason] tell
+// why it ended. The lifetimes count time the computer spends asleep.
+//
+// [Store.Rotate] gives a live session a new token and CSRF token and keeps
+// its value, for changes of privilege within a session such as a
+// re-authentication: the old session ends without the OnEnd hook, which
+// runs when the new one ends.
 //
 // Expired sessions end when a request presents them, or at the next
 // [Store.Sweep]. The package starts no goroutines: call Sweep periodically
@@ -40,9 +51,11 @@
 // [Store.Middleware] looks up the session of each request's cookie and
 // attaches it to the request context, where [FromContext] finds it; a
 // request without a live session goes on without one. The middleware never
-// sets or clears cookies: only [Store.New] (the cookie of a new session) and
-// [Store.End] or [Store.ClearCookie] (its removal) do. Handler tests can skip
-// the cookie with [NewDetached] and [WithSession].
+// sets or clears cookies: only [Store.New] and [Store.Rotate] (the cookie of
+// a new session) and [Store.End] or [Store.ClearCookie] (its removal) do.
+// The context holds one session per value type, so stores mounted on the
+// same routes need distinct value types (see [FromContext]). Handler tests
+// can skip the cookie with [NewDetached] and [WithSession].
 //
 // # Cookies
 //
@@ -87,7 +100,15 @@
 // [Store], [Session] and [PreAuth] are safe for concurrent use. A session's
 // value is guarded by the session: [Session.Data] returns a copy, and
 // [Session.Update] runs a function with exclusive access to it. The
-// callbacks [Options.OnEnd] and those given to [Session.Update] and
-// [Store.EndFunc] run while their session is locked: they must not call
-// methods of that session or of its store.
+// callbacks [Options.OnEnd], [Options.OnEndReason] and those given to
+// [Session.Update] and [Store.EndFunc] run while their session is locked:
+// they must not call methods of that session or of its store, and should
+// return quickly ([Store.Rotate] waits for the session's lock while holding
+// the store's).
+//
+// # Logging
+//
+// Formatting a [Store], [Session] or [PreAuth] with any verb of package fmt
+// prints a short description (a cookie name, a log ID) and never a token,
+// a key or a session's value.
 package session

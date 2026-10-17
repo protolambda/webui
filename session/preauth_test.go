@@ -228,8 +228,11 @@ func TestPreAuthIssueReusesAFreshCookie(gt *testing.T) {
 	clk.Advance(time.Second)
 	fresh, set := issue(t, p, post(t, cookie))
 	t.Must(be.NonNilPtr(set))
+	t.Must(be.Equal(cookie.Name, set.Name))
 	t.Must(be.NotEqual(token, fresh))
 	t.Must(be.NoError(p.Verify(post(t, set), fresh)))
+	// The browser replaced the cookie: the earlier tabs' forms are refused.
+	t.Must(be.ErrorIs(p.Verify(post(t, set), token), session.ErrCSRF))
 
 	// An invalid cookie is replaced.
 	_, set = issue(t, p, post(t, &http.Cookie{Name: cookie.Name, Value: "junk"}))
@@ -269,12 +272,19 @@ func TestPreAuthFormattingHidesTheKey(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	key := bytes.Repeat([]byte{0xAB}, 32)
 	p := newPreAuth(t, session.PreAuthOptions{Rand: bytes.NewReader(append(key, make([]byte, 1024)...))})
-	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%x"} {
-		out := fmt.Sprintf(verb, p)
-		t.Mustf(be.False(strings.Contains(out, "171")), "%s: %s", verb, out)
-		t.Mustf(be.False(strings.Contains(strings.ToLower(out), "abab")), "%s: %s", verb, out)
+	type wrapper struct{ P *session.PreAuth }
+	for _, verb := range formatVerbs {
+		for _, v := range []any{p, wrapper{p}} {
+			out := fmt.Sprintf(verb, v)
+			t.Mustf(be.False(strings.Contains(out, "171")), "%s: %s", verb, out)
+			t.Mustf(be.False(strings.Contains(out, "253")), "%s: %s", verb, out) // octal
+			t.Mustf(be.False(strings.Contains(out, "10101011")), "%s: %s", verb, out)
+			t.Mustf(be.False(strings.Contains(strings.ToLower(out), "abab")), "%s: %s", verb, out)
+		}
 	}
 	t.Must(be.Equal("session.PreAuth(__Host-preauth)", fmt.Sprint(p)))
+	t.Must(be.Equal("session.PreAuth(__Host-preauth)", fmt.Sprintf("%d", p)))
+	t.Must(be.Equal(p.String(), p.GoString()))
 }
 
 func TestPreAuthConcurrentUse(gt *testing.T) {

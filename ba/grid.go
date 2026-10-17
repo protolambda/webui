@@ -1,9 +1,14 @@
 package ba
 
 import (
-	"fmt"
-
 	"github.com/protolambda/chord/core/attr"
+)
+
+// The column and offset ranges of the 12-column Bootstrap grid.
+const (
+	minCols   = 1
+	maxCols   = 12
+	maxOffset = 11
 )
 
 // Container returns a "container" class attribute.
@@ -69,32 +74,65 @@ func Col11() attr.Node { return rawClass("col-11") }
 // Col12 returns a "col-12" class attribute.
 func Col12() attr.Node { return rawClass("col-12") }
 
-// ColSM returns a "col-sm-{n}" class attribute.
-func ColSM(n int) attr.Node { return rawClass(fmt.Sprintf("col-sm-%d", n)) }
+// ColAt returns a "col-{bp}-{n}" class attribute: n of 12 columns from
+// breakpoint bp upwards, for n in 1..12. An invalid bp or n fails the
+// render with [ErrInvalidValue].
+func ColAt(bp Breakpoint, n int) attr.Node { return atIntClass("col-", bp, n, minCols, maxCols) }
 
-// ColMD returns a "col-md-{n}" class attribute.
-func ColMD(n int) attr.Node { return rawClass(fmt.Sprintf("col-md-%d", n)) }
+// ColSM returns a "col-sm-{n}" class attribute, for n in 1..12. Any other n
+// fails the render with [ErrInvalidValue].
+func ColSM(n int) attr.Node { return ColAt(SM, n) }
 
-// ColLG returns a "col-lg-{n}" class attribute.
-func ColLG(n int) attr.Node { return rawClass(fmt.Sprintf("col-lg-%d", n)) }
+// ColMD returns a "col-md-{n}" class attribute, for n in 1..12. Any other n
+// fails the render with [ErrInvalidValue].
+func ColMD(n int) attr.Node { return ColAt(MD, n) }
 
-// ColXL returns a "col-xl-{n}" class attribute.
-func ColXL(n int) attr.Node { return rawClass(fmt.Sprintf("col-xl-%d", n)) }
+// ColLG returns a "col-lg-{n}" class attribute, for n in 1..12. Any other n
+// fails the render with [ErrInvalidValue].
+func ColLG(n int) attr.Node { return ColAt(LG, n) }
 
-// ColXXL returns a "col-xxl-{n}" class attribute.
-func ColXXL(n int) attr.Node { return rawClass(fmt.Sprintf("col-xxl-%d", n)) }
+// ColXL returns a "col-xl-{n}" class attribute, for n in 1..12. Any other n
+// fails the render with [ErrInvalidValue].
+func ColXL(n int) attr.Node { return ColAt(XL, n) }
 
-// ColAuto returns a "col-auto" class attribute.
+// ColXXL returns a "col-xxl-{n}" class attribute, for n in 1..12. Any other n
+// fails the render with [ErrInvalidValue].
+func ColXXL(n int) attr.Node { return ColAt(XXL, n) }
+
+// ColAuto returns a "col-auto" class attribute: a column as wide as its
+// content.
 func ColAuto() attr.Node { return rawClass("col-auto") }
 
-// Offset returns an "offset-{n}" class attribute.
-func Offset(n int) attr.Node { return rawClass(fmt.Sprintf("offset-%d", n)) }
+// ColAutoAt returns a "col-{bp}-auto" class attribute. An invalid bp fails
+// the render with [ErrInvalidValue].
+func ColAutoAt(bp Breakpoint) attr.Node { return atClass("col-", bp, "-auto") }
 
-// OffsetSM returns an "offset-sm-{n}" class attribute.
-func OffsetSM(n int) attr.Node { return rawClass(fmt.Sprintf("offset-sm-%d", n)) }
+// Offset returns an "offset-{n}" class attribute, for n in 1..11. Bootstrap
+// has no offset-0 for the smallest screens (no offset is the default), so 0
+// fails the render with [ErrInvalidValue], as does any other n out of range.
+func Offset(n int) attr.Node { return intClass("offset-", n, 1, maxOffset) }
 
-// OffsetMD returns an "offset-md-{n}" class attribute.
-func OffsetMD(n int) attr.Node { return rawClass(fmt.Sprintf("offset-md-%d", n)) }
+// OffsetAt returns an "offset-{bp}-{n}" class attribute, for n in 0..11;
+// offset-{bp}-0 resets an offset set for a smaller breakpoint. An invalid bp
+// or n fails the render with [ErrInvalidValue].
+func OffsetAt(bp Breakpoint, n int) attr.Node { return atIntClass("offset-", bp, n, 0, maxOffset) }
 
-// OffsetLG returns an "offset-lg-{n}" class attribute.
-func OffsetLG(n int) attr.Node { return rawClass(fmt.Sprintf("offset-lg-%d", n)) }
+// OffsetSM returns an "offset-sm-{n}" class attribute, for n in 0..11. Any
+// other n fails the render with [ErrInvalidValue].
+func OffsetSM(n int) attr.Node { return OffsetAt(SM, n) }
+
+// OffsetMD returns an "offset-md-{n}" class attribute, for n in 0..11. Any
+// other n fails the render with [ErrInvalidValue].
+func OffsetMD(n int) attr.Node { return OffsetAt(MD, n) }
+
+// OffsetLG returns an "offset-lg-{n}" class attribute, for n in 0..11. Any
+// other n fails the render with [ErrInvalidValue].
+func OffsetLG(n int) attr.Node { return OffsetAt(LG, n) }
+
+// OffsetXL returns an "offset-xl-{n}" class attribute, for n in 0..11. Any
+// other n fails the render with [ErrInvalidValue].
+func OffsetXL(n int) attr.Node { return OffsetAt(XL, n) }
+
+// OffsetXXL returns an "offset-xxl-{n}" class attribute, for n in 0..11. Any
+// other n fails the render with [ErrInvalidValue].
+func OffsetXXL(n int) attr.Node { return OffsetAt(XXL, n) }

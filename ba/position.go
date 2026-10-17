@@ -63,3 +63,29 @@ func TranslateMiddleX() attr.Node { return rawClass("translate-middle-x") }
 
 // TranslateMiddleY creates a Bootstrap translate-middle-y class.
 func TranslateMiddleY() attr.Node { return rawClass("translate-middle-y") }
+
+// FixedTop creates a Bootstrap fixed-top class: fixed to the top of the
+// viewport, above the page content (e.g. a navbar; the page then needs top
+// padding).
+func FixedTop() attr.Node { return rawClass("fixed-top") }
+
+// FixedBottom creates a Bootstrap fixed-bottom class: fixed to the bottom of
+// the viewport.
+func FixedBottom() attr.Node { return rawClass("fixed-bottom") }
+
+// StickyTop creates a Bootstrap sticky-top class: the element scrolls with
+// the page until it reaches the top of the viewport, then stays there.
+func StickyTop() attr.Node { return rawClass("sticky-top") }
+
+// StickyBottom creates a Bootstrap sticky-bottom class: the element sticks
+// to the bottom of the viewport while its container is in view.
+func StickyBottom() attr.Node { return rawClass("sticky-bottom") }
+
+// StickyTopAt creates a Bootstrap sticky-{bp}-top class: sticky-top from
+// breakpoint bp upwards, e.g. a sidebar that only sticks on wide screens. An
+// invalid bp fails the render with [ErrInvalidValue].
+func StickyTopAt(bp Breakpoint) attr.Node { return atClass("sticky-", bp, "-top") }
+
+// StickyBottomAt creates a Bootstrap sticky-{bp}-bottom class. An invalid bp
+// fails the render with [ErrInvalidValue].
+func StickyBottomAt(bp Breakpoint) attr.Node { return atClass("sticky-", bp, "-bottom") }

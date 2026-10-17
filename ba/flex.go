@@ -1,8 +1,6 @@
 package ba
 
 import (
-	"fmt"
-
 	"github.com/protolambda/chord/core/attr"
 )
 
@@ -11,6 +9,17 @@ func FlexRow() attr.Node { return rawClass("flex-row") }
 
 // FlexColumn creates a Bootstrap flex-column class.
 func FlexColumn() attr.Node { return rawClass("flex-column") }
+
+// FlexRowAt creates a Bootstrap flex-{bp}-row class: a row from breakpoint
+// bp upwards. Combined with [FlexColumn], it stacks items on small screens
+// and lines them up on larger ones. An invalid bp fails the render with
+// [ErrInvalidValue].
+func FlexRowAt(bp Breakpoint) attr.Node { return atClass("flex-", bp, "-row") }
+
+// FlexColumnAt creates a Bootstrap flex-{bp}-column class: a column from
+// breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func FlexColumnAt(bp Breakpoint) attr.Node { return atClass("flex-", bp, "-column") }
 
 // FlexRowReverse creates a Bootstrap flex-row-reverse class.
 func FlexRowReverse() attr.Node { return rawClass("flex-row-reverse") }
@@ -90,5 +99,27 @@ func FlexShrink0() attr.Node { return rawClass("flex-shrink-0") }
 // FlexShrink1 creates a Bootstrap flex-shrink-1 class.
 func FlexShrink1() attr.Node { return rawClass("flex-shrink-1") }
 
-// Gap creates a Bootstrap gap-{n} class.
-func Gap(n int) attr.Node { return rawClass(fmt.Sprintf("gap-%d", n)) }
+// Gap creates a Bootstrap gap-{n} class (the gap between the items of a flex
+// or grid container), for n in 0..5. Any other n fails the render with
+// [ErrInvalidValue].
+func Gap(n int) attr.Node { return intClass("gap-", n, minSpace, maxSpace) }
+
+// RowGap creates a Bootstrap row-gap-{n} class, for n in 0..5. Any other n
+// fails the render with [ErrInvalidValue].
+func RowGap(n int) attr.Node { return intClass("row-gap-", n, minSpace, maxSpace) }
+
+// ColumnGap creates a Bootstrap column-gap-{n} class, for n in 0..5. Any
+// other n fails the render with [ErrInvalidValue].
+func ColumnGap(n int) attr.Node { return intClass("column-gap-", n, minSpace, maxSpace) }
+
+// HStack creates a Bootstrap hstack class: a horizontal flex layout with
+// vertically centered items. Combine it with [Gap] for spacing.
+func HStack() attr.Node { return rawClass("hstack") }
+
+// VStack creates a Bootstrap vstack class: a vertical flex layout of
+// full-width items. Combine it with [Gap] for spacing.
+func VStack() attr.Node { return rawClass("vstack") }
+
+// VR creates a Bootstrap vr class: a vertical divider, e.g. between the
+// items of an [HStack]. Use it on an empty element.
+func VR() attr.Node { return rawClass("vr") }

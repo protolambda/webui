@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -178,6 +179,50 @@ func (l *fakeListener) Close() error {
 }
 
 func (l *fakeListener) Addr() net.Addr { return tcpAddr("192.0.2.200:443") }
+
+// failingListener fails its first Accept calls with err, then accepts from
+// the listener it wraps.
+type failingListener struct {
+	net.Listener
+	err      error
+	mu       sync.Mutex
+	failures int
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	fail := l.failures > 0
+	if fail {
+		l.failures--
+	}
+	l.mu.Unlock()
+	if fail {
+		return nil, l.err
+	}
+	return l.Listener.Accept()
+}
+
+// strictListener is a listener whose Close may run only once, as for many
+// hand-written listeners: a second Close panics. Accept waits for Close.
+type strictListener struct {
+	closed chan struct{}
+	closes atomic.Int32
+}
+
+func newStrictListener() *strictListener { return &strictListener{closed: make(chan struct{})} }
+
+func (l *strictListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *strictListener) Close() error {
+	l.closes.Add(1)
+	close(l.closed)
+	return nil
+}
+
+func (l *strictListener) Addr() net.Addr { return tcpAddr("192.0.2.200:443") }
 
 // tcpAddr parses an address:port into a *net.TCPAddr.
 func tcpAddr(s string) *net.TCPAddr {

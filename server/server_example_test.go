@@ -19,11 +19,13 @@ func ExampleNew() {
 	fmt.Println("idle timeout:", srv.IdleTimeout)
 	fmt.Println("max header bytes:", srv.MaxHeaderBytes)
 	fmt.Println("read and write timeouts:", srv.ReadTimeout, srv.WriteTimeout)
+	fmt.Println("HTTP/2 streams per connection:", srv.HTTP2.MaxConcurrentStreams)
 	// Output:
 	// read header timeout: 10s
 	// idle timeout: 2m0s
 	// max header bytes: 65536
 	// read and write timeouts: 0s 0s
+	// HTTP/2 streams per connection: 100
 }
 
 // A complete local application: the listener is checked and bounded, the

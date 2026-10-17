@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
 // DefaultShutdownTimeout is how long [Run] waits for requests in flight at
 // shutdown by default.
 const DefaultShutdownTimeout = 10 * time.Second
+
+// ErrNoCertificate reports a server with a TLS configuration but without a
+// certificate source, which [Run] refuses to serve.
+var ErrNoCertificate = errors.New("server: TLS configuration has no certificate " +
+	"(Certificates, GetCertificate or GetConfigForClient)")
 
 // RunOption configures [Run].
 type RunOption func(*runConfig)
@@ -32,12 +38,18 @@ func ShutdownTimeout(d time.Duration) RunOption {
 	}
 }
 
-// OnShutdown adds functions that Run calls when shutdown starts, in order and
-// before it waits for requests in flight, such as one that ends the
-// application's event streams: [http.Server.Shutdown] waits for every active
-// response to finish, and a stream would otherwise run into the timeout. The
-// functions should start ending things and return, not wait for them. Nil
-// functions are skipped.
+// OnShutdown adds functions that Run calls when shutdown starts, in order,
+// once the listener is closed and while it waits for requests in flight, such
+// as one that ends the application's event streams: [http.Server.Shutdown]
+// waits for every active response to finish, and a stream would otherwise run
+// into the timeout. The functions should start ending things and return, not
+// wait for them; Run returns only after they returned.
+//
+// Each function should set a stop signal that lasts, such as closing a
+// channel or canceling a context that every stream also checks when it
+// starts, rather than end only the streams open at that moment: requests
+// already on their way while shutdown starts may still start streams, which
+// would otherwise run into the timeout. Nil functions are skipped.
 func OnShutdown(hooks ...func()) RunOption {
 	return func(c *runConfig) {
 		for _, h := range hooks {
@@ -50,18 +62,24 @@ func OnShutdown(hooks ...func()) RunOption {
 
 // Run serves srv on ln until ctx is done, then shuts down gracefully, and
 // returns once the server stopped. It takes ownership of ln, which is closed
-// when Run returns, and of srv, which cannot serve again afterwards.
+// (once) when Run returns, and of srv, which cannot serve again afterwards:
+// use a fresh server for every Run.
 //
 // Run serves TLS when srv.TLSConfig is not nil (as [New] sets it for
 // Options.TLS), so ln must be a plain listener; it is wrapped in TLS after
 // any listener wrapper, such as [LimitConns], so refused connections cost no
-// handshake.
+// handshake. A TLS configuration needs a certificate source; without one, Run
+// returns [ErrNoCertificate] at once, without serving. Note that
+// [http.Server.Serve] and golang.org/x/net/http2.ConfigureServer set an empty
+// TLSConfig on a plain server, which then looks like such a configuration:
+// configure HTTP/2 without TLS through srv.Protocols instead.
 //
 // Shutdown, when ctx is done or serving failed:
 //
-//  1. the [OnShutdown] functions run, in order;
-//  2. [http.Server.Shutdown] closes the listener and idle connections, runs
-//     the functions registered with [http.Server.RegisterOnShutdown], and
+//  1. [http.Server.Shutdown] closes the listener;
+//  2. the [OnShutdown] functions run, in order, alongside the functions
+//     registered with [http.Server.RegisterOnShutdown] (such as the one that
+//     sends HTTP/2 GOAWAY frames), while Shutdown closes idle connections and
 //     waits for requests in flight, up to the [ShutdownTimeout] (by default
 //     [DefaultShutdownTimeout]);
 //  3. after the timeout, the request contexts are canceled and the remaining
@@ -74,15 +92,23 @@ func OnShutdown(hooks ...func()) RunOption {
 // which Shutdown does not wait for).
 //
 // Run returns nil after a graceful shutdown that ctx started. It returns an
-// error if serving failed (such as a TLS configuration without certificates,
-// or a listener that broke), or if requests were still in flight at the
-// timeout (wrapping [context.DeadlineExceeded]).
+// error if serving failed (such as a listener that broke), if srv was shut
+// down or closed by other means than ctx, such as an earlier Run (wrapping
+// [http.ErrServerClosed]), or if requests were still in flight at the timeout
+// (wrapping [context.DeadlineExceeded]).
 func Run(ctx context.Context, srv *http.Server, ln net.Listener, opts ...RunOption) error {
 	if srv == nil || ln == nil {
 		if ln != nil {
 			_ = ln.Close()
 		}
 		return errors.New("server: Run needs a server and a listener")
+	}
+	useTLS := srv.TLSConfig != nil
+	if c := srv.TLSConfig; useTLS && len(c.Certificates) == 0 && c.GetCertificate == nil && c.GetConfigForClient == nil {
+		// http.Server would fall back to loading a key pair from the empty
+		// file names, and fail with a confusing error.
+		_ = ln.Close()
+		return ErrNoCertificate
 	}
 	cfg := runConfig{timeout: DefaultShutdownTimeout}
 	for _, opt := range opts {
@@ -97,14 +123,37 @@ func Run(ctx context.Context, srv *http.Server, ln net.Listener, opts ...RunOpti
 		srv.BaseContext = func(net.Listener) context.Context { return base }
 	}
 
+	// Shutdown calls the hooks after it closed the listener, so that no new
+	// connection starts a stream after them. A Shutdown called by other
+	// means runs them too; the Once keeps them to one run.
+	hooksDone := make(chan struct{})
+	if len(cfg.hooks) == 0 {
+		close(hooksDone)
+	} else {
+		var once sync.Once
+		srv.RegisterOnShutdown(func() {
+			once.Do(func() {
+				defer close(hooksDone)
+				for _, hook := range cfg.hooks {
+					hook()
+				}
+			})
+		})
+	}
+
+	// Serve closes the listener it gets on return. ServeTLS may return before
+	// it calls Serve, so Run closes ln too on that path, through a wrapper
+	// that closes only once: Close of a net.Listener need not be idempotent.
+	// The plain path passes ln as is, so that a BaseContext of the caller
+	// sees the caller's listener.
+	var tlsLn *onceCloseListener
 	served := make(chan error, 1)
-	go func() {
-		if srv.TLSConfig != nil {
-			served <- srv.ServeTLS(ln, "", "")
-		} else {
-			served <- srv.Serve(ln)
-		}
-	}()
+	if useTLS {
+		tlsLn = &onceCloseListener{Listener: ln}
+		go func() { served <- srv.ServeTLS(tlsLn, "", "") }()
+	} else {
+		go func() { served <- srv.Serve(ln) }()
+	}
 
 	var serveErr error
 	serveDone := false
@@ -114,9 +163,6 @@ func Run(ctx context.Context, srv *http.Server, ln net.Listener, opts ...RunOpti
 		serveDone = true
 	}
 
-	for _, hook := range cfg.hooks {
-		hook()
-	}
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancelShutdown()
 	var shutdownErr error
@@ -131,14 +177,31 @@ func Run(ctx context.Context, srv *http.Server, ln net.Listener, opts ...RunOpti
 	if !serveDone {
 		serveErr = <-served
 	}
-	// Serve closes ln on return, except when it returns before it began.
-	_ = ln.Close()
+	if tlsLn != nil {
+		_ = tlsLn.Close()
+	}
+	<-hooksDone
 
-	if errors.Is(serveErr, http.ErrServerClosed) {
+	// ErrServerClosed is the result of the Shutdown that ctx started; when
+	// serving ended with it before, the server was closed by other means.
+	if errors.Is(serveErr, http.ErrServerClosed) && (!serveDone || ctx.Err() != nil) {
 		serveErr = nil
 	}
 	if serveErr != nil {
 		serveErr = fmt.Errorf("server: serve: %w", serveErr)
 	}
 	return errors.Join(serveErr, shutdownErr)
+}
+
+// onceCloseListener closes the listener it wraps only once, and returns the
+// result of that close to every call.
+type onceCloseListener struct {
+	net.Listener
+	once sync.Once
+	err  error
+}
+
+func (l *onceCloseListener) Close() error {
+	l.once.Do(func() { l.err = l.Listener.Close() })
+	return l.err
 }

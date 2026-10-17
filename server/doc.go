@@ -9,8 +9,9 @@
 //
 // # Timeouts
 //
-// New sets ReadHeaderTimeout (10 s), IdleTimeout (2 min) and MaxHeaderBytes
-// (64 KiB), and deliberately leaves ReadTimeout and WriteTimeout at zero. Those
+// New sets ReadHeaderTimeout (10 s), IdleTimeout (2 min), MaxHeaderBytes
+// (64 KiB) and the concurrent streams of an HTTP/2 connection (100), and
+// deliberately leaves ReadTimeout and WriteTimeout at zero. Those
 // count from the start of the request and bound the whole exchange, so they
 // would end every long-lived response, such as a stream of server-sent events
 // or a large download. Bound bodies and responses per request instead, with

@@ -36,6 +36,7 @@ func TestIsLoopbackAddr(gt *testing.T) {
 		{"network address", tcpAddr("192.0.2.1:8080"), false},
 		{"nil", nil, false},
 		{"nil TCP address", (*net.TCPAddr)(nil), false},
+		{"nil Unix address", (*net.UnixAddr)(nil), false},
 		{"Unix socket", &net.UnixAddr{Name: "/run/app.sock", Net: "unix"}, false},
 		{"other tcp address type", namedAddr{"tcp", "127.0.0.1:8080"}, true},
 		{"other tcp6 address type", namedAddr{"tcp6", "[::1]:8080"}, true},
@@ -70,6 +71,14 @@ func TestCheckLoopback(gt *testing.T) {
 
 	t.Must(be.ErrorIs(server.CheckLoopback(&net.UnixAddr{Name: "/run/app.sock", Net: "unix"}, local),
 		server.ErrLoopbackListener))
+
+	for _, addr := range []net.Addr{(*net.TCPAddr)(nil), (*net.UnixAddr)(nil)} {
+		t.Must(be.NoError(server.CheckLoopback(addr)))
+		t.Must(be.NoError(server.CheckLoopback(addr, public)))
+		err = server.CheckLoopback(addr, local)
+		t.Must(be.ErrorIs(err, server.ErrLoopbackListener))
+		t.Must(be.Substring(err.Error(), "the listener address is an unknown address"))
+	}
 }
 
 func TestCheckLoopbackOnRealListener(gt *testing.T) {

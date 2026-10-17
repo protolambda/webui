@@ -17,7 +17,8 @@ var ErrLoopbackListener = errors.New("server: loopback site on a non-loopback li
 // local machine only: a TCP address on a loopback IP address. Unspecified
 // addresses (0.0.0.0, ::), which accept from every interface, are not; nor
 // are Unix sockets, which typically sit behind a reverse proxy that forwards
-// traffic from the network.
+// traffic from the network. Nil, including a nil *net.TCPAddr or
+// *net.UnixAddr, is not loopback either.
 func IsLoopbackAddr(addr net.Addr) bool {
 	var ip netip.Addr
 	switch a := addr.(type) {
@@ -28,6 +29,8 @@ func IsLoopbackAddr(addr net.Addr) bool {
 			return false
 		}
 		ip = a.AddrPort().Addr()
+	case *net.UnixAddr:
+		return false
 	default:
 		if addr.Network() != "tcp" && addr.Network() != "tcp4" && addr.Network() != "tcp6" {
 			return false
@@ -61,14 +64,29 @@ func CheckLoopback(addr net.Addr, sites ...mw.Site) error {
 	}
 	for _, s := range sites {
 		if s.Loopback() {
-			listen := "an unknown address"
-			if addr != nil {
-				listen = addr.Network() + " " + addr.String()
-			}
 			return fmt.Errorf("%w: %s is a loopback site, but the listener address is %s; "+
 				"listen on a loopback address, such as 127.0.0.1, or configure the site's network URL",
-				ErrLoopbackListener, s.Origin(), listen)
+				ErrLoopbackListener, s.Origin(), describeAddr(addr))
 		}
 	}
 	return nil
+}
+
+// describeAddr formats a listener address for an error message. Nil, and a
+// nil *net.TCPAddr or *net.UnixAddr, describe an unknown address.
+func describeAddr(addr net.Addr) string {
+	const unknown = "an unknown address"
+	switch a := addr.(type) {
+	case nil:
+		return unknown
+	case *net.TCPAddr:
+		if a == nil {
+			return unknown
+		}
+	case *net.UnixAddr:
+		if a == nil {
+			return unknown
+		}
+	}
+	return addr.Network() + " " + addr.String()
 }

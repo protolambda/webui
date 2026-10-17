@@ -11,8 +11,9 @@ import (
 )
 
 // DefaultConnsPerAddr is the default bound of [LimitConns]. Browsers open up to
-// six connections per site, which leaves room for several users behind one
-// address.
+// six HTTP/1.1 connections per site, and usually one over HTTP/2, which leaves
+// room for several users behind one address or IPv6 /64. The bound applies
+// before TLS, so it cannot depend on the protocol.
 const DefaultConnsPerAddr = 64
 
 // ConnLimit configures [LimitConns].
@@ -37,13 +38,27 @@ type ConnLimit struct {
 // ([AddrPrefix]). A connection counts from its accept to its close, so idle
 // keep-alive connections and slow ones count too; one beyond the bound is
 // closed at once, before any TLS handshake or HTTP, and Accept moves on to
-// the next. This bounds what one client can hold of the server's connection
-// slots, buffers and goroutines.
+// the next. This bounds the connection slots and per-connection buffers that
+// one client can hold.
+//
+// It bounds connections, not requests: over HTTP/2, which [Run] serves with
+// TLS, one connection carries up to the server's MaxConcurrentStreams
+// concurrent requests ([New] sets [DefaultMaxConcurrentStreams]), each with
+// its own handler goroutine. One address group can therefore run up to
+// PerAddr times that many handlers at once. Bound expensive or long-lived
+// handlers per client separately, for example with a limiter keyed on
+// [AddrPrefix].
 //
 // Connections from loopback peers, from peers that cfg.Exempt names, and
 // without an IP peer address (such as Unix sockets) are not bounded. Behind a
 // reverse proxy every connection comes from the proxy: exempt it, and bound
 // clients at the proxy.
+//
+// A server that the clients of a local network reach directly gets one bound
+// for all of the network's IPv6 clients, since they share its /64
+// ([AddrPrefix]). Raise PerAddr for it, or exempt the local peers, for
+// example with Exempt: netip.Addr.IsLinkLocalUnicast, or the Contains method
+// of the network's prefix; exempt peers are not bounded at all.
 //
 // The returned listener is safe for concurrent use. Closing it closes ln.
 // Its connections forward CloseWrite (which net/http uses before closing a
@@ -58,6 +73,9 @@ func LimitConns(ln net.Listener, cfg ConnLimit) net.Listener {
 // AddrPrefix returns the group of a client address for per-address bounds:
 // the address itself (a /32) for IPv4 and IPv4-mapped IPv6 addresses, and its
 // /64 for IPv6, since one host can easily rotate addresses within its /64.
+// A /64 is usually a whole network segment, though: all IPv6 clients of one
+// LAN share its /64, and link-local clients of every interface share
+// fe80::/64, while IPv4 clients on the same LAN each have their own group.
 // The zone is dropped. The zero Addr returns the zero Prefix.
 func AddrPrefix(a netip.Addr) netip.Prefix {
 	if !a.IsValid() {
@@ -137,6 +155,8 @@ func peerAddr(a net.Addr) (netip.Addr, bool) {
 			return netip.Addr{}, false
 		}
 		ip = a.AddrPort().Addr()
+	case *net.UnixAddr:
+		return netip.Addr{}, false
 	default:
 		ap, err := netip.ParseAddrPort(a.String())
 		if err != nil {

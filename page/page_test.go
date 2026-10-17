@@ -22,6 +22,7 @@ import (
 	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/page"
 	"github.com/protolambda/webui/theme"
+	"github.com/protolambda/webui/webuitest"
 )
 
 func TestColorModeMatchesTheme(gt *testing.T) {
@@ -199,6 +200,21 @@ func TestLayoutVariants(gt *testing.T) {
 		))
 		t.Must(view.Find(ct.Role("main")).Find(ct.ID(page.AlertsID)))
 		t.Must(view.Find(ct.Class("container")).None())
+		// The row fills the wrapper so that the columns reach the footer
+		// from md up, while stacked lines keep their content height.
+		t.Must(view.Find(ct.Class("container-fluid")).Matches(ct.Class("flex-grow-1"), ct.Class("d-flex"), ct.Class("flex-column")))
+		t.Must(row.Matches(ct.Class("flex-grow-1"), ct.Class("align-content-start"), ct.Class("align-content-md-stretch")))
+		// No border on the column: it would draw a line at the screen edge
+		// once the columns stack. The rule is a .vr shown from md up.
+		column := row.Find(ct.Class("col-md-3"))
+		t.Must(column.Matches(ct.Class("border-end").Not(), ct.Class("position-relative")))
+		rule := column.Find(ct.Class("vr"))
+		t.Must(rule.Count(1))
+		t.Must(rule.Matches(ct.Class("d-none"), ct.Class("d-md-block"), ct.Class("position-absolute"), ct.Class("h-100")))
+		t.Must(view.Find(ct.Class("border-end")).None())
+		out, err := render(page.Layout{NoSkipLink: true, Sidebar: text.Text("S")})
+		t.Must(be.NoError(err))
+		t.Must(be.Substring(out, `<div class="col-md-3 col-xl-2 py-3 position-relative">S<div class="vr d-none d-md-block position-absolute top-0 end-0 h-100"></div></div>`))
 	})
 	t.Run("skip link", func(t devtest.T) {
 		t.Must(ct.View(page.Layout{SkipLabel: "Zum Inhalt"}).Find(ct.Role("link", ct.Named("Zum Inhalt"))))
@@ -243,6 +259,7 @@ func TestNavbar(gt *testing.T) {
 	t.Must(nav.Find(ct.Role("link", ct.Named("Inbox 3"))).Matches(ct.Class("active"), ct.Attr("aria-current", "page"), ct.Attr("href", "/inbox")))
 	t.Must(nav.Find(ct.Role("link", ct.Named("Notes"))).Matches(ct.HasAttr("aria-current").Not(), ct.Class("active").Not()))
 	t.Must(nav.Find(ct.Class("badge")).Matches(ct.Class("text-bg-warning")))
+	t.Must(nav.Find(ct.Attr("aria-current", "page")).Count(1))
 	t.Must(nav.Find(ct.Class("bi")).Each(ct.Attr("aria-hidden", "true")))
 	t.Must(nav.Find(ct.Role("listitem")).Count(2))
 	t.Must(nav.Find(ct.Role("button", ct.Named("Log out"))))
@@ -266,6 +283,35 @@ func TestNavbarOptions(gt *testing.T) {
 	out, err := render(page.Navbar{})
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(`<nav id="navbar" class="navbar navbar-expand bg-body-tertiary border-bottom" aria-label="Main"><div class="container-fluid flex-wrap gap-2"></div></nav>`, out))
+}
+
+// TestCurrentSection checks the marking of the section that holds the
+// current page: the active style with aria-current="true", never "page".
+func TestCurrentSection(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	items := []page.NavItem{
+		{Label: "Settings", Href: "/settings", CurrentSection: true},
+		{Label: "Both", Href: "/both", Current: true, CurrentSection: true},
+		{Label: "Plain", Href: "/plain"},
+	}
+	for name, node := range map[string]elem.Node{
+		"navbar":  page.Navbar{Items: items},
+		"sidebar": page.Sidebar{Sections: []page.SideSection{{Items: items}}},
+	} {
+		t.Run(name, func(t devtest.T) {
+			view := ct.View(node)
+			t.Must(view.Valid(rules()...))
+			t.Must(view.Find(ct.Role("link", ct.Named("Settings"))).Matches(
+				ct.Class("nav-link"), ct.Class("active"), ct.Attr("aria-current", "true"), ct.Attr("href", "/settings"),
+			))
+			t.Must(view.Find(ct.Role("link", ct.Named("Both"))).Matches(ct.Class("active"), ct.Attr("aria-current", "page")))
+			t.Must(view.Find(ct.Role("link", ct.Named("Plain"))).Matches(ct.Class("active").Not(), ct.HasAttr("aria-current").Not()))
+			out, err := render(node)
+			t.Must(be.NoError(err))
+			t.Must(be.Equal(1, strings.Count(out, "aria-current=\"true\"")))
+			t.Must(be.Equal(1, strings.Count(out, "aria-current=\"page\"")))
+		})
+	}
 }
 
 // TestLinkURLs checks the link targets that navigation accepts and refuses.
@@ -323,13 +369,43 @@ func TestComponentErrors(gt *testing.T) {
 		{"sidebar item label", page.Sidebar{Sections: []page.SideSection{{Items: []page.NavItem{{Href: "/a"}}}}}, page.ErrNoName},
 		{"header title", page.Header{}, page.ErrNoName},
 		{"header crumb label", page.Header{Title: text.Text("T"), Crumbs: []page.Crumb{{Href: "/"}}}, page.ErrNoName},
-		{"notice variant", page.Notice("pink", text.Text("x")), bs.ErrInvalidOption},
+		{"notice variant", page.Notice("pink", text.Text("x")), page.ErrInvalid},
+		{"layout dialog title", page.Layout{Dialogs: []elem.Node{bs.Dialog{ID: "help"}}}, page.ErrNoName},
+		{"layout field label", page.Layout{Main: bs.Field{ID: "f", Name: "f"}}, page.ErrNoName},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t devtest.T) {
 			_, err := render(c.node)
 			t.Must(be.ErrorIs(err, c.want))
 		})
+	}
+}
+
+// TestSentinelsAreBootstraps checks that page and bs classify the same
+// mistakes with the same errors, whichever package's sentinel a caller
+// checks.
+func TestSentinelsAreBootstraps(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.True(page.ErrInvalid == bs.ErrInvalidOption))
+	t.Must(be.True(page.ErrNoName == bs.ErrNoName))
+
+	_, err := render(page.Navbar{Items: []page.NavItem{{Label: "A", Href: "/a", Badge: "1", BadgeVariant: "pink"}}})
+	t.Must(be.ErrorIs(err, bs.ErrInvalidOption))
+	_, err = render(page.Notice("pink", text.Text("x")))
+	t.Must(be.ErrorIs(err, page.ErrInvalid))
+	_, err = render(page.Header{})
+	t.Must(be.ErrorIs(err, bs.ErrNoName))
+	_, err = render(bs.Dialog{ID: "help"})
+	t.Must(be.ErrorIs(err, page.ErrNoName))
+	for name, node := range map[string]elem.Node{
+		"navbar":  page.Navbar{ID: "two words"},
+		"sidebar": page.Sidebar{ID: "#x"},
+	} {
+		_, err := render(node)
+		t.Mustf(be.ErrorIs(err, page.ErrInvalid), "%s id", name)
+		t.Mustf(be.ErrorIs(err, bs.ErrInvalidID), "%s id", name)
+		t.Mustf(be.False(errors.Is(err, page.ErrNoName)), "%s id", name)
+		t.Mustf(be.False(strings.Contains(err.Error(), "two words") || strings.Contains(err.Error(), "#x")), "%s id error quotes the id", name)
 	}
 }
 
@@ -361,6 +437,27 @@ func TestHeader(gt *testing.T) {
 	out, err := render(page.Header{Title: text.Text("Inbox")})
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(`<header id="page-header" class="mb-3"><h1 class="h4 mb-0">Inbox</h1></header>`, out))
+}
+
+func TestHeaderCrumbsLabel(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for label, want := range map[string]string{
+		"":           page.DefaultCrumbsLabel,
+		" \t":        page.DefaultCrumbsLabel,
+		"Brotkrümel": "Brotkrümel",
+		`"<a>&`:      `"<a>&`,
+	} {
+		view := ct.View(page.Header{Title: text.Text("T"), CrumbsLabel: label, Crumbs: []page.Crumb{{Label: "Home", Href: "/"}, {Label: "T"}}})
+		t.Mustf(view.Find(ct.Tag("nav")).Matches(ct.Attr("aria-label", want)), "label %q", label)
+		t.Mustf(view.Find(ct.Role("navigation", ct.Named(want))), "label %q", label)
+	}
+	out, err := render(page.Header{Title: text.Text("T"), CrumbsLabel: `"<a>&`, Crumbs: []page.Crumb{{Label: "T"}}})
+	t.Must(be.NoError(err))
+	t.Must(be.Substring(out, `<nav aria-label="&#34;&lt;a&gt;&amp;">`))
+	// A label without crumbs renders nothing.
+	out, err = render(page.Header{Title: text.Text("T"), CrumbsLabel: "Brotkrümel"})
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(`<header id="page-header" class="mb-3"><h1 class="h4 mb-0">T</h1></header>`, out))
 }
 
 func TestSidebar(gt *testing.T) {
@@ -406,6 +503,39 @@ func TestGallery(gt *testing.T) {
 	t.Must(parsed.Find(ct.Role("heading", ct.Level(1))))
 	t.Must(parsed.Find(ct.Role("navigation")).Count(3)) // navbar, sidebar, breadcrumb
 	t.Must(parsed.Find(ct.Tag("dialog")).Matches(ct.HasAttr("popover"), ct.HasAttr("open").Not()))
+	// Only links to the current page claim to be it; the navbar marks the
+	// section that holds it.
+	t.Must(parsed.Find(ct.Tag("a").And(ct.Attr("aria-current", "page"))).Each(ct.Attr("href", "/p/home")))
+	t.Must(parsed.Find(ct.Attr("aria-current", "true")).Matches(ct.Tag("a"), ct.Attr("href", "/projects"), ct.Class("active")))
+}
+
+// TestWebuitestContract checks a real page against the contract that the
+// webuitest package enforces for applications, so that a change to either
+// side (head order, region ids, defaults) fails here.
+func TestWebuitestContract(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal(webuitest.MainID, page.MainID))
+	t.Must(be.Equal(webuitest.AlertsID, page.AlertsID))
+	t.Must(be.Equal(webuitest.DialogsID, page.DialogsID))
+	t.Must(be.Equal(webuitest.HeaderID, page.HeaderID))
+
+	themeSet, app := theme.MustAssets(theme.Options{}), appAssets()
+	shell := webuitest.DefaultShell(themeSet, app)
+	contract := append(webuitest.Rules(webuitest.WithCSRF("token")), webuitest.LayoutRegions())
+	full := gallery(themeSet, app)
+	plain := full
+	layout := full.Body.(page.Layout)
+	layout.Sidebar = nil
+	plain.Body = layout
+	minimal := page.Document{Title: "Tasks", Assets: []*asset.Set{themeSet, app}, Body: page.Layout{Main: text.P()(text.Text("x"))}}
+	for name, doc := range map[string]page.Document{"sidebar": full, "no sidebar": plain, "minimal": minimal} {
+		t.Run(name, func(t devtest.T) {
+			t.Must(webuitest.PageContract(ct.View(doc), shell, contract...))
+			out, err := render(doc)
+			t.Must(be.NoError(err))
+			t.Must(webuitest.PageContract(cthtml.PageString(out), shell, contract...))
+		})
+	}
 }
 
 // TestBootstrapClasses checks that every class the components write exists

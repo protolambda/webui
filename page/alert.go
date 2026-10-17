@@ -18,7 +18,8 @@ func ErrorAlert(children ...elem.Node) elem.Node {
 // Notice renders the outcome of an action, such as "Saved.":
 // <div class="alert alert-{v}" role="status">. A status is announced
 // politely, without interrupting. An empty v means bs.VariantSuccess; an
-// unknown variant fails the render with bs.ErrInvalidOption.
+// unknown variant fails the render with [ErrInvalid] (which is
+// bs.ErrInvalidOption).
 func Notice(v bs.Variant, children ...elem.Node) elem.Node {
 	if v == "" {
 		v = bs.VariantSuccess

@@ -53,14 +53,25 @@
 //
 // Components require accessible names and fail the render with [ErrNoName]
 // without one: a document without a title, a navigation item without a
-// label. Navigation landmarks carry an aria-label, the current page is
-// marked with aria-current="page" as well as the active style, and
-// decorative icons are hidden from assistive technology.
+// label. Navigation landmarks carry an aria-label that can be set per
+// component (also the breadcrumb's, [Header.CrumbsLabel]), for pages in
+// other languages. The link of the current page is marked with
+// aria-current="page" as well as the active style ([NavItem.Current]); the
+// link of the section that holds it, such as a navbar area whose sidebar
+// lists the current page, with aria-current="true" and the same style
+// ([NavItem.CurrentSection]). Decorative icons are hidden from assistive
+// technology.
 //
 // # Errors
 //
-// Invalid options (an unknown color mode, a malformed language tag, an id
-// that is not a token, a URL that is not allowed in its place) fail the
-// render with [ErrInvalid]. Error messages name the component and the
-// option, never its value.
+// Invalid options (an unknown color mode or variant, a malformed language
+// tag, an id that is not a token, a URL that is not allowed in its place)
+// fail the render with [ErrInvalid]. Error messages name the component and
+// the option, never its value.
+//
+// [ErrInvalid] and [ErrNoName] are the bs package's sentinels
+// (bs.ErrInvalidOption and bs.ErrNoName), so one errors.Is check covers the
+// page components and the bs components rendered in a [Document] or
+// [Layout], such as a bs.Dialog without a title. An invalid id also matches
+// bs.ErrInvalidID, as it does in bs.
 package page

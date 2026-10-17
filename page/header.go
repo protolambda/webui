@@ -14,6 +14,10 @@ import (
 	"github.com/protolambda/webui/bs"
 )
 
+// DefaultCrumbsLabel is the accessible name of the breadcrumb of a
+// [Header] without a CrumbsLabel.
+const DefaultCrumbsLabel = "Breadcrumb"
+
 // Header is the header of a page: the page's one h1, optional actions on
 // the same line, an optional breadcrumb above it, and optional content
 // below it (such as tabs).
@@ -29,9 +33,10 @@ import (
 //	  Below
 //	</header>
 //
-// Without Actions the h1 stands alone in the header. The header has the id
-// [HeaderID]; render one per page, first in the main content ([Layout]
-// does so with its Header field).
+// The breadcrumb's navigation landmark is named by CrumbsLabel (default
+// [DefaultCrumbsLabel]). Without Actions the h1 stands alone in the
+// header. The header has the id [HeaderID]; render one per page, first in
+// the main content ([Layout] does so with its Header field).
 type Header struct {
 	// Title is the content of the h1, the page's main heading. It is
 	// required.
@@ -41,6 +46,10 @@ type Header struct {
 	// Crumbs are the optional breadcrumb above the title, from the start
 	// page down. See [Crumb].
 	Crumbs []Crumb
+	// CrumbsLabel is the accessible name of the breadcrumb's navigation
+	// landmark, such as a translation. Empty or blank means
+	// [DefaultCrumbsLabel].
+	CrumbsLabel string
 	// Actions are the controls on the line of the title, such as a "New"
 	// button. They wrap below the title on narrow screens.
 	Actions []elem.Node
@@ -70,7 +79,7 @@ func (h Header) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 	parts := make([]elem.Node, 0, 3)
 	if len(h.Crumbs) > 0 {
-		crumbs, err := breadcrumb(component, h.Crumbs)
+		crumbs, err := breadcrumb(component, h.CrumbsLabel, h.Crumbs)
 		if err != nil {
 			return elem.Obj{}, err
 		}
@@ -94,8 +103,11 @@ func (h Header) Eval(ctx context.Context) (elem.Obj, error) {
 	return section.Header(attr.ID(HeaderID), attr.Class("mb-3"))(parts...).Eval(ctx)
 }
 
-// breadcrumb renders the crumbs as a Bootstrap breadcrumb.
-func breadcrumb(component string, crumbs []Crumb) (elem.Node, error) {
+// breadcrumb renders the crumbs as a Bootstrap breadcrumb named label.
+func breadcrumb(component, label string, crumbs []Crumb) (elem.Node, error) {
+	if blank(label) {
+		label = DefaultCrumbsLabel
+	}
 	items := make([]elem.Node, 0, len(crumbs))
 	for i, c := range crumbs {
 		if blank(c.Label) {
@@ -113,5 +125,5 @@ func breadcrumb(component string, crumbs []Crumb) (elem.Node, error) {
 			items = append(items, bs.BreadcrumbItem()(text.Text(c.Label)))
 		}
 	}
-	return bs.Breadcrumb(attr.Class("mb-2"))(items...), nil
+	return bs.BreadcrumbLabeled(label, attr.Class("mb-2"))(items...), nil
 }

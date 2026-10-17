@@ -103,16 +103,19 @@ func logout() elem.Node {
 	)
 }
 
-// gallery is a full page with every component and all optional parts.
-func gallery(set *asset.Set) elem.Node {
+// gallery is a full page with every component and all optional parts, on
+// a project page of a two-level navigation: the navbar marks the section
+// (Projects), the sidebar and the tabs the page itself (/p/home).
+func gallery(sets ...*asset.Set) page.Document {
 	return page.Document{
-		Title:  "Inbox · Tasks",
-		Assets: []*asset.Set{set},
+		Title:  "Home · Tasks",
+		Assets: sets,
 		Body: page.Layout{
 			Navbar: page.Navbar{
 				Brand: page.Brand{Label: "Tasks", Icon: "check2-square"},
 				Items: []page.NavItem{
-					{Label: "Inbox", Href: "/inbox", Icon: "inbox", Current: true, Badge: "3", BadgeVariant: bs.VariantWarning},
+					{Label: "Inbox", Href: "/inbox", Icon: "inbox", Badge: "3", BadgeVariant: bs.VariantWarning},
+					{Label: "Projects", Href: "/projects", CurrentSection: true},
 					{Label: "Notes", Href: "/notes"},
 				},
 				End: []elem.Node{logout()},
@@ -122,11 +125,11 @@ func gallery(set *asset.Set) elem.Node {
 				{Items: []page.NavItem{{Label: "Archive", Href: "/p/archive"}}},
 			}},
 			Header: page.Header{
-				Title:   text.Text("Inbox"),
-				Icon:    "inbox",
-				Crumbs:  []page.Crumb{{Label: "Home", Href: "/"}, {Label: "Inbox"}},
+				Title:   text.Text("Home"),
+				Icon:    "house",
+				Crumbs:  []page.Crumb{{Label: "Projects", Href: "/projects"}, {Label: "Home"}},
 				Actions: []elem.Node{bs.BtnPrimary(bs.DialogOpen("new-task"))(text.Text("New task"))},
-				Below:   bs.NavTabs()(bs.NavItem()(bs.NavLinkActive(text.Href("/inbox"))(text.Text("Open")))),
+				Below:   bs.NavTabs()(bs.NavItem()(bs.NavLinkActive(text.Href("/p/home"))(text.Text("Open")))),
 			},
 			Alerts: []elem.Node{page.Notice("", text.Text("Task saved.")), page.ErrorAlert(text.Text("The other task could not be saved."))},
 			Main:   text.P()(text.Text("Nothing to do.")),

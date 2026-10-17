@@ -39,13 +39,21 @@ const DefaultSkipLabel = "Skip to main content"
 // With a sidebar, the navbar is followed by a two-column grid that stacks
 // on screens narrower than Bootstrap's md breakpoint (sidebar first):
 //
-//	<div class="container-fluid flex-grow-1"><div class="row">
-//	  <div class="col-md-3 col-xl-2 border-end py-3">Sidebar</div>
-//	  <main id="main" class="col-md-9 col-xl-10 py-3">Header, alerts, Main</main>
-//	</div></div>
+//	<div class="container-fluid flex-grow-1 d-flex flex-column">
+//	  <div class="row flex-grow-1 align-content-start align-content-md-stretch">
+//	    <div class="col-md-3 col-xl-2 py-3 position-relative">
+//	      Sidebar
+//	      <div class="vr d-none d-md-block position-absolute top-0 end-0 h-100"></div>
+//	    </div>
+//	    <main id="main" class="col-md-9 col-xl-10 py-3">Header, alerts, Main</main>
+//	  </div>
+//	</div>
 //
 // The layout needs no script. The column wrapper keeps the footer at the
-// bottom of short pages.
+// bottom of short pages. From md up, the columns fill the height down to
+// the footer and a vertical rule (an empty, decorative .vr) separates them
+// over that full height; stacked, the columns keep their content height
+// and draw no rule.
 //
 // The alerts region ([AlertsID]) and the dialogs region ([DialogsID]) are
 // always rendered, also when empty, because handlers and fragments target
@@ -114,9 +122,18 @@ func (l Layout) Eval(ctx context.Context) (elem.Obj, error) {
 			div.Div(attr.Class(container+" py-3"))(content...),
 		))
 	} else {
-		column = append(column, div.Div(attr.Class("container-fluid flex-grow-1"))(
-			div.Div(attr.Class("row"))(
-				div.Div(attr.Class("col-md-3 col-xl-2 border-end py-3"))(l.Sidebar),
+		// The row fills the wrapper down to the footer. Stacked (below md)
+		// its lines keep their content height; side by side the columns
+		// stretch, so that the rule between them reaches the footer.
+		// Bootstrap has no responsive border utilities, so the rule is a
+		// .vr at the end of the sidebar column, shown from md up only:
+		// stacked columns draw no line at the edge of the screen.
+		column = append(column, div.Div(attr.Class("container-fluid flex-grow-1 d-flex flex-column"))(
+			div.Div(attr.Class("row flex-grow-1 align-content-start align-content-md-stretch"))(
+				div.Div(attr.Class("col-md-3 col-xl-2 py-3 position-relative"))(
+					l.Sidebar,
+					div.Div(attr.Class("vr d-none d-md-block position-absolute top-0 end-0 h-100"))(),
+				),
 				section.Main(attr.ID(MainID), attr.Class("col-md-9 col-xl-10 py-3"))(content...),
 			),
 		))

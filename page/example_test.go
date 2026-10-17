@@ -65,6 +65,8 @@ func ExampleLayout() {
 }
 
 // With a sidebar, the layout has two columns that stack on narrow screens.
+// From Bootstrap's md breakpoint up, the columns reach down to the footer,
+// separated by a rule that stacked columns do not draw.
 func ExampleLayout_sidebar() {
 	core.Dump(page.Layout{
 		NoSkipLink: true,
@@ -72,7 +74,7 @@ func ExampleLayout_sidebar() {
 		Main:       text.P()(text.Text("Garden")),
 	})
 	// Output:
-	// <div class="d-flex flex-column min-vh-100"><div class="container-fluid flex-grow-1"><div class="row"><div class="col-md-3 col-xl-2 border-end py-3"><nav id="sidebar" aria-label="Projects"><ul class="nav nav-pills flex-column mb-3"><li class="nav-item"><a class="nav-link d-flex align-items-center gap-2" href="/p/garden"><span class="text-break">Garden</span></a></li></ul></nav></div><main id="main" class="col-md-9 col-xl-10 py-3"><div id="alerts" aria-live="polite"></div><p>Garden</p></main></div></div></div><div id="dialogs"></div>
+	// <div class="d-flex flex-column min-vh-100"><div class="container-fluid flex-grow-1 d-flex flex-column"><div class="row flex-grow-1 align-content-start align-content-md-stretch"><div class="col-md-3 col-xl-2 py-3 position-relative"><nav id="sidebar" aria-label="Projects"><ul class="nav nav-pills flex-column mb-3"><li class="nav-item"><a class="nav-link d-flex align-items-center gap-2" href="/p/garden"><span class="text-break">Garden</span></a></li></ul></nav><div class="vr d-none d-md-block position-absolute top-0 end-0 h-100"></div></div><main id="main" class="col-md-9 col-xl-10 py-3"><div id="alerts" aria-live="polite"></div><p>Garden</p></main></div></div></div><div id="dialogs"></div>
 }
 
 // A navbar without a toggler: the brand, the links with the current one
@@ -104,6 +106,23 @@ func ExampleNavItem() {
 	// ERROR: render: at [0]: page.Navbar item 0: missing accessible name: label
 }
 
+// In a two-level navigation, the navbar marks the section that holds the
+// current page (aria-current="true"), and the sidebar the page itself
+// (aria-current="page"); both links get the active style.
+func ExampleNavItem_currentSection() {
+	core.Dump(page.Navbar{Items: []page.NavItem{
+		{Label: "Tasks", Href: "/tasks"},
+		{Label: "Settings", Href: "/settings", CurrentSection: true},
+	}})
+	core.Dump(page.Sidebar{Label: "Settings", Sections: []page.SideSection{{Items: []page.NavItem{
+		{Label: "Profile", Href: "/settings/profile", Current: true},
+		{Label: "Security", Href: "/settings/security"},
+	}}}})
+	// Output:
+	// <nav id="navbar" class="navbar navbar-expand bg-body-tertiary border-bottom" aria-label="Main"><div class="container-fluid flex-wrap gap-2"><ul class="navbar-nav nav-underline flex-wrap me-auto"><li class="nav-item"><a class="nav-link" href="/tasks">Tasks</a></li><li class="nav-item"><a class="nav-link active" href="/settings" aria-current="true">Settings</a></li></ul></div></nav>
+	// <nav id="sidebar" aria-label="Settings"><ul class="nav nav-pills flex-column mb-3"><li class="nav-item"><a class="nav-link active d-flex align-items-center gap-2" aria-current="page" href="/settings/profile"><span class="text-break">Profile</span></a></li><li class="nav-item"><a class="nav-link d-flex align-items-center gap-2" href="/settings/security"><span class="text-break">Security</span></a></li></ul></nav>
+}
+
 // The page header: a breadcrumb, the page's h1 with actions on its line,
 // and tabs below.
 func ExampleHeader() {
@@ -115,6 +134,17 @@ func ExampleHeader() {
 	})
 	// Output:
 	// <header id="page-header" class="mb-3"><nav aria-label="Breadcrumb"><ol class="breadcrumb mb-2"><li class="breadcrumb-item"><a href="/projects">Projects</a></li><li class="breadcrumb-item active" aria-current="page">Garden</li></ol></nav><div class="d-flex flex-wrap align-items-center gap-2"><h1 class="h4 mb-0 me-auto">Garden</h1><div class="d-flex flex-wrap align-items-center gap-2"><button class="btn btn-primary" type="button" commandfor="new-task" command="show-modal" popovertarget="new-task">New task</button></div></div><ul class="nav nav-tabs"><li class="nav-item"><a class="nav-link active" aria-current="page" href="/p/garden">Open</a></li></ul></header>
+}
+
+// The landmark names of a page can be translated, the breadcrumb's too.
+func ExampleHeader_crumbsLabel() {
+	core.Dump(page.Header{
+		Title:       text.Text("Garten"),
+		Crumbs:      []page.Crumb{{Label: "Projekte", Href: "/projects"}, {Label: "Garten"}},
+		CrumbsLabel: "Brotkrümelnavigation",
+	})
+	// Output:
+	// <header id="page-header" class="mb-3"><nav aria-label="Brotkrümelnavigation"><ol class="breadcrumb mb-2"><li class="breadcrumb-item"><a href="/projects">Projekte</a></li><li class="breadcrumb-item active" aria-current="page">Garten</li></ol></nav><h1 class="h4 mb-0">Garten</h1></header>
 }
 
 // A sidebar with a titled section, an icon and a badge.

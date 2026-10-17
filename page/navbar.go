@@ -37,8 +37,12 @@ const DefaultNavbarLabel = "Main"
 //	</nav>
 //
 // The current item is marked with aria-current="page" as well as the active
-// style (an underline, not only a color). Without Items the list is left
-// out, and without End the end slot.
+// style (an underline, not only a color). An item for the section that
+// holds the current page, such as "Settings" on /settings/profile when a
+// [Sidebar] lists the parts of the settings, is marked
+// [NavItem.CurrentSection]: the same active style with aria-current="true",
+// so that only links to the current page claim to be it. Without Items the
+// list is left out, and without End the end slot.
 type Navbar struct {
 	// ID is the id of the nav element. Empty means [NavbarID].
 	ID string
@@ -87,6 +91,13 @@ type NavItem struct {
 	// Current marks the link of the current page: the active style and
 	// aria-current="page".
 	Current bool
+	// CurrentSection marks the link of the section that holds the current
+	// page, when the link's target is not that page itself: the active
+	// style and aria-current="true" (the current item of a set). Use it for
+	// a navbar link such as "Settings" on /settings/profile, whose own link
+	// in the [Sidebar] is Current. Current takes precedence when both are
+	// set.
+	CurrentSection bool
 	// Badge is an optional short text in a badge after the label, such as
 	// a count. It is part of the link's accessible name, after a space.
 	Badge string
@@ -203,8 +214,12 @@ func (it NavItem) link(component string, style linkStyle) (elem.Node, error) {
 		}
 	}
 	content = append(content, label, b)
-	if it.Current {
+	switch {
+	case it.Current:
 		return bs.NavLinkActive(attrs...)(content), nil
+	case it.CurrentSection:
+		// The explicit aria-current replaces bs.NavLinkActive's "page".
+		return bs.NavLinkActive(append(attrs, aria.Current("true"))...)(content), nil
 	}
 	return bs.NavLink(attrs...)(content), nil
 }

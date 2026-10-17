@@ -1,7 +1,6 @@
 package page
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -16,16 +15,24 @@ import (
 
 var (
 	// ErrInvalid indicates a component option that cannot render correctly,
-	// such as an unknown color mode, a malformed language tag, an id that is
-	// not a token (see [bs.ValidID]), or a URL that is not allowed where it
-	// is used. Errors wrapping it name the component and the option, never
-	// the value.
-	ErrInvalid = errors.New("invalid option")
+	// such as an unknown color mode or variant, a malformed language tag, an
+	// id that is not a token (see [bs.ValidID]), or a URL that is not
+	// allowed where it is used. Errors wrapping it name the component and
+	// the option, never the value.
+	//
+	// It is bs.ErrInvalidOption, so one errors.Is check covers the page
+	// components and the bs components placed in a page. Errors for an
+	// invalid id also wrap bs.ErrInvalidID.
+	ErrInvalid = bs.ErrInvalidOption
 
 	// ErrNoName indicates a component that would render without an
 	// accessible name, such as a [Document] without a title or a [NavItem]
 	// without a label.
-	ErrNoName = errors.New("missing accessible name")
+	//
+	// It is bs.ErrNoName, so one errors.Is check also catches the bs
+	// components of a [Layout] without a name, such as a bs.Dialog without
+	// a title or a bs.Field without a label.
+	ErrNoName = bs.ErrNoName
 )
 
 // Ids of the page regions. They are part of the page contract: fragments,
@@ -163,13 +170,14 @@ func badge(component string, label string, v bs.Variant, extra ...attr.Node) (el
 }
 
 // checkID returns the id to render: def when id is empty, else id when it
-// is a valid token.
+// is a valid token. An invalid id fails with an error wrapping both
+// [ErrInvalid] and bs.ErrInvalidID, which is how bs classifies ids.
 func checkID(component, id, def string) (string, error) {
 	if id == "" {
 		return def, nil
 	}
 	if !bs.ValidID(id) {
-		return "", fail(component, ErrInvalid, "id")
+		return "", fmt.Errorf("%s: %w: id: %w", component, ErrInvalid, bs.ErrInvalidID)
 	}
 	return id, nil
 }

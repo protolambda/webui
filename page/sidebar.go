@@ -35,6 +35,12 @@ const DefaultSidebarLabel = "Secondary"
 // being truncated, so that the distinguishing end of a long name stays
 // visible. The current item is marked with aria-current="page" as well as
 // the active fill.
+//
+// In a two-level navigation, mark the sidebar item of the page itself
+// [NavItem.Current], and the [Navbar] item of the area the sidebar belongs
+// to [NavItem.CurrentSection] (aria-current="true"): a link to another page
+// must not claim to be the current page. A sidebar item may also be a
+// CurrentSection, such as a project on one of the project's sub-pages.
 type Sidebar struct {
 	// ID is the id of the nav element. Empty means [SidebarID].
 	ID string

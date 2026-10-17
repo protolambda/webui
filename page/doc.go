@@ -70,7 +70,9 @@
 //
 // Swap content into the region (innerHTML), never the region itself: a
 // live region that is inserted together with its content is generally not
-// announced. [ShowAlerts] scrolls the region into view after an htmx swap.
+// announced. [ShowAlerts] scrolls the region into view after an htmx swap
+// that leaves content in the page; [ShowWindowTop] scrolls to the top of
+// the page after one that removes its target, such as a deleted list item.
 //
 // # Dialogs and focus
 //

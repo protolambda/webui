@@ -202,6 +202,27 @@ func ExampleAlertsOOB_scroll() {
 	// <form method="post" action="/tasks/7/done" hx-post="/tasks/7/done" hx-target="#task-7" hx-swap="outerHTML show:#alerts:top"><input type="hidden" name="csrf" value="dG9rZW4"/><button class="btn btn-success" type="submit" id="task-7-done">Done</button></form>
 }
 
+// A list item that the answer to its deletion removes: the answer has no
+// main content, only the notice out of band, and the outerHTML swap of
+// that empty content removes the item. ShowAlerts would find no content to
+// start from; ShowWindowTop scrolls to the top of the page, where the
+// notice is.
+func ExampleShowWindowTop() {
+	core.Dump(list.LI(attr.ID("task-7"))(
+		text.Text("Water the plants "),
+		form.Form(form.Method(form.MethodPost), form.Action("/tasks/7/delete"),
+			hx2.Post("/tasks/7/delete"), hx2.Target("#task-7"), hx2.Swap(hx2.SwapOuterHTML+" "+page.ShowWindowTop))(
+			session.CSRFInput("dG9rZW4"),
+			bs.BtnOutlineDanger(button.Type(button.TypeSubmit))(text.Text("Delete")),
+		),
+	))
+	// The answer.
+	core.Dump(page.AlertsOOB(page.Notice(bs.VariantInfo, text.Text("Task deleted."))))
+	// Output:
+	// <li id="task-7">Water the plants <form method="post" action="/tasks/7/delete" hx-post="/tasks/7/delete" hx-target="#task-7" hx-swap="outerHTML show:window:top"><input type="hidden" name="csrf" value="dG9rZW4"/><button class="btn btn-outline-danger" type="submit">Delete</button></form></li>
+	// <div id="alerts" hx-swap-oob="innerHTML"><div class="alert alert-info">Task deleted.</div></div>
+}
+
 // An answer that htmx swaps into the alerts region (its hx-target, or an
 // HX-Retarget header, names the region): the region announces the alerts,
 // which have no role of their own.
@@ -214,7 +235,10 @@ func ExampleAlertsContent() {
 // A dialog confirms the deletion of a task, and its form deletes the task
 // through htmx. The answer swaps the list, closes the dialog by rendering
 // the dialogs region again without it, shows a notice, and gives the focus
-// to the list's heading: the button that had it left with the dialog.
+// to the list's heading: the button that had it left with the dialog. The
+// form targets the list, outside the dialog that the answer replaces, and
+// the answer renders the list again rather than removing the task's item,
+// so that ShowAlerts has content to start from.
 func ExampleDialogsOOB() {
 	type task struct{ id, title string }
 	deleteDialog := func(t task) elem.Node {

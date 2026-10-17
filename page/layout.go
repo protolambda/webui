@@ -179,7 +179,8 @@ func DialogsRegion(dialogs ...elem.Node) elem.Node {
 // alerts empty the region.
 //
 // An out-of-band swap does not scroll: add [ShowAlerts] to the hx-swap of
-// the element that makes the request, so that the notice is also seen.
+// the element that makes the request, so that the notice is also seen
+// ([ShowWindowTop] for an answer that removes its target).
 func AlertsOOB(alerts ...elem.Node) elem.Node {
 	return div.Div(attr.ID(AlertsID), hx2.SwapOOB(hx2.SwapInnerHTML))(AlertsContent(alerts...))
 }
@@ -194,15 +195,54 @@ func AlertsOOB(alerts ...elem.Node) elem.Node {
 //	hx2.Swap(hx2.SwapOuterHTML + " " + page.ShowAlerts)
 //
 // or on an HX-Reswap header of the answer (hx2.SetReswap), which replaces
-// the whole hx-swap of that element, its swap style included. Every
+// the whole hx-swap of that element, its swap style included. Use it on
+// requests whose answers report their outcome in the alerts region: every
 // answer to the request then scrolls, also one without a notice, and also
-// when the region is in view already: use it on requests whose answers
-// report their outcome in the alerts region. A page whose navbar stays in
-// place at the top (sticky-top or fixed-top) should give the region a
-// scroll-margin-top of the navbar's height in its stylesheet, or the
-// navbar covers the notice. Error answers of the web package scroll the
-// region by themselves.
+// when the region is in view already, as long as its main swap leaves
+// content in the page.
+//
+// htmx (2.0.10) looks the region up from the content of the main swap, so
+// that content must be in the page when the swap settles: the target of
+// an innerHTML swap, or the elements of an outerHTML answer. The window
+// does not move when the main swap leaves no content there:
+//
+//   - an outerHTML answer whose only parts are out of band ([AlertsOOB],
+//     [DialogsOOB]), such as the answer that removes a list item; htmx
+//     then also fails with a TypeError in its settle step and drops the
+//     events of an HX-Trigger-After-Settle header;
+//   - the delete swap style;
+//   - a target that an out-of-band part of the same answer removes, such
+//     as a form inside a dialog that [DialogsOOB] replaces: htmx swaps the
+//     out-of-band parts first, and the main content is lost with the
+//     dialog.
+//
+// For these, target a container that the answer renders again, such as
+// the list rather than its item (as the example of [DialogsOOB] does),
+// retarget the answer to one (hx2.SetRetarget), or scroll to the top of
+// the page with [ShowWindowTop] instead.
+//
+// A page whose navbar stays in place at the top (sticky-top or fixed-top)
+// should give the region a scroll-margin-top of the navbar's height in its
+// stylesheet, or the navbar covers the notice. Error answers of the web
+// package scroll the region by themselves.
 const ShowAlerts = "show:#" + AlertsID + ":top"
+
+// ShowWindowTop is the hx-swap modifier show:window:top: once the swap is
+// done, htmx scrolls to the top of the page, where a [Layout] has the
+// alerts region, below the navbar and the page header. Unlike
+// [ShowAlerts], it does not start from the swapped content, so it also
+// scrolls after an answer that removes its target: an outerHTML answer
+// whose only part is a notice out of band ([AlertsOOB]), or the delete
+// swap style.
+//
+//	hx2.Swap(hx2.SwapOuterHTML + " " + page.ShowWindowTop)
+//
+// Prefer an answer that renders the container again, with ShowAlerts,
+// where the page allows it: ShowAlerts puts the region itself at the top
+// of the window, also when a tall page header pushes it down, and the
+// answer can give the focus, which leaves with the removed item's button,
+// to an element of the container ([FocusTarget]).
+const ShowWindowTop = "show:window:top"
 
 // DialogsOOB renders dialogs for an htmx response that swaps them into the
 // dialogs region out of band: <div id="dialogs" hx-swap-oob="innerHTML">.
@@ -218,6 +258,13 @@ const ShowAlerts = "show:#" + AlertsID + ":top"
 // hx2.SwapOOB("true") (a bs.Dialog never renders open), or by removing it
 // with an element of the dialog's id and hx2.SwapOOB(hx2.SwapDelete). A
 // redirect (web.Redirect) closes it with the full page load.
+//
+// htmx swaps the out-of-band parts of an answer before its main content.
+// A form inside a dialog that the answer replaces must therefore have its
+// main content swapped outside the dialogs region, such as into the list
+// that it changes: with hx-target on the form, or with hx2.SetRetarget on
+// the answer. Content swapped into the replaced dialog is lost with it,
+// and [ShowAlerts] does not scroll.
 //
 // A dialog that the browser closes gives the focus back to its opener, but
 // one that is replaced or removed does not, and htmx's restoring of the
@@ -241,11 +288,13 @@ func DialogsOOB(dialogs ...elem.Node) elem.Node {
 // Use it in htmx answers that remove the element that had the focus, such
 // as the button of a dialog that the answer closes (see [DialogsOOB]) or
 // of a list item that it deletes, and that have no control with the same
-// id to give the focus to. Render it in the answer only: in a full page,
-// the browser focuses an autofocus element as the page loads, and the
-// skip link and the navbar are passed over. Mark one element per answer,
-// and not one inside a dialog, whose closed controls cannot take the
-// focus.
+// id to give the focus to. To delete an item, render the list again with
+// the mark on its heading, rather than removing the item alone: the
+// heading takes the focus, and [ShowAlerts] has content to start from.
+// Render it in the answer only: in a full page, the browser focuses an
+// autofocus element as the page loads, and the skip link and the navbar
+// are passed over. Mark one element per answer, and not one inside a
+// dialog, whose closed controls cannot take the focus.
 func FocusTarget() attr.Node {
 	return attr.Bundle{attr.Tabindex("-1"), attr.Autofocus()}
 }

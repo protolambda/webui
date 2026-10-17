@@ -89,8 +89,8 @@ type Document struct {
 	// Favicon is the URL of the page icon: a path on the page's own origin
 	// (e.g. an asset.Set URL) or a data: URL of an image, in printable
 	// ASCII without spaces or backslashes (percent-encode other
-	// characters). Paths follow the rule of web.SafeNext. Empty means
-	// [DefaultFavicon].
+	// characters). Paths follow the rule of web.SafeNext, without its
+	// length limit. Empty means [DefaultFavicon].
 	Favicon string
 	// Assets are the asset sets of the page, in order: usually the theme
 	// package's set first, then the application's own. A nil set fails the

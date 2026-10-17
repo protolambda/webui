@@ -2,6 +2,7 @@ package page_test
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"regexp"
 	"strings"
@@ -699,4 +700,41 @@ func TestDialogsOOB(gt *testing.T) {
 	t.Must(answer.Find(ct.Attr("autofocus", "").And(ct.Tag("h2"))).Matches(ct.Attr("tabindex", "-1"), ct.InnerText("Tasks")))
 	t.Must(answer.Find(ct.Attr("hx-swap", "outerHTML show:#alerts:top")).Count(1))
 	t.Must(be.Equal("show:#alerts:top", page.ShowAlerts))
+
+	// htmx swaps the out-of-band parts first, and ShowAlerts starts from
+	// the main content: the form targets the list, which the answer renders
+	// in its main part, outside the dialogs region that it replaces.
+	t.Must(answer.Find(ct.Tag("form")).Matches(ct.Attr("hx-target", "#task-list")))
+	t.Must(answer.Find(ct.ID("task-list")).Matches(ct.HasAttr("hx-swap-oob").Not()))
+	t.Must(answer.Find(ct.ID(page.DialogsID)).Find(ct.ID("task-list")).None())
+	t.Must(answer.Find(ct.ID(page.AlertsID)).Find(ct.ID("task-list")).None())
+}
+
+// pinnedHTMXVersion is the htmx release that the docs of ShowAlerts and
+// ShowWindowTop were checked against in a browser. When the theme moves to
+// another release, check again which answers scroll with each modifier
+// (an outerHTML answer with out-of-band parts only, the delete swap style,
+// a target inside a dialog that the answer replaces), then update this
+// constant and the docs.
+const pinnedHTMXVersion = "2.0.10"
+
+// TestShowModifiersPinnedHTMX ties the documented scroll behavior to the
+// htmx release that the theme ships: ShowAlerts looks the region up from
+// the swapped content, while htmx resolves the window of ShowWindowTop to
+// the body without it, so ShowWindowTop also scrolls after an answer that
+// leaves no content in the page.
+func TestShowModifiersPinnedHTMX(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal("show:#alerts:top", page.ShowAlerts))
+	t.Must(be.Equal("show:window:top", page.ShowWindowTop))
+	t.Must(be.Equal(pinnedHTMXVersion, theme.HTMXVersion))
+
+	data, err := fs.ReadFile(theme.FS(), theme.HTMXJS)
+	t.Must(be.NoError(err))
+	script := string(data)
+	t.Must(be.Substring(script, `version:"`+pinnedHTMXVersion+`"`))
+	// The show target "window" becomes "body", which the selector lookup
+	// resolves to document.body before it reads the swapped content.
+	t.Must(be.Substring(script, `if(t.showTarget==="window"){e="body"}`))
+	t.Must(be.Substring(script, `else if(r==="body"){e=document.body}`))
 }

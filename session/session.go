@@ -97,9 +97,10 @@ func (s *Session[T]) Ended() bool {
 
 // End ends the session and removes it from its store, with the reason
 // [EndLogout]. It is idempotent. The cookie stays in the browser until
-// cleared ([Store.End] or [Store.ClearCookie]), but names no session any
-// more. Once [Store.Rotate] moved the value to a new session, End of the
-// old session does nothing: end the new one.
+// cleared, but names no session any more: a logout calls
+// [Store.EndSession], which also clears it. Once [Store.Rotate] moved the
+// value to a new session, End of the old session does nothing: end the new
+// one, or call [Store.EndSession], which follows the move.
 func (s *Session[T]) End() {
 	if s.store != nil {
 		s.store.end(s, EndLogout)
@@ -199,6 +200,14 @@ func (s *Session[T]) finish(onEnd func(string, EndReason, *T), reason EndReason)
 		onEnd(s.id, reason, &s.data)
 	}
 	return true
+}
+
+// successor returns the session that [Store.Rotate] moved the value of s
+// to, or nil if it did not.
+func (s *Session[T]) successor() *Session[T] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rotated
 }
 
 // matches reports whether s is live and match reports true for its value.

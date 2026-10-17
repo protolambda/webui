@@ -91,6 +91,15 @@ type PreAuthOptions struct {
 // attacker obtained for itself is useless without its cookie in the
 // visitor's browser.
 //
+// Every pre-authentication form of a page carries the token of the cookie
+// the page was rendered with, so a later cookie refuses all of them. Issue
+// the token when rendering a whole page, and have fragments that update it
+// (htmx swaps, polls, live regions) read the page's token with
+// [PreAuth.Token], which sets nothing. When a fragment finds no valid
+// cookie, the page's forms have expired too: answer with a prompt to
+// reload, or issue with [PreAuth.IssueRenewed] and, if it set a new cookie,
+// send fresh copies of the page's forms along with the fragment.
+//
 // The key is drawn at construction and kept in memory only: a restart
 // invalidates outstanding forms, and processes behind one load balancer do
 // not accept each other's forms.
@@ -162,20 +171,58 @@ func (p *PreAuth) CookieName() string {
 // form; the browser then replaces the old cookie, and forms rendered from
 // the old one are refused (the visitor reloads them). r may be nil. Issue
 // fails only if the source of randomness fails, without touching w.
+//
+// Call Issue when rendering a whole page, and not for a fragment that
+// updates part of a page (an htmx swap, a poll, a live region): past half
+// of the cookie's lifetime, the fragment's new cookie would replace the
+// one the page's other forms were rendered with, and those forms would
+// fail. Fragments read the page's token with [PreAuth.Token] instead; a
+// fragment that must issue uses [PreAuth.IssueRenewed] to learn whether
+// the cookie changed (see [PreAuth]).
 func (p *PreAuth) Issue(w http.ResponseWriter, r *http.Request) (string, error) {
+	token, _, err := p.IssueRenewed(w, r)
+	return token, err
+}
+
+// IssueRenewed is [PreAuth.Issue], and also reports whether it set a new
+// cookie on w: renewed is true when r carried no valid cookie or one past
+// half of its lifetime. Once the browser stores the new cookie, it refuses
+// every form rendered from r's cookie, so a fragment that renewed must
+// replace each pre-authentication form of its page with one carrying the
+// new token (with out-of-band swaps, say), or the page must be reloaded.
+// When renewed is false, nothing was set and the page's forms stay valid.
+// On error, renewed is false and w is untouched.
+func (p *PreAuth) IssueRenewed(w http.ResponseWriter, r *http.Request) (token string, renewed bool, err error) {
 	now := p.now()
-	if body, issued, err := p.parse(p.cookie.value(r), now); err == nil && now.Sub(issued) < p.ttl/2 {
-		return p.formToken(&body), nil
+	if body, issued, perr := p.parse(p.cookie.value(r), now); perr == nil && now.Sub(issued) < p.ttl/2 {
+		return p.formToken(&body), false, nil
 	}
 	var raw [preAuthCookieBytes]byte
-	if err := p.rand.read(raw[:preAuthNonceBytes]); err != nil {
-		return "", err
+	if err = p.rand.read(raw[:preAuthNonceBytes]); err != nil {
+		return "", false, err
 	}
 	binary.BigEndian.PutUint64(raw[preAuthNonceBytes:preAuthBodyBytes], uint64(now.Unix()))
 	body := [preAuthBodyBytes]byte(raw[:preAuthBodyBytes])
 	copy(raw[preAuthBodyBytes:], p.mac(preAuthCookieLabel, &body))
 	http.SetCookie(w, p.cookie.cookie(base64.RawURLEncoding.EncodeToString(raw[:]), int(p.ttl/time.Second)))
-	return p.formToken(&body), nil
+	return p.formToken(&body), true, nil
+}
+
+// Token returns the form token of r's pre-authentication cookie, and true,
+// if r carries a valid one: authentic, issued less than the TTL ago and no
+// more than the skew in the future. It never sets or renews a cookie, so
+// it is the way for fragments to render forms that match the forms of the
+// page they update: both carry the token of the browser's current cookie,
+// and expire with it. It returns "" and false when r is nil or carries no
+// valid cookie (none, a forged one, or one that expired); the page's forms
+// fail then too, and the fragment asks for a reload or renews them with
+// [PreAuth.IssueRenewed].
+func (p *PreAuth) Token(r *http.Request) (string, bool) {
+	body, _, err := p.parse(p.cookie.value(r), p.now())
+	if err != nil {
+		return "", false
+	}
+	return p.formToken(&body), true
 }
 
 // Verify checks a submitted form token against r's cookie: the cookie must

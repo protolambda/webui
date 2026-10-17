@@ -21,16 +21,17 @@
 // cookies that could be replayed. [Session.ID] is a short public identifier
 // derived from the digest, for logs.
 //
-// A session ends when the application ends it ([Session.End], [Store.End],
-// [Store.EndAll], [Store.EndFunc]), after [DefaultIdleTTL] without use, at
-// [DefaultAbsoluteTTL] after its creation, when [Store.New] creates a new
-// session for the same browser (the session ID rotates at login, which
-// prevents session fixation), or when the store is full and it is the least
-// recently used. When it ends, the [Options.OnEnd] hook runs with its value
-// (to clear secrets, for example), its value and CSRF token are dropped, and
-// then its [Session.Done] channel closes (long requests such as event
-// streams select on it). [Session.EndReason] and [Options.OnEndReason] tell
-// why it ended. The lifetimes count time the computer spends asleep.
+// A session ends when the application ends it ([Store.EndSession],
+// [Store.End], [Session.End], [Store.EndAll], [Store.EndFunc]), after
+// [DefaultIdleTTL] without use, at [DefaultAbsoluteTTL] after its creation,
+// when [Store.New] creates a new session for the same browser (the session
+// ID rotates at login, which prevents session fixation), or when the store
+// is full and it is the least recently used. When it ends, the
+// [Options.OnEnd] hook runs with its value (to clear secrets, for example),
+// its value and CSRF token are dropped, and then its [Session.Done] channel
+// closes (long requests such as event streams select on it).
+// [Session.EndReason] and [Options.OnEndReason] tell why it ended. The
+// lifetimes count time the computer spends asleep.
 //
 // [Store.Rotate] gives a live session a new token and CSRF token and keeps
 // its value, for changes of privilege within a session such as a
@@ -52,10 +53,17 @@
 // attaches it to the request context, where [FromContext] finds it; a
 // request without a live session goes on without one. The middleware never
 // sets or clears cookies: only [Store.New] and [Store.Rotate] (the cookie of
-// a new session) and [Store.End] or [Store.ClearCookie] (its removal) do.
-// The context holds one session per value type, so stores mounted on the
-// same routes need distinct value types (see [FromContext]). Handler tests
-// can skip the cookie with [NewDetached] and [WithSession].
+// a new session) and [Store.EndSession], [Store.End] or [Store.ClearCookie]
+// (its removal) do. The context holds one session per value type, so stores
+// mounted on the same routes need distinct value types (see [FromContext]).
+// Handler tests can skip the cookie with [NewDetached] and [WithSession].
+//
+// A logout handler takes its session from the context, checks the form's
+// CSRF token against it, and calls [Store.EndSession], which ends the
+// session and clears the cookie (see its example). That works the same
+// with a detached session in a test. [Store.End] ends the session that the
+// request's cookie names instead, and finds nothing when the session came
+// from the context alone.
 //
 // # Cookies
 //
@@ -93,7 +101,10 @@
 // Forms shown before a session exists, such as the login form, use
 // [PreAuth]: a signed cookie and a form token derived from it, which need no
 // state on the server. See [PreAuth] for the construction and its
-// trade-offs.
+// trade-offs. Issue its token with [PreAuth.Issue] when rendering a whole
+// page only: fragments that update the page (htmx swaps, polls) read the
+// page's token with [PreAuth.Token], because a renewed cookie refuses the
+// forms already on the page.
 //
 // # Concurrency
 //

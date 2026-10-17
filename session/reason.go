@@ -10,7 +10,7 @@ type EndReason uint8
 // The reasons a session ends.
 const (
 	// EndLogout: the application ended the session itself, with
-	// [Store.End] or [Session.End].
+	// [Store.End], [Store.EndSession] or [Session.End].
 	EndLogout EndReason = iota + 1
 	// EndRevoked: [Store.EndAll] or [Store.EndFunc] ended the session.
 	EndRevoked

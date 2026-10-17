@@ -455,6 +455,104 @@ func TestStoreEndIsTheLogout(gt *testing.T) {
 	t.Must(be.Equal(1, st.Len()))
 }
 
+func TestEndSessionIsTheLogoutOfAHeldSession(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	var log endLog
+	st := newStore(t, session.Options[account]{OnEndReason: log.hook})
+	s, cookie := login(t, st, nil, account{ID: 1})
+	log.watch(s)
+	other, _ := login(t, st, nil, account{ID: 2})
+	const clearing = "__Host-session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+
+	rec := httptest.NewRecorder()
+	st.EndSession(rec, s)
+	t.Must(be.True(s.Ended()))
+	t.Must(be.True(closed(s)))
+	t.Must(be.Equal(session.EndLogout, s.EndReason()))
+	t.Must(be.Equal(1, log.count(s.ID())))
+	t.Must(be.Equal(0, log.lateCalls()))
+	t.Must(be.DeepEqual([]string{clearing}, rec.Header().Values("Set-Cookie")))
+	_, ok := st.Lookup(get(t, "/", cookie))
+	t.Must(be.False(ok))
+	t.Must(be.False(other.Ended()))
+	t.Must(be.Equal(1, st.Len()))
+
+	// Again: nothing more ends, and the cookie is cleared again.
+	rec = httptest.NewRecorder()
+	st.EndSession(rec, s)
+	t.Must(be.Equal(1, log.total()))
+	t.Must(be.Equal(session.EndLogout, s.EndReason()))
+	t.Must(be.DeepEqual([]string{clearing}, rec.Header().Values("Set-Cookie")))
+
+	// Without a session, only the cookie is cleared.
+	rec = httptest.NewRecorder()
+	st.EndSession(rec, nil)
+	t.Must(be.DeepEqual([]string{clearing}, rec.Header().Values("Set-Cookie")))
+	t.Must(be.Equal(1, st.Len()))
+	t.Must(be.False(other.Ended()))
+}
+
+func TestEndSessionOfADetachedSession(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{Insecure: true, CookieName: "sid"})
+	s := session.NewDetached(account{ID: 1}, "test-csrf")
+	ctx := session.WithSession(t.Context(), s)
+
+	rec := httptest.NewRecorder()
+	st.EndSession(rec, s)
+	t.Must(be.True(closed(s)))
+	t.Must(be.Equal(session.EndLogout, s.EndReason()))
+	t.Must(be.ErrorIs(s.CheckCSRF("test-csrf"), session.ErrCSRF))
+	_, ok := session.FromContext[account](ctx)
+	t.Must(be.False(ok))
+	t.Must(be.DeepEqual([]string{"sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"}, rec.Header().Values("Set-Cookie")))
+}
+
+func TestEndSessionFollowsRotations(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	var log endLog
+	st := newStore(t, session.Options[account]{OnEndReason: log.hook})
+	old, cookie := login(t, st, nil, account{ID: 1})
+	other, _ := login(t, st, nil, account{ID: 2})
+
+	// A request with the old session is still in flight while two others
+	// rotate it.
+	rec := httptest.NewRecorder()
+	mid, err := st.Rotate(rec, get(t, "/reauth", cookie))
+	t.Must(be.NoError(err))
+	latest, err := st.Rotate(httptest.NewRecorder(), get(t, "/reauth", rec.Result().Cookies()[0]))
+	t.Must(be.NoError(err))
+	log.watch(latest)
+
+	st.EndSession(httptest.NewRecorder(), old)
+	t.Must(be.True(closed(latest)))
+	t.Must(be.Equal(session.EndLogout, latest.EndReason()))
+	t.Must(be.Equal(session.EndRotated, old.EndReason()))
+	t.Must(be.Equal(session.EndRotated, mid.EndReason()))
+	t.Must(be.Equal(1, log.count(latest.ID())))
+	t.Must(be.Equal(1, log.total()))
+	t.Must(be.Equal(0, log.lateCalls()))
+	t.Must(be.False(other.Ended()))
+	t.Must(be.Equal(1, st.Len()))
+}
+
+func TestEndSessionOfAnotherStore(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	users := newStore(t, session.Options[account]{})
+	admins := newStore(t, session.Options[account]{CookieName: "admin", Rand: seeded(5)})
+	s, _ := login(t, users, nil, account{ID: 1})
+	kept, _ := login(t, admins, nil, account{ID: 1})
+
+	// The session ends in its own store; the cookie cleared is admins'.
+	rec := httptest.NewRecorder()
+	admins.EndSession(rec, s)
+	t.Must(be.Equal(session.EndLogout, s.EndReason()))
+	t.Must(be.Equal(0, users.Len()))
+	t.Must(be.False(kept.Ended()))
+	t.Must(be.Equal(1, admins.Len()))
+	t.Must(be.DeepEqual([]string{"__Host-admin=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"}, rec.Header().Values("Set-Cookie")))
+}
+
 func TestEndAll(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	var e ended
@@ -1123,6 +1221,7 @@ func TestOnEndOnceUnderRacingEnders(gt *testing.T) {
 		race(func() { rotate(x.cookie) })
 		race(func() { x.s.End() })
 		race(func() { st.End(httptest.NewRecorder(), get(t, "/logout", x.cookie)) })
+		race(func() { st.EndSession(httptest.NewRecorder(), x.s) })
 		race(func() { st.EndFunc(func(a account) bool { return a.ID == id }) })
 		if i%16 == 15 {
 			race(func() { st.EndAll() })

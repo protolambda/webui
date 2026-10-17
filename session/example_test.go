@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/protolambda/chord/core"
 
@@ -349,4 +350,111 @@ func ExampleOptions_onEndReason() {
 	// evicted
 	// session of edsger ended: revoked
 	// session of grace ended: revoked
+}
+
+// The logout handler ends the session it holds, from the context, and
+// clears the cookie. The same handler works behind the store's middleware
+// and in a test with a detached session.
+func ExampleStore_EndSession() {
+	store, err := session.NewStore(session.Options[User]{
+		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
+	})
+	if err != nil {
+		panic(err)
+	}
+	logout := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s, ok := session.FromContext[User](r.Context())
+		if !ok {
+			store.ClearCookie(w) // nothing to end
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		if s.CheckCSRF(r.PostFormValue(session.CSRFField)) != nil {
+			http.Error(w, "invalid form", http.StatusForbidden)
+			return
+		}
+		store.EndSession(w, s)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
+	postLogout := func(csrf string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/logout", strings.NewReader(session.CSRFField+"="+csrf))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+
+	// In the application: the middleware finds the session of the cookie.
+	rec := httptest.NewRecorder()
+	s, err := store.New(rec, nil, User{Name: "ada"})
+	if err != nil {
+		panic(err)
+	}
+	r := postLogout(s.CSRF())
+	r.AddCookie(rec.Result().Cookies()[0])
+	rec = httptest.NewRecorder()
+	store.Middleware(logout).ServeHTTP(rec, r)
+	fmt.Println(rec.Code, rec.Header().Get("Set-Cookie"))
+	fmt.Println(s.Ended(), s.EndReason(), store.Len())
+
+	// In a handler test: a detached session, without a cookie.
+	s = session.NewDetached(User{Name: "ada"}, "test-csrf")
+	r = postLogout("test-csrf")
+	r = r.WithContext(session.WithSession(r.Context(), s))
+	rec = httptest.NewRecorder()
+	logout.ServeHTTP(rec, r)
+	fmt.Println(rec.Code, rec.Header().Get("Set-Cookie"))
+	fmt.Println(s.Ended(), s.EndReason())
+	// Output:
+	// 303 __Host-session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax
+	// true logout 0
+	// 303 __Host-session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax
+	// true logout
+}
+
+// Fragments that update a page read the page's form token with Token,
+// which never sets a cookie: past half of the cookie's lifetime, Issue
+// would set a new one, and the browser would then refuse the forms already
+// on the page.
+func ExamplePreAuth_Token() {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	preauth, err := session.NewPreAuth(session.PreAuthOptions{
+		Now:  func() time.Time { return now }, // a manual clock for the example
+		Rand: rand.NewChaCha8([32]byte{}),     // deterministic for the example; omit in applications
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// GET /signup renders the whole page, with its forms: Issue.
+	rec := httptest.NewRecorder()
+	pageToken, err := preauth.Issue(rec, httptest.NewRequest(http.MethodGet, "/signup", nil))
+	if err != nil {
+		panic(err)
+	}
+	cookie := rec.Result().Cookies()[0]
+
+	// Six minutes later, GET /signup/check answers an htmx request with a
+	// fragment that holds a form: Token, the page's own token.
+	now = now.Add(6 * time.Minute)
+	r := httptest.NewRequest(http.MethodGet, "/signup/check", nil)
+	r.AddCookie(cookie)
+	token, ok := preauth.Token(r)
+	fmt.Println(ok, token == pageToken)
+
+	// Issuing instead would renew the cookie under the page's forms.
+	rec = httptest.NewRecorder()
+	renewedToken, renewed, err := preauth.IssueRenewed(rec, r)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(renewed, renewedToken == pageToken, len(rec.Result().Cookies()))
+
+	// Once the cookie expired, the page's forms are refused, and there is
+	// no token to read: the fragment asks for a reload.
+	now = now.Add(5 * time.Minute)
+	_, ok = preauth.Token(r)
+	fmt.Println(ok)
+	// Output:
+	// true true
+	// true false 1
+	// false
 }

@@ -239,6 +239,115 @@ func TestPreAuthIssueReusesAFreshCookie(gt *testing.T) {
 	t.Must(be.NonNilPtr(set))
 }
 
+func TestPreAuthIssueRenewedReportsANewCookie(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	p := newPreAuth(t, session.PreAuthOptions{Now: clk.Now})
+
+	rec := httptest.NewRecorder()
+	token, renewed, err := p.IssueRenewed(rec, nil)
+	t.Must(be.NoError(err))
+	t.Must(be.True(renewed))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 1))
+	cookie := rec.Result().Cookies()[0]
+	t.Must(be.NoError(p.Verify(post(t, cookie), token)))
+
+	// Within the first half of the cookie's life: its token, nothing set.
+	clk.Advance(session.DefaultPreAuthTTL/2 - time.Second)
+	rec = httptest.NewRecorder()
+	again, renewed, err := p.IssueRenewed(rec, post(t, cookie))
+	t.Must(be.NoError(err))
+	t.Must(be.False(renewed))
+	t.Must(be.Equal(token, again))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 0))
+
+	// From the second half on: a new cookie, which refuses the old token.
+	clk.Advance(time.Second)
+	rec = httptest.NewRecorder()
+	fresh, renewed, err := p.IssueRenewed(rec, post(t, cookie))
+	t.Must(be.NoError(err))
+	t.Must(be.True(renewed))
+	t.Must(be.NotEqual(token, fresh))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 1))
+	set := rec.Result().Cookies()[0]
+	t.Must(be.Equal(cookie.Name, set.Name))
+	t.Must(be.NoError(p.Verify(post(t, set), fresh)))
+	t.Must(be.ErrorIs(p.Verify(post(t, set), token), session.ErrCSRF))
+
+	// Issue decides the same way.
+	again, none := issue(t, p, post(t, set))
+	t.Must(be.Equal(fresh, again))
+	t.Must(be.NilPtr(none))
+
+	// An invalid cookie is replaced.
+	rec = httptest.NewRecorder()
+	_, renewed, err = p.IssueRenewed(rec, post(t, &http.Cookie{Name: cookie.Name, Value: "junk"}))
+	t.Must(be.NoError(err))
+	t.Must(be.True(renewed))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 1))
+}
+
+func TestPreAuthTokenReadsTheCurrentCookie(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	p := newPreAuth(t, session.PreAuthOptions{Now: clk.Now})
+
+	for _, r := range []*http.Request{nil, post(t)} {
+		got, ok := p.Token(r)
+		t.Must(be.False(ok))
+		t.Must(be.Equal("", got))
+	}
+
+	token, cookie := issue(t, p, nil)
+	got, ok := p.Token(post(t, cookie))
+	t.Must(be.True(ok))
+	t.Must(be.Equal(token, got))
+
+	// Past half of the cookie's life, where Issue would renew it, Token
+	// still reads the page's token, and it still verifies.
+	clk.Advance(session.DefaultPreAuthTTL/2 + time.Second)
+	got, ok = p.Token(post(t, cookie))
+	t.Must(be.True(ok))
+	t.Must(be.Equal(token, got))
+	t.Must(be.NoError(p.Verify(post(t, cookie), got)))
+
+	// Until the cookie expires.
+	clk.Advance(session.DefaultPreAuthTTL/2 - 2*time.Second)
+	_, ok = p.Token(post(t, cookie))
+	t.Must(be.True(ok))
+	clk.Advance(time.Second)
+	got, ok = p.Token(post(t, cookie))
+	t.Must(be.False(ok))
+	t.Must(be.Equal("", got))
+
+	// Forged, malformed and misnamed cookies have no token.
+	token, cookie = issue(t, p, nil)
+	for _, c := range []*http.Cookie{
+		{Name: cookie.Name, Value: flip(cookie.Value, 10)},
+		{Name: cookie.Name, Value: flip(cookie.Value, 80)},
+		{Name: cookie.Name, Value: cookie.Value[1:]},
+		{Name: cookie.Name, Value: strings.Repeat("A", 100_000)},
+		{Name: cookie.Name, Value: token},
+		{Name: "preauth", Value: cookie.Value},
+	} {
+		got, ok := p.Token(post(t, c))
+		t.Mustf(be.False(ok), "cookie %q of length %d", c.Name, len(c.Value))
+		t.Must(be.Equal("", got))
+	}
+	// Another key's cookie has none either.
+	q := newPreAuth(t, session.PreAuthOptions{Now: clk.Now, Rand: seeded(9)})
+	_, ok = q.Token(post(t, cookie))
+	t.Must(be.False(ok))
+
+	// Nor has a cookie issued further in the future than the skew allows.
+	clk.Advance(-session.DefaultPreAuthSkew)
+	_, ok = p.Token(post(t, cookie))
+	t.Must(be.True(ok))
+	clk.Advance(-time.Second)
+	_, ok = p.Token(post(t, cookie))
+	t.Must(be.False(ok))
+}
+
 func TestNewPreAuthRejectsBadOptions(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, opts := range []session.PreAuthOptions{
@@ -265,6 +374,12 @@ func TestPreAuthIssueFailsWithoutRandomness(gt *testing.T) {
 	token, err := p.Issue(rec, nil)
 	t.Must(be.ErrorIs(err, cause))
 	t.Must(be.Equal("", token))
+	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 0))
+
+	token, renewed, err := p.IssueRenewed(rec, nil)
+	t.Must(be.ErrorIs(err, cause))
+	t.Must(be.Equal("", token))
+	t.Must(be.False(renewed))
 	t.Must(be.Len(rec.Header().Values("Set-Cookie"), 0))
 }
 

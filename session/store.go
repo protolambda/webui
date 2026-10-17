@@ -421,8 +421,10 @@ func (st *Store[T]) Middleware(next http.Handler) http.Handler {
 }
 
 // End ends the session that r's cookie names, if any, with the reason
-// [EndLogout], and clears the cookie on w: the logout. It does not consult
-// [Options.Passive].
+// [EndLogout], and clears the cookie on w: the logout by cookie. It does not
+// consult [Options.Passive] or the request context: a handler that holds
+// its session from [FromContext] (and a handler test, whose session comes
+// from [NewDetached] without a cookie) logs out with [Store.EndSession].
 func (st *Store[T]) End(w http.ResponseWriter, r *http.Request) {
 	if k, ok := parseToken(st.cookie.value(r)); ok {
 		st.mu.Lock()
@@ -434,6 +436,30 @@ func (st *Store[T]) End(w http.ResponseWriter, r *http.Request) {
 		if s != nil {
 			s.finish(st.onEnd, EndLogout)
 		}
+	}
+	st.ClearCookie(w)
+}
+
+// EndSession ends s with the reason [EndLogout] and clears the session
+// cookie on w: the logout of a handler that holds its session. The recipe
+// (see the example): take the session from [FromContext], check the logout
+// form's CSRF token against it, call EndSession before writing the
+// response body, then redirect. Without a session there is nothing to end
+// or check: clear the cookie and redirect. A handler test attaches a
+// [NewDetached] session with [WithSession] and sees the same: the session
+// ends, and w gets the cookie that clears it.
+//
+// If [Store.Rotate] moved the value of s to a new session meanwhile (a
+// concurrent request of the same browser), EndSession ends that one too,
+// so that the logout wins. s normally is a session of st or a detached
+// one; a session of another store ends in that store, and st's cookie is
+// cleared. A nil s only clears the cookie. Ending an ended session again
+// changes nothing but sets the clearing cookie again. EndSession does not
+// consult [Options.Passive].
+func (st *Store[T]) EndSession(w http.ResponseWriter, s *Session[T]) {
+	for s != nil {
+		s.End()
+		s = s.successor()
 	}
 	st.ClearCookie(w)
 }

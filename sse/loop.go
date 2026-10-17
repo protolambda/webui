@@ -118,10 +118,10 @@ func (r Reason) String() string {
 // Loop drives a [Stream] from change notifications. Build one per stream
 // request and call [Loop.Run].
 //
-// Run sends the current state with Update at the start and after changes,
-// at most once per Timing.Interval; sends a keep-alive comment every
-// Timing.KeepAlive; and finishes in one of two ways (see the package
-// documentation on ending a stream):
+// Run sends the current state with Update at the start, after changes and,
+// when Every is set, periodically, at most once per Timing.Interval; sends
+// a keep-alive comment every Timing.KeepAlive; and finishes in one of two
+// ways (see the package documentation on ending a stream):
 //
 //   - with an end event, whose fragment End renders: when Done closes
 //     (ReasonDone), after Timing.Lifetime (ReasonLifetime), when Changes
@@ -168,6 +168,17 @@ type Loop struct {
 	// ends the stream with ReasonClosed.
 	Changes <-chan struct{}
 
+	// Every, when positive, also updates periodically, for views that
+	// change with time, such as clocks and countdowns: an update starts
+	// once Every has passed since the start of the last update, whatever
+	// started that one. An update after a change therefore restarts the
+	// period, and a change and a periodic update that fall due together
+	// become one update. Every must not be shorter than Timing.Interval,
+	// which would coalesce most periodic updates away. It needs no bound
+	// from the write window: keep-alive comments go on between updates,
+	// which need not write anything. Zero means no periodic updates.
+	Every time.Duration
+
 	// Done closes when the stream must end for good, typically the
 	// session's Done channel: the stream ends with ReasonDone, and no
 	// update starts after it closed.
@@ -182,10 +193,11 @@ type Loop struct {
 }
 
 // Validate returns an error wrapping [ErrConfig] when Update or End is
-// missing, or when the Timing is invalid for writeWindow (see
+// missing, when the Timing is invalid for writeWindow (see
 // [Timing.Validate]; a writeWindow of zero or less means
-// [DefaultWriteWindow]). [Loop.Run] makes the same check before it writes
-// anything, with the write window of its stream.
+// [DefaultWriteWindow]), or when Every is negative or positive but
+// shorter than the resolved Timing.Interval. [Loop.Run] makes the same
+// check before it writes anything, with the write window of its stream.
 func (l Loop) Validate(writeWindow time.Duration) error {
 	_, err := l.check(writeWindow)
 	return err
@@ -196,7 +208,17 @@ func (l Loop) check(writeWindow time.Duration) (Timing, error) {
 	if l.Update == nil || l.End == nil {
 		return Timing{}, fmt.Errorf("%w: Loop needs Update and End", ErrConfig)
 	}
-	return l.Timing.resolve(writeWindow)
+	t, err := l.Timing.resolve(writeWindow)
+	if err != nil {
+		return t, err
+	}
+	if l.Every < 0 {
+		return t, fmt.Errorf("%w: negative periodic update interval", ErrConfig)
+	}
+	if l.Every > 0 && l.Every < t.Interval {
+		return t, fmt.Errorf("%w: periodic update interval %v is shorter than the update interval %v", ErrConfig, l.Every, t.Interval)
+	}
+	return t, nil
 }
 
 // Run streams to s until the stream ends, the client leaves (ctx ends) or
@@ -238,7 +260,18 @@ func (l Loop) Run(ctx context.Context, s *Stream) error {
 	keepAlive := time.NewTicker(t.KeepAlive)
 	defer keepAlive.Stop()
 
+	// The period counts from the start of every update. Reset after a
+	// fire that nobody received drops that fire (Go 1.23 timers), so a
+	// periodic update that falls due together with another one is not
+	// sent twice.
+	var every *time.Timer
+	var periodic <-chan time.Time // nil without Every: never fires
 	last := time.Now()
+	if l.Every > 0 {
+		every = time.NewTimer(l.Every)
+		defer every.Stop()
+		periodic = every.C
+	}
 	if done, err := l.update(ctx, s); done {
 		return err
 	}
@@ -257,6 +290,10 @@ func (l Loop) Run(ctx context.Context, s *Stream) error {
 				continue
 			}
 		case <-due:
+		case <-periodic:
+			// Every is at least the interval, which has passed since
+			// the last update started; the update covers a pending
+			// change too.
 		case <-keepAlive.C:
 			if closed(l.Stop) {
 				return nil
@@ -279,6 +316,9 @@ func (l Loop) Run(ctx context.Context, s *Stream) error {
 			return nil
 		}
 		last = time.Now()
+		if every != nil {
+			every.Reset(l.Every)
+		}
 		if done, err := l.update(ctx, s); done {
 			return err
 		}

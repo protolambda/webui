@@ -141,6 +141,122 @@ func TestLoopCoalescesChanges(gt *testing.T) {
 	})
 }
 
+// Every updates periodically, counted from the start of every update, and
+// keep-alive comments go on meanwhile.
+func TestLoopEvery(gt *testing.T) {
+	gt.Parallel()
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		l, n := counting(sse.Timing{KeepAlive: 10 * time.Second, Lifetime: time.Hour})
+		l.Every = 3 * time.Second
+		r := startLoop(gt, l)
+		t.Must(be.Equal(int64(1), n.Load()))
+		time.Sleep(3*time.Second - time.Nanosecond)
+		synctest.Wait()
+		t.Must(be.Equal(int64(1), n.Load()))
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		t.Must(be.Equal(int64(2), n.Load()))
+		time.Sleep(9 * time.Second) // 12s
+		synctest.Wait()
+		t.Must(be.Equal(int64(5), n.Load()))
+		p := mustParse(t, r.w.Body())
+		t.Must(be.DeepEqual([]string{"keep-alive"}, p.Comments))
+		t.Must(be.Len(p.Events, 5))
+		ok, _ := r.returned()
+		t.Must(be.False(ok))
+	})
+}
+
+// An update after a change restarts the period, and a change that waits
+// for the end of the interval is covered by the periodic update.
+func TestLoopEveryWithChanges(gt *testing.T) {
+	gt.Parallel()
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		changes := make(chan struct{}, 1)
+		l, n := counting(sse.Timing{Interval: time.Second, Lifetime: time.Hour})
+		l.Changes, l.Every = changes, 10*time.Second
+		r := startLoop(gt, l)
+		at := func(d time.Duration, want int64) {
+			t.Helper()
+			time.Sleep(d)
+			synctest.Wait()
+			t.Must(be.Equal(want, n.Load()))
+		}
+
+		at(4*time.Second, 1)
+		changes <- struct{}{} // after a quiet interval: at once
+		at(0, 2)
+		at(10*time.Second-time.Nanosecond, 2) // the period counts from 4s
+		at(time.Nanosecond, 3)                // 14s
+		at(time.Second/2, 3)
+		changes <- struct{}{} // within the interval: at 15s
+		at(time.Second/2, 4)
+		at(10*time.Second-time.Nanosecond, 4)
+		at(time.Nanosecond, 5) // 25s
+
+		r.cancel()
+		ok, err := r.returned()
+		t.Must(be.True(ok))
+		t.Must(be.NoError(err))
+		t.Must(be.Len(r.data(t), 5))
+	})
+}
+
+// A change that waits for the end of the interval and a periodic update
+// that falls due at the same time become one update.
+func TestLoopEveryCoalescesWithChange(gt *testing.T) {
+	gt.Parallel()
+	for range 20 { // select picks one of the ready cases at random
+		synctest.Test(gt, func(gt *testing.T) {
+			t := mustbe.WrapT(gt)
+			changes := make(chan struct{}, 1)
+			l, n := counting(sse.Timing{Interval: time.Second, Lifetime: time.Hour})
+			l.Changes, l.Every = changes, time.Second
+			startLoop(gt, l)
+			time.Sleep(time.Second / 2)
+			changes <- struct{}{}
+			time.Sleep(time.Second / 2) // both due at 1s
+			synctest.Wait()
+			t.Must(be.Equal(int64(2), n.Load()))
+			time.Sleep(time.Second - time.Nanosecond)
+			synctest.Wait()
+			t.Must(be.Equal(int64(2), n.Load()))
+			time.Sleep(time.Nanosecond)
+			synctest.Wait()
+			t.Must(be.Equal(int64(3), n.Load()))
+		})
+	}
+}
+
+// An update slower than Every leaves one periodic update pending, not a
+// backlog: the next one starts when it returns.
+func TestLoopEverySlowUpdate(gt *testing.T) {
+	gt.Parallel()
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		var starts []time.Duration // only the goroutine of Run appends
+		begin := time.Now()
+		l, _ := counting(sse.Timing{Lifetime: time.Hour})
+		update := l.Update
+		l.Update = func(ctx context.Context, s *sse.Stream) error {
+			starts = append(starts, time.Since(begin))
+			time.Sleep(3 * time.Second)
+			return update(ctx, s)
+		}
+		l.Every = time.Second
+		r := startLoop(gt, l)
+		time.Sleep(8 * time.Second)
+		r.cancel()
+		time.Sleep(time.Second) // the update that started at 6s returns
+		ok, err := r.returned()
+		t.Must(be.True(ok))
+		t.Must(be.NoError(err))
+		t.Must(be.DeepEqual([]time.Duration{0, 3 * time.Second, 6 * time.Second}, starts))
+	})
+}
+
 func TestLoopKeepAlive(gt *testing.T) {
 	gt.Parallel()
 	synctest.Test(gt, func(gt *testing.T) {
@@ -291,13 +407,16 @@ func TestLoopStopReconnects(gt *testing.T) {
 // ready together when it selects next.
 func TestLoopStopWinsTogether(gt *testing.T) {
 	gt.Parallel()
-	for _, also := range []string{"done", "closed", "change", "lifetime"} {
+	for _, also := range []string{"done", "closed", "change", "periodic", "lifetime"} {
 		for range 20 { // select picks one of the ready cases at random
 			synctest.Test(gt, func(gt *testing.T) {
 				t := mustbe.WrapT(gt)
 				stop, done, changes := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
 				l, _ := counting(sse.Timing{Lifetime: time.Minute})
 				l.Stop, l.Done, l.Changes = stop, done, changes
+				if also == "periodic" {
+					l.Every = time.Second
+				}
 				l, gate := gated(l)
 				r := startLoop(gt, l) // blocks in the first update
 				close(stop)
@@ -309,6 +428,8 @@ func TestLoopStopWinsTogether(gt *testing.T) {
 				case "change":
 					changes <- struct{}{}
 					time.Sleep(2 * time.Second) // past the interval: no coalescing
+				case "periodic":
+					time.Sleep(2 * time.Second) // past Every
 				case "lifetime":
 					time.Sleep(time.Minute) // also past a keep-alive tick
 				}
@@ -351,6 +472,25 @@ func TestLoopDoneWinsOverUpdates(gt *testing.T) {
 			r := startLoop(gt, l) // blocks in the first update
 			changes <- struct{}{}
 			time.Sleep(2 * time.Second) // past the interval: no coalescing
+			close(done)
+			close(gate)
+			ok, err := r.returned()
+			t.Must(be.True(ok))
+			t.Must(be.NoError(err))
+			t.Must(be.Equal(int64(1), n.Load()))
+			t.Must(be.DeepEqual([]string{"count=1", "end=ended: done"}, r.data(t)))
+		})
+	}
+	// Done closed while a periodic update is due.
+	for range 20 {
+		synctest.Test(gt, func(gt *testing.T) {
+			t := mustbe.WrapT(gt)
+			done := make(chan struct{})
+			l, n := counting(sse.Timing{})
+			l.Done, l.Every = done, time.Second
+			l, gate := gated(l)
+			r := startLoop(gt, l) // blocks in the first update
+			time.Sleep(2 * time.Second)
 			close(done)
 			close(gate)
 			ok, err := r.returned()
@@ -623,6 +763,11 @@ func TestLoopConfig(gt *testing.T) {
 			"keep-alive > window":   {loop: func(l *sse.Loop) { l.KeepAlive = time.Minute }},
 			"keep-alive = custom":   {loop: func(l *sse.Loop) { l.KeepAlive = 5 * time.Second }, window: 5 * time.Second},
 			"default > tiny window": {loop: func(l *sse.Loop) {}, window: time.Nanosecond},
+			"negative every":        {loop: func(l *sse.Loop) { l.Every = -time.Second }},
+			"every < interval":      {loop: func(l *sse.Loop) { l.Every = sse.DefaultInterval - 1 }},
+			"every < own interval": {loop: func(l *sse.Loop) {
+				l.Interval, l.Every = 5*time.Second, 2*time.Second
+			}},
 		}
 		for name, c := range cases {
 			l := valid
@@ -636,6 +781,15 @@ func TestLoopConfig(gt *testing.T) {
 		}
 		t.Must(be.NoError(valid.Validate(0)))
 		t.Must(be.NoError(valid.Validate(5 * time.Second)))
+		// Every may equal the interval, and exceed the write window and
+		// the lifetime.
+		ticking := valid
+		ticking.Every = sse.DefaultInterval
+		t.Must(be.NoError(ticking.Validate(0)))
+		ticking.Interval, ticking.Every = 5*time.Second, 5*time.Second
+		t.Must(be.NoError(ticking.Validate(0)))
+		ticking.Every = 2 * sse.DefaultLifetime
+		t.Must(be.NoError(ticking.Validate(time.Second)))
 	})
 }
 

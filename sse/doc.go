@@ -16,9 +16,10 @@
 // by middleware, while a stalled client is still cut off.
 //
 // [Loop] drives a stream from change notifications: it sends the current
-// state at the start and after changes (coalesced to at most one update per
-// interval), sends keep-alive comments, caps the lifetime of the stream, and
-// implements the end-versus-reconnect contract below. [Limiter] bounds
+// state at the start, after changes and, for views that change with time
+// such as clocks, periodically ([Loop.Every]), coalesced to at most one
+// update per interval; it sends keep-alive comments, caps the lifetime of
+// the stream, and implements the end-versus-reconnect contract below. [Limiter] bounds
 // concurrent streams per key and in total. [Region], [Connect] and [Swap]
 // render the htmx attributes of the page side.
 //

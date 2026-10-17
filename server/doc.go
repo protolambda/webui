@@ -1,6 +1,7 @@
 // Package server provides an [http.Server] with hardened defaults and the
 // lifecycle around it: [New] builds the server, [Run] serves a listener until
-// a context ends and then shuts down gracefully, [LimitConns] bounds the
+// a context ends and then shuts down gracefully (without waiting for
+// connections that never sent a request), [LimitConns] bounds the
 // connections per client address, and [CheckLoopback] refuses to serve a
 // loopback site on a listener that the network reaches.
 //

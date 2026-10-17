@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"time"
 
 	"github.com/protolambda/chord/core"
@@ -169,6 +170,43 @@ func ExampleLoop() {
 	// data: <p role="status">Your session ended. <a href="/login">Log in again</a></p>
 }
 
+// With Every, a loop also updates periodically, for views that change with
+// time. Here a countdown ticks every millisecond (a real one would tick
+// every second, with the default interval) and ends its own stream at zero.
+// No goroutine of the application feeds the loop.
+func ExampleLoop_every() {
+	left := 3
+	rec := httptest.NewRecorder()
+	err := sse.Loop{
+		Timing: sse.Timing{Interval: time.Millisecond},
+		Every:  time.Millisecond,
+		Update: func(ctx context.Context, s *sse.Stream) error {
+			if left == 0 {
+				return s.End(ctx, liveEnd("Time is up.", "/tasks", "Back to the tasks"))
+			}
+			err := s.Send(ctx, "countdown", text.Text(strconv.Itoa(left)+" left"))
+			left--
+			return err
+		},
+		End: func(sse.Reason) elem.Node { return liveEnd("Live updates paused.", "/tasks", "Reload") },
+	}.Run(context.Background(), sse.New(rec))
+	fmt.Println(err)
+	fmt.Print(rec.Body.String())
+	// Output:
+	// <nil>
+	// event: countdown
+	// data: 3 left
+	//
+	// event: countdown
+	// data: 2 left
+	//
+	// event: countdown
+	// data: 1 left
+	//
+	// event: end
+	// data: <p role="status">Time is up. <a href="/tasks">Back to the tasks</a></p>
+}
+
 // Validate checks a whole loop: its functions and its timing.
 func ExampleLoop_Validate() {
 	fmt.Println(sse.Loop{}.Validate(sse.DefaultWriteWindow))
@@ -177,9 +215,12 @@ func ExampleLoop_Validate() {
 		End:    func(sse.Reason) elem.Node { return nil },
 	}
 	fmt.Println(loop.Validate(sse.DefaultWriteWindow))
+	loop.Every = 500 * time.Millisecond // shorter than the default interval
+	fmt.Println(loop.Validate(sse.DefaultWriteWindow))
 	// Output:
 	// sse: invalid configuration: Loop needs Update and End
 	// <nil>
+	// sse: invalid configuration: periodic update interval 500ms is shorter than the update interval 1s
 }
 
 // Validate configured timing at startup.

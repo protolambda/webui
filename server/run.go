@@ -77,13 +77,30 @@ func OnShutdown(hooks ...func()) RunOption {
 // Shutdown, when ctx is done or serving failed:
 //
 //  1. [http.Server.Shutdown] closes the listener;
-//  2. the [OnShutdown] functions run, in order, alongside the functions
-//     registered with [http.Server.RegisterOnShutdown] (such as the one that
-//     sends HTTP/2 GOAWAY frames), while Shutdown closes idle connections and
-//     waits for requests in flight, up to the [ShutdownTimeout] (by default
-//     [DefaultShutdownTimeout]);
+//  2. Run closes the connections that have not started a request (see
+//     below), then the [OnShutdown] functions run, in order, alongside the
+//     functions registered with [http.Server.RegisterOnShutdown] (such as
+//     the one that sends HTTP/2 GOAWAY frames), while Shutdown closes idle
+//     connections and waits for requests in flight, up to the
+//     [ShutdownTimeout] (by default [DefaultShutdownTimeout]);
 //  3. after the timeout, the request contexts are canceled and the remaining
 //     connections closed.
+//
+// Shutdown alone counts a connection that has not started a request as busy
+// during its first 5 seconds, so a browser that opened a connection ahead of
+// time (a preconnect) would hold up every restart. Run therefore wraps
+// srv.ConnState, calling a hook that was set before, to track the accepted
+// connections in [http.StateNew]: during the TLS handshake, before the first
+// request header is read in full, and for HTTP/2 before the client preface.
+// When shutdown starts, Run closes them, and closes any such connection that
+// the server still accepts. That loses no request: net/http does not serve a
+// request whose header it finishes reading after shutdown started, and an
+// HTTP/2 connection carries no stream before its preface. Connections with
+// requests in flight, idle keep-alive connections (which Shutdown closes
+// itself), HTTP/2 connections past the preface (which get a GOAWAY frame) and
+// hijacked connections are left to Shutdown, and so are connections whose
+// value is not comparable (listeners return pointers in practice). Leave
+// srv.ConnState as Run set it until Run returns.
 //
 // When srv.BaseContext is nil, Run sets it so that request contexts carry the
 // values of ctx (such as a logger attached with [mw.WithLogger]) but not its
@@ -123,23 +140,26 @@ func Run(ctx context.Context, srv *http.Server, ln net.Listener, opts ...RunOpti
 		srv.BaseContext = func(net.Listener) context.Context { return base }
 	}
 
-	// Shutdown calls the hooks after it closed the listener, so that no new
-	// connection starts a stream after them. A Shutdown called by other
-	// means runs them too; the Once keeps them to one run.
+	// Shutdown counts a connection without a request as busy during its
+	// first 5 seconds, such as one that a browser opened ahead of time;
+	// fresh closes them once shutdown started.
+	var fresh freshConns
+	srv.ConnState = fresh.hook(srv.ConnState)
+
+	// Shutdown calls this after it closed the listener, so that no new
+	// connection starts a stream after the hooks. A Shutdown called by
+	// other means runs it too; the Once keeps it to one run.
 	hooksDone := make(chan struct{})
-	if len(cfg.hooks) == 0 {
-		close(hooksDone)
-	} else {
-		var once sync.Once
-		srv.RegisterOnShutdown(func() {
-			once.Do(func() {
-				defer close(hooksDone)
-				for _, hook := range cfg.hooks {
-					hook()
-				}
-			})
+	var once sync.Once
+	srv.RegisterOnShutdown(func() {
+		once.Do(func() {
+			defer close(hooksDone)
+			fresh.closeAll()
+			for _, hook := range cfg.hooks {
+				hook()
+			}
 		})
-	}
+	})
 
 	// Serve closes the listener it gets on return. ServeTLS may return before
 	// it calls Serve, so Run closes ln too on that path, through a wrapper

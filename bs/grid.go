@@ -2,6 +2,7 @@ package bs
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/protolambda/chord/core/attr"
 	"github.com/protolambda/chord/core/elem"
@@ -113,29 +114,48 @@ func Col12(attrs ...attr.Node) elem.Scope {
 	return div.Div(attr.Cons(rawClass("col-12"), attrs...))
 }
 
-// ColSM creates a Bootstrap col-sm-{n} div element.
+// ColSM creates a Bootstrap col-sm-{n} div element: n of 12 columns
+// from the sm breakpoint up. An n outside 1 to 12 fails the render with
+// [ErrInvalidOption].
 func ColSM(n int, attrs ...attr.Node) elem.Scope {
-	return div.Div(attr.Cons(rawClass(fmt.Sprintf("col-sm-%d", n)), attrs...))
+	return div.Div(attr.Cons(colClass("bs.ColSM", "col-sm-", n), attrs...))
 }
 
-// ColMD creates a Bootstrap col-md-{n} div element.
+// ColMD creates a Bootstrap col-md-{n} div element: n of 12 columns
+// from the md breakpoint up. An n outside 1 to 12 fails the render with
+// [ErrInvalidOption].
 func ColMD(n int, attrs ...attr.Node) elem.Scope {
-	return div.Div(attr.Cons(rawClass(fmt.Sprintf("col-md-%d", n)), attrs...))
+	return div.Div(attr.Cons(colClass("bs.ColMD", "col-md-", n), attrs...))
 }
 
-// ColLG creates a Bootstrap col-lg-{n} div element.
+// ColLG creates a Bootstrap col-lg-{n} div element: n of 12 columns
+// from the lg breakpoint up. An n outside 1 to 12 fails the render with
+// [ErrInvalidOption].
 func ColLG(n int, attrs ...attr.Node) elem.Scope {
-	return div.Div(attr.Cons(rawClass(fmt.Sprintf("col-lg-%d", n)), attrs...))
+	return div.Div(attr.Cons(colClass("bs.ColLG", "col-lg-", n), attrs...))
 }
 
-// ColXL creates a Bootstrap col-xl-{n} div element.
+// ColXL creates a Bootstrap col-xl-{n} div element: n of 12 columns
+// from the xl breakpoint up. An n outside 1 to 12 fails the render with
+// [ErrInvalidOption].
 func ColXL(n int, attrs ...attr.Node) elem.Scope {
-	return div.Div(attr.Cons(rawClass(fmt.Sprintf("col-xl-%d", n)), attrs...))
+	return div.Div(attr.Cons(colClass("bs.ColXL", "col-xl-", n), attrs...))
 }
 
-// ColXXL creates a Bootstrap col-xxl-{n} div element.
+// ColXXL creates a Bootstrap col-xxl-{n} div element: n of 12 columns
+// from the xxl breakpoint up. An n outside 1 to 12 fails the render with
+// [ErrInvalidOption].
 func ColXXL(n int, attrs ...attr.Node) elem.Scope {
-	return div.Div(attr.Cons(rawClass(fmt.Sprintf("col-xxl-%d", n)), attrs...))
+	return div.Div(attr.Cons(colClass("bs.ColXXL", "col-xxl-", n), attrs...))
+}
+
+// colClass returns the class prefix+n of a grid column, or an attribute
+// that fails the render when n is outside 1 to 12.
+func colClass(component, prefix string, n int) attr.Node {
+	if n < 1 || n > 12 {
+		return errAttr{fmt.Errorf("%s: %w: columns out of range 1 to 12", component, ErrInvalidOption)}
+	}
+	return rawClass(prefix + strconv.Itoa(n))
 }
 
 // ColAuto creates a Bootstrap col-auto div element.

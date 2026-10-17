@@ -8,33 +8,67 @@ import (
 	"github.com/protolambda/chord/html/group/div"
 )
 
-// Toast represents a Bootstrap toast component.
+// Toast represents a Bootstrap toast, a short notification.
+//
+// Bootstrap hides a toast (.toast:not(.show)) until its script shows it.
+// Set Shown to render a visible toast from the server, without script: for
+// example as an htmx out-of-band swap into a [ToastContainer].
+//
+// It renders div.toast[.show] with role="alert" aria-live="assertive"
+// aria-atomic="true" (or role="status" aria-live="polite" when Polite),
+// holding .toast-header (the Header and a close button, only when Header is
+// set) and .toast-body. Attrs are added to the div.toast and may replace
+// the role, aria-live and aria-atomic defaults.
 type Toast struct {
-	Header elem.Node // toast-header content
-	Body   elem.Node // toast-body content
-	Attrs  attr.Node
+	Header elem.Node // .toast-header content; nil leaves out the header and its close button
+	Body   elem.Node // .toast-body content; nil leaves out the body
+	Shown  bool      // add the show class: visible without Bootstrap's script
+	Polite bool      // announce politely (role="status", aria-live="polite"), for a toast that does not need immediate attention
+	// Close replaces the header's close button. Nil renders Bootstrap's
+	// close button, whose data-bs-dismiss="toast" needs Bootstrap's script
+	// (the theme package's opt-in Bootstrap JS asset). Without that script,
+	// pass a [CloseButton] with an htmx request that removes the toast, or
+	// elem.Noop() for no close button.
+	Close elem.Node
+	Attrs attr.Node // additional attributes of the div.toast
 }
 
-// Eval builds the toast structure with proper Bootstrap markup.
+// Eval builds the toast structure with Bootstrap markup.
 func (t Toast) Eval(ctx context.Context) (elem.Obj, error) {
-	var attrs []attr.Node
-	if t.Attrs != nil {
-		attrs = append(attrs, t.Attrs)
+	class := "toast"
+	if t.Shown {
+		class += " show"
 	}
-	attrs = append(attrs, rawClass("toast"))
+	role, live := "alert", "assertive"
+	if t.Polite {
+		role, live = "status", "polite"
+	}
+	own := []attr.Node{
+		rawClass(class),
+		fallbackRaw("role", role),
+		fallbackRaw("aria-live", live),
+		fallbackRaw("aria-atomic", "true"),
+	}
 
 	var children []elem.Node
 	if t.Header != nil {
-		header := div.Div(rawClass("toast-header"))(
-			t.Header,
-			closeButton("toast"),
-		)
-		children = append(children, header)
+		closeBtn := t.Close
+		if closeBtn == nil {
+			closeBtn = dismissButton("toast", "")
+		}
+		children = append(children, div.Div(rawClass("toast-header"))(t.Header, closeBtn))
 	}
-
 	if t.Body != nil {
 		children = append(children, div.Div(rawClass("toast-body"))(t.Body))
 	}
 
-	return div.Div(attrs...)(children...).Eval(ctx)
+	return div.Div(compose(userAttrs(t.Attrs), own...))(children...).Eval(ctx)
+}
+
+// ToastContainer creates a Bootstrap toast container (div.toast-container),
+// which stacks the toasts in it. Position it among attrs, e.g. with the
+// classes "position-fixed bottom-0 end-0 p-3", and give it an id when
+// htmx swaps toasts into it.
+func ToastContainer(attrs ...attr.Node) elem.Scope {
+	return div.Div(attr.Cons(rawClass("toast-container"), attrs...))
 }

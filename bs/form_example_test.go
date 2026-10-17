@@ -1,0 +1,103 @@
+package bs_test
+
+import (
+	"github.com/protolambda/chord/core"
+	"github.com/protolambda/chord/core/elem"
+	"github.com/protolambda/chord/html/form/input"
+	"github.com/protolambda/chord/html/text"
+
+	"github.com/protolambda/webui/bs"
+)
+
+func ExampleField() {
+	core.Dump(bs.Field{
+		ID:           "email",
+		Name:         "email",
+		Label:        text.Text("Email"),
+		Type:         input.Email,
+		Autocomplete: "email",
+		Required:     true,
+		Help:         text.Text("We never share it."),
+	})
+	// Output: <div class="mb-3"><label class="form-label" for="email">Email</label><input class="form-control" type="email" id="email" name="email" autocomplete="email" required aria-describedby="email-help"/><div class="form-text" id="email-help">We never share it.</div></div>
+}
+
+// A field that failed server-side validation keeps the submitted value and
+// shows the error, which screen readers read first.
+func ExampleField_error() {
+	core.Dump(bs.Field{
+		ID:    "title",
+		Name:  "title",
+		Label: text.Text("Title"),
+		Value: `Tasks <for> "today"`,
+		Help:  text.Text("At most 80 characters."),
+		Error: text.Text("The title is too long."),
+	})
+	// Output: <div class="mb-3"><label class="form-label" for="title">Title</label><input class="form-control is-invalid" type="text" id="title" name="title" value="Tasks &lt;for&gt; &#34;today&#34;" aria-invalid="true" aria-describedby="title-error title-help"/><div class="invalid-feedback" id="title-error">The title is too long.</div><div class="form-text" id="title-help">At most 80 characters.</div></div>
+}
+
+// Before and After put the input in an input group.
+func ExampleField_inputGroup() {
+	core.Dump(bs.Field{
+		ID:          "search",
+		Name:        "q",
+		Label:       text.Text("Search notes"),
+		LabelHidden: true,
+		Type:        input.Search,
+		InputMode:   bs.InputModeSearch,
+		After:       []elem.Node{bs.BtnOutlineSecondary()(text.Text("Search"))},
+	})
+	// Output: <div class="mb-3"><label class="form-label visually-hidden" for="search">Search notes</label><div class="input-group"><input class="form-control" type="search" id="search" name="q" inputmode="search"/><button class="btn btn-outline-secondary" type="button">Search</button></div></div>
+}
+
+// A password field never carries a value.
+func ExampleField_password() {
+	core.Dump(bs.Field{ID: "password", Name: "password", Label: text.Text("Password"), Type: input.Password, Autocomplete: "current-password"})
+	core.Dump(bs.Field{ID: "password", Name: "password", Label: text.Text("Password"), Type: input.Password, Value: "hunter2"})
+	// Output:
+	// <div class="mb-3"><label class="form-label" for="password">Password</label><input class="form-control" type="password" id="password" name="password" autocomplete="current-password"/></div>
+	// ERROR: render: at [0]: bs.Field: invalid option: a password field must not carry a value
+}
+
+func ExampleTextarea() {
+	core.Dump(bs.Textarea{
+		ID:    "body",
+		Name:  "body",
+		Label: text.Text("Note"),
+		Rows:  4,
+		Value: "First line\nsecond line",
+	})
+	// Output: <div class="mb-3"><label class="form-label" for="body">Note</label><textarea class="form-control" id="body" name="body" rows="4">First line
+	// second line</textarea></div>
+}
+
+func ExampleSelect() {
+	core.Dump(bs.Select{
+		ID:    "priority",
+		Name:  "priority",
+		Label: text.Text("Priority"),
+		Options: []bs.SelectOption{
+			{Value: "", Label: "Choose..."},
+			{Value: "low", Label: "Low"},
+			{Value: "high", Label: "High", Selected: true},
+		},
+		Error: text.Text("Choose a priority."),
+	})
+	// Output: <div class="mb-3"><label class="form-label" for="priority">Priority</label><select class="form-select is-invalid" id="priority" name="priority" aria-invalid="true" aria-describedby="priority-error"><option value="">Choose...</option><option value="low">Low</option><option value="high" selected>High</option></select><div class="invalid-feedback" id="priority-error">Choose a priority.</div></div>
+}
+
+func ExampleCheckbox() {
+	core.Dump(bs.Checkbox{ID: "done", Name: "done", Value: "1", Label: text.Text("Done"), Checked: true})
+	core.Dump(bs.Checkbox{ID: "notify", Name: "notify", Label: text.Text("Email me"), Switch: true})
+	// Output:
+	// <div class="form-check"><input class="form-check-input" type="checkbox" id="done" name="done" value="1" checked/><label class="form-check-label" for="done">Done</label></div>
+	// <div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="notify" name="notify"/><label class="form-check-label" for="notify">Email me</label></div>
+}
+
+func ExampleRadio() {
+	core.Dump(elem.Bundle{
+		bs.Radio{ID: "view-list", Name: "view", Value: "list", Label: text.Text("List"), Checked: true, Inline: true},
+		bs.Radio{ID: "view-board", Name: "view", Value: "board", Label: text.Text("Board"), Inline: true},
+	})
+	// Output: <div class="form-check form-check-inline"><input class="form-check-input" type="radio" id="view-list" name="view" value="list" checked/><label class="form-check-label" for="view-list">List</label></div><div class="form-check form-check-inline"><input class="form-check-input" type="radio" id="view-board" name="view" value="board"/><label class="form-check-label" for="view-board">Board</label></div>
+}

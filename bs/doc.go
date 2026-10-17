@@ -1,55 +1,102 @@
-// Package bs provides Bootstrap 5.3 element components.
+// Package bs provides Bootstrap 5.3 components as chord element nodes.
 //
 // This package contains Bootstrap components that create HTML elements.
-// For Bootstrap attribute utilities (spacing, colors, flexbox, etc.),
-// use the [ba] package.
+// For Bootstrap attribute utilities (spacing, colors, flexbox, etc.), use
+// the [github.com/protolambda/webui/ba] package.
 //
-// # Grid Elements
+// The markup needs Bootstrap's CSS, and the components marked "no script"
+// below also need the webui theme CSS (package theme), which styles native
+// dialog and details elements as Bootstrap modals, accordions and
+// dropdowns. Nothing in this package renders inline scripts, event handler
+// attributes or style attributes, so the output works under a strict
+// Content-Security-Policy.
 //
-// Grid functions create div elements with Bootstrap grid classes:
+// # Two call shapes
 //
-//	bs.Container(
-//	    bs.Row(
-//	        bs.Col6(text.Text("Left")),
-//	        bs.Col6(text.Text("Right")),
-//	    ),
+// Function components take attributes and return an [elem.Scope], which is
+// then called with the children:
+//
+//	bs.Container()(
+//		bs.Row()(
+//			bs.Col6()(text.Text("Left")),
+//			bs.Col6()(text.Text("Right")),
+//		),
 //	)
+//
+// Struct components have named fields, and an Attrs field for additional
+// attributes of their outer element:
+//
+//	bs.Card{Header: text.Text("Notes"), Body: text.Text("No notes yet.")}
+//
+// Attributes combine with the ba utilities; classes merge:
+//
+//	bs.Container(ba.MT(4))(
+//		bs.Row()(
+//			bs.ColMD(6, ba.MB(3))(bs.Card{Body: text.Text("Card 1")}),
+//			bs.ColMD(6, ba.MB(3))(bs.Card{Body: text.Text("Card 2")}),
+//		),
+//	)
+//
+// # Defaults and attributes
+//
+// Components add the attributes that Bootstrap's documentation asks for:
+// type="button" on buttons (so that they do not submit a form by
+// accident), role="alert" on alerts, role="status" and a visually hidden
+// label on spinners, aria-current on active links, aria-labelledby on
+// dialogs, and so on. A caller's attribute of the same name replaces such
+// a default instead of failing the render as a duplicate, wherever it is
+// among the attributes (bundles, sequences and lazy attr.Fn nodes
+// included; these are evaluated once, during the render). Attributes that
+// a component needs, such as the id of a struct component, are not
+// defaults: setting them again fails the render with chord's duplicate
+// attribute error. Classes always merge.
+//
+// # Validation
+//
+// Options are typed ([Variant], [ModalSize], [OffcanvasPlacement],
+// [HeadingLevel], [InputMode]) and checked when the component renders: an
+// unknown value fails the render with [ErrInvalidOption] instead of
+// emitting a class that does not exist. Ids that components use in CSS
+// selectors, id references or derived ids must be tokens (see [ValidID]),
+// or the render fails with [ErrInvalidID]. Components that would have no
+// accessible name fail with [ErrNoName]. Error messages name the component
+// and the problem, never the offending value.
 //
 // # Components
 //
-// The package provides element constructors for Bootstrap components:
+//   - Grid: [Container], [Row], [Col], [Col1] to [Col12], [ColSM], [ColMD],
+//     [ColLG], [ColXL], [ColXXL], [ColAuto]
+//   - Buttons: [Btn], [BtnOf], [BtnOutlineOf], [BtnPrimary] and the other
+//     variants, [BtnGroup], [BtnToolbar], [CloseButton]
+//   - Badges and alerts: [Badge], [BadgeOf], [Alert], [AlertOf], the
+//     variant constructors, [AlertDismissible]
+//   - Cards and lists: [Card], [CardBody], [CardImgOverlay], [ListGroup],
+//     [ListGroupItem], [ListGroupItemActive]
+//   - Navigation: [Nav], [NavTabs], [NavPills], [NavUnderline], [NavItem],
+//     [NavLink], [NavLinkActive], [Navbar], [NavbarBrand], [NavbarNav],
+//     [Breadcrumb], [BreadcrumbActive], [Pagination], [PageItemActive],
+//     [PageLinkCurrent]
+//   - Tables: [DataTable], [Table], [TableStriped], [TableResponsive]
+//   - Forms: [Field] (with input groups), [Textarea], [Select], [Checkbox]
+//     (and switches), [Radio], and the class wrappers [FormGroup],
+//     [FormLabel], [FormCheck], [FormText], [InvalidFeedback], [InputGroup]
+//   - Feedback: [Progress], [ProgressValue], [Spinner], [Toast] (with
+//     Shown), [ToastContainer]
+//   - No script: [Dialog] with [DialogOpen], [DialogClose] and
+//     [DialogButton]; [DetailsAccordion]; [DetailsDropdown]
 //
-//   - Buttons: [Btn], [BtnPrimary], [BtnOutlinePrimary], [BtnGroup]
-//     (type="button" unless a type is passed, e.g. button.Type(button.TypeSubmit))
-//   - Badges: [Badge], [BadgePrimary], [BadgeSuccess]
-//   - Alerts: [Alert], [AlertDanger], [AlertDismissible]
-//   - Cards: [Card], [CardBody], [CardImgOverlay]
-//   - Navigation: [Nav], [NavItem], [NavLink], [Navbar], [NavbarBrand]
-//   - Lists: [ListGroup], [ListGroupItem]
-//   - Tables: [Table], [TableStriped], [TableResponsive]
-//   - Forms: [FormGroup], [FormLabel], [FormCheck], [FormCheckLabel], [FormText], [InputGroup], [InputGroupText]
-//   - Modals: [Modal], [ModalTrigger]
-//   - Dropdowns: [Dropdown], [DropdownItem], [DropdownDivider]
-//   - Offcanvas: [Offcanvas], [OffcanvasTrigger]
-//   - Toasts: [Toast]
-//   - Accordions: [Accordion], [AccordionItem]
-//   - Other: [Breadcrumb], [Carousel], [Pagination], [Progress], [Spinner], [Collapse]
+// # Components that need Bootstrap's script
 //
-// # Combining with Attributes
+// [Modal], [ModalTrigger], [Offcanvas], [OffcanvasTrigger], [Dropdown],
+// [Accordion], [Collapse], [Carousel], [NavbarToggler],
+// [NavbarTogglerFor], [NavbarCollapse], the close button of
+// [AlertDismissible] and the default close button of [Toast] work only
+// with Bootstrap's JavaScript, which the theme package ships as an opt-in
+// asset (its BootstrapJS option). Without it they render but do nothing:
+// a modal never opens, a dropdown never shows its menu. Prefer the no-JS
+// components ([Dialog], [DetailsAccordion], [DetailsDropdown], a [Toast]
+// with Shown, a navbar with navbar-expand) unless the application loads
+// that script.
 //
-// Use attribute utilities from the ba package:
-//
-//	bs.Container(
-//	    ba.MT(4), ba.P(3),
-//	    bs.Row(
-//	        bs.ColMD(6, ba.MB(3), bs.Card{Body: text.Text("Card 1")}),
-//	        bs.ColMD(6, ba.MB(3), bs.Card{Body: text.Text("Card 2")}),
-//	    ),
-//	)
-//
-// Version: Bootstrap 5.3
-// Reference: https://getbootstrap.com/docs/5.3/
-//
-// Note: This package generates HTML markup only. You must include the Bootstrap
-// CSS and JavaScript files in your HTML document for proper styling and behavior.
+// Version: Bootstrap 5.3. Reference: https://getbootstrap.com/docs/5.3/
 package bs

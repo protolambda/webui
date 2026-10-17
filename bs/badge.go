@@ -6,9 +6,19 @@ import (
 	"github.com/protolambda/chord/html/text"
 )
 
-// Badge creates a basic Bootstrap badge.
+// Badge creates a basic Bootstrap badge (span.badge). A badge is plain
+// text for assistive technology: put it after a real space or a
+// visually-hidden separator so that the surrounding accessible name reads
+// well, e.g. "Inbox 3" instead of "Inbox3".
 func Badge(attrs ...attr.Node) elem.Scope {
 	return text.Span(attr.Cons(rawClass("badge"), attrs...))
+}
+
+// BadgeOf creates a Bootstrap badge of the variant
+// (span.badge.text-bg-{v}). An unknown variant fails the render with
+// [ErrInvalidOption].
+func BadgeOf(v Variant, attrs ...attr.Node) elem.Scope {
+	return text.Span(compose(attrs, rawClass("badge"), variantClass("bs.BadgeOf", "text-bg-", v)))
 }
 
 // BadgePrimary creates a primary Bootstrap badge.
@@ -39,4 +49,14 @@ func BadgeWarning(attrs ...attr.Node) elem.Scope {
 // BadgeInfo creates an info Bootstrap badge.
 func BadgeInfo(attrs ...attr.Node) elem.Scope {
 	return text.Span(attr.Cons(rawClass("badge text-bg-info"), attrs...))
+}
+
+// BadgeLight creates a light Bootstrap badge.
+func BadgeLight(attrs ...attr.Node) elem.Scope {
+	return text.Span(attr.Cons(rawClass("badge text-bg-light"), attrs...))
+}
+
+// BadgeDark creates a dark Bootstrap badge.
+func BadgeDark(attrs ...attr.Node) elem.Scope {
+	return text.Span(attr.Cons(rawClass("badge text-bg-dark"), attrs...))
 }

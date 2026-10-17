@@ -7,60 +7,76 @@ import (
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/html/form/button"
 	"github.com/protolambda/chord/html/group/div"
-	"github.com/protolambda/chord/html/section"
 )
 
-// Modal represents a Bootstrap modal component.
+// Modal represents a Bootstrap modal component, opened and closed by
+// Bootstrap's script.
+//
+// A Modal needs Bootstrap's script (the theme package's opt-in Bootstrap
+// JS asset): without it the modal never shows. Prefer [Dialog], which
+// works without script.
+//
+// The markup follows Bootstrap 5.3: div.modal.fade#ID tabindex="-1"
+// aria-hidden="true" aria-labelledby="ID-title", holding .modal-dialog >
+// .modal-content > .modal-header (the title heading with id ID-title and a
+// close button), .modal-body and .modal-footer. Attrs are added to the
+// div.modal; they may replace the tabindex, aria-hidden and
+// aria-labelledby defaults, but must not set an id.
 type Modal struct {
-	ID         string    // required for targeting
-	Title      elem.Node // modal-title content
-	Body       elem.Node // modal-body content
-	Footer     elem.Node // modal-footer content (typically buttons)
-	Size       string    // "", "sm", "lg", "xl"
-	Centered   bool      // vertically centered
-	Scrollable bool      // scrollable body
-	Static     bool      // static backdrop
-	Attrs      attr.Node // additional attributes
+	ID         string       // required id: a token, see ValidID
+	Title      elem.Node    // .modal-title content, the modal's accessible name; nil leaves out the title
+	TitleLevel HeadingLevel // heading level of the title; zero means h2
+	CloseLabel string       // accessible name of the close button; empty means "Close"
+	Body       elem.Node    // .modal-body content; nil leaves out the body
+	Footer     elem.Node    // .modal-footer content (typically buttons); nil leaves out the footer
+	Size       ModalSize    // dialog size; zero means Bootstrap's default width
+	Centered   bool         // vertically centered
+	Scrollable bool         // scroll the body instead of the page
+	Static     bool         // static backdrop: clicking beside the modal or Escape does not close it
+	Attrs      attr.Node    // additional attributes of the div.modal
 }
 
-// Eval builds the modal structure with proper Bootstrap markup.
+// Eval builds the modal structure with Bootstrap markup. It fails with
+// [ErrInvalidID] for an invalid ID and with [ErrInvalidOption] for an
+// unknown Size or TitleLevel.
 func (m Modal) Eval(ctx context.Context) (elem.Obj, error) {
-	dialogClass := "modal-dialog"
-	if m.Size != "" {
-		dialogClass += " modal-" + m.Size
+	const component = "bs.Modal"
+	if err := checkID(component, m.ID); err != nil {
+		return elem.Obj{}, err
 	}
-	if m.Centered {
-		dialogClass += " modal-dialog-centered"
+	dialogClass, err := modalDialogClass(component, m.Size, m.Centered, m.Scrollable)
+	if err != nil {
+		return elem.Obj{}, err
 	}
-	if m.Scrollable {
-		dialogClass += " modal-dialog-scrollable"
-	}
+	titleID := m.ID + "-title"
 
-	var modalAttrs []attr.Node
-	if m.Attrs != nil {
-		modalAttrs = append(modalAttrs, m.Attrs)
-	}
-	modalAttrs = append(modalAttrs,
+	own := []attr.Node{
 		rawClass("modal fade"),
 		attr.ID(m.ID),
-		attr.Name("tabindex").Raw("-1"),
-	)
+		fallbackRaw("tabindex", "-1"),
+	}
+	if m.Title != nil {
+		own = append(own, fallbackValue("aria-labelledby", titleID))
+	}
+	own = append(own, fallbackRaw("aria-hidden", "true"))
 	if m.Static {
-		modalAttrs = append(modalAttrs, attr.Name("data-bs-backdrop").Raw("static"))
+		own = append(own,
+			attr.Name("data-bs-backdrop").Raw("static"),
+			attr.Name("data-bs-keyboard").Raw("false"),
+		)
 	}
 
-	// Header
 	var headerChildren []elem.Node
 	if m.Title != nil {
-		headerChildren = append(headerChildren, section.H1(rawClass("modal-title fs-5"))(m.Title))
+		h, err := heading(component, m.TitleLevel, 2, rawClass("modal-title h5"), attr.ID(titleID))
+		if err != nil {
+			return elem.Obj{}, err
+		}
+		headerChildren = append(headerChildren, h(m.Title))
 	}
-	headerChildren = append(headerChildren, closeButton("modal"))
+	headerChildren = append(headerChildren, dismissButton("modal", m.CloseLabel))
 
-	// Content
-	var contentChildren []elem.Node
-	contentChildren = append(contentChildren,
-		div.Div(rawClass("modal-header"))(headerChildren...),
-	)
+	contentChildren := []elem.Node{div.Div(rawClass("modal-header"))(headerChildren...)}
 	if m.Body != nil {
 		contentChildren = append(contentChildren, div.Div(rawClass("modal-body"))(m.Body))
 	}
@@ -68,18 +84,21 @@ func (m Modal) Eval(ctx context.Context) (elem.Obj, error) {
 		contentChildren = append(contentChildren, div.Div(rawClass("modal-footer"))(m.Footer))
 	}
 
-	modalContent := div.Div(rawClass("modal-content"))(contentChildren...)
-	modalDialog := div.Div(attr.Class(dialogClass))(modalContent)
-
-	return div.Div(modalAttrs...)(modalDialog).Eval(ctx)
+	modalDialog := div.Div(rawClass(dialogClass))(div.Div(rawClass("modal-content"))(contentChildren...))
+	return div.Div(compose(userAttrs(m.Attrs), own...))(modalDialog).Eval(ctx)
 }
 
-// ModalTrigger creates a button that triggers a modal.
+// ModalTrigger creates a button that opens the [Modal] with the given id
+// through Bootstrap's script: <button type="button" data-bs-toggle="modal"
+// data-bs-target="#id">. It has no classes; add them among attrs (e.g.
+// attr.Class("btn btn-primary")). A type among attrs replaces the default.
+// An invalid id fails the render with [ErrInvalidID].
+//
+// It needs Bootstrap's script; [DialogButton] opens a [Dialog] without it.
 func ModalTrigger(targetID string, attrs ...attr.Node) elem.Scope {
-	return button.Button(attr.Cons(
-		button.Type(button.TypeButton),
+	return button.Button(compose(attrs,
+		typeButton,
 		attr.Name("data-bs-toggle").Raw("modal"),
-		attr.Data("bs-target", "#"+targetID),
-		attr.Bundle(attrs),
+		idTarget("bs.ModalTrigger", "data-bs-target", targetID),
 	))
 }

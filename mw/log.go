@@ -3,6 +3,7 @@ package mw
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -190,23 +191,47 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 }
 
 // ReadFrom copies src to the response, keeping the underlying writer's
-// ReadFrom (sendfile) when it has one.
+// ReadFrom (sendfile) when it has one. Without a status yet, it records 200
+// with the first byte copied only: net/http starts the response of a copy
+// with its first byte, so after a copy of nothing (an empty source, or one
+// that fails at once) the status that the handler writes next is the real
+// one.
 func (w *statusWriter) ReadFrom(src io.Reader) (int64, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
+	if w.status != 0 {
+		n, err := io.Copy(w.ResponseWriter, src)
+		w.bytes += n
+		return n, err
 	}
-	n, err := io.Copy(w.ResponseWriter, src)
-	w.bytes += n
-	return n, err
+	// The first bytes go through Write, which records the status and
+	// counts them; the LimitedReader hides a WriteTo of src, so that no
+	// empty write starts the response of net/http unseen.
+	n, err := io.Copy(writerOnly{w}, io.LimitReader(src, firstChunk))
+	if err != nil || n < firstChunk {
+		return n, err
+	}
+	m, err := io.Copy(w.ResponseWriter, src)
+	w.bytes += m
+	return n + m, err
 }
 
+// firstChunk is the length of the start of a copy that
+// [statusWriter.ReadFrom] copies through Write, the length that net/http
+// sniffs.
+const firstChunk = 512
+
+// writerOnly hides the methods of a writer other than Write.
+type writerOnly struct{ io.Writer }
+
 // FlushError flushes the response, which starts it with 200 if it had no
-// status.
+// status, unless the underlying writer cannot flush. net/http writes the
+// status before it flushes, so a flush that fails otherwise has started
+// the response.
 func (w *statusWriter) FlushError() error {
-	if w.status == 0 {
+	err := http.NewResponseController(w.ResponseWriter).Flush()
+	if w.status == 0 && !errors.Is(err, http.ErrNotSupported) {
 		w.status = http.StatusOK
 	}
-	return http.NewResponseController(w.ResponseWriter).Flush()
+	return err
 }
 
 // Flush is FlushError without the error, for [http.Flusher].

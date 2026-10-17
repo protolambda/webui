@@ -80,8 +80,9 @@ const MaxNextLen = 2048
 // SafeNext returns value when it is a safe post-action destination, and
 // fallback otherwise. A safe destination is a local absolute path, with an
 // optional query and fragment: it starts with a single "/", has no scheme,
-// host or user information, is at most [MaxNextLen] bytes, and consists of
-// printable ASCII other than space and backslash.
+// host or user information, is at most [MaxNextLen] bytes, consists of
+// printable ASCII other than space and backslash, and has complete percent
+// escapes (a raw "100%" in a query value is refused).
 //
 // Use it for every redirect target that comes from a request, such as a
 // "next" query parameter or form field, so that a crafted link cannot send

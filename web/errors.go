@@ -265,6 +265,9 @@ func (v ErrorView) Layout() page.Layout {
 // The response writer given to fn records whether the response started (a
 // final status, a byte, a flush or a hijack), so that an error after that
 // is logged only: a half-written page is never followed by an error page.
+// A copy into w that copies nothing, such as an io.Copy whose source fails
+// at once, and a flush of a writer that cannot flush, start nothing: the
+// error that follows is answered.
 // The writer implements Unwrap, Flush and Hijack, so
 // http.NewResponseController(w) keeps working through it (deadlines for
 // streams, for example). Handle panics if fn is nil.

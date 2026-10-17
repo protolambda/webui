@@ -35,10 +35,12 @@
 // context error).
 //
 // [Errors.Recover] answers panics. [Errors.Intercept] answers, for htmx
-// requests, the error responses that are not HTML which code outside the
-// policy writes (http.Error, the refusals of mw.HostCheck and
-// mw.SameOrigin, the 404 and 405 of http.ServeMux), so that no raw error
-// text is ever swapped into the page as markup (see below).
+// requests, the error responses not declared as HTML which code outside
+// the policy writes (http.Error, the refusals of mw.HostCheck and
+// mw.SameOrigin, the 404 and 405 of http.ServeMux, error bodies without a
+// Content-Type), so that their raw text is not swapped into the page as
+// markup (see below). It trusts error responses with Content-Type
+// text/html, which must not contain request data either.
 // [Errors.Answer] makes a handler of an error, for the refusal hooks of
 // middleware such as the Deny handler of mw.SameOrigin.
 //
@@ -68,13 +70,12 @@
 // body: return errors to an [Errors] policy, whose messages never contain
 // request data. [Errors.Intercept] is the safety net for code that writes
 // its own error responses: for htmx requests it replaces 4xx and 5xx
-// responses with a Content-Type other than text/html by the policy's alert
-// of their status. It trusts text/html, and passes responses without a
-// Content-Type, which net/http sniffs; see its documentation for the
-// exact rules. hx2.Config.NoErrorSwap turns error swapping off for pages
-// whose htmx requests reach handlers that neither covers. Successful
-// answers are swapped as HTML under any configuration: render them with
-// chord, which escapes text.
+// responses that are not declared text/html, with another Content-Type or
+// none, by the policy's alert of their status. It trusts text/html; see
+// its documentation for the exact rules. hx2.Config.NoErrorSwap turns
+// error swapping off for pages whose htmx requests reach handlers that
+// neither covers. Successful answers are swapped as HTML under any
+// configuration: render them with chord, which escapes text.
 //
 // # Rendering
 //
@@ -123,7 +124,11 @@
 // or in an HX-Reswap of the answer (hx2.SetReswap), which replaces the
 // whole hx-swap of that element, its swap style included. Without it, the
 // notice is announced, as the alerts region is a live region, but it may
-// stay out of sight.
+// stay out of sight. The modifier only scrolls when the main swap leaves
+// content in the page: an answer that removes its target (an outerHTML
+// answer with only out-of-band parts, or the delete style) should target a
+// container that it renders again, retarget one (hx2.SetRetarget), or use
+// page.ShowWindowTop.
 //
 // When a swap removes the element that has the focus, htmx gives the focus
 // to the element of the new content with the same id, and restores the

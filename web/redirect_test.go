@@ -129,6 +129,8 @@ func safeNextCases() (good, bad []string) {
 		"\\\\evil.example",
 		"/./\\evil.example",
 		"\\/evil.example",
+		"/tasks?q=%zz",
+		"/tasks?q=100%",
 		"/\t/evil.example",
 		"/\n/evil.example",
 		"/\r\n/evil.example",
@@ -194,6 +196,12 @@ func TestLocalPathRuleIsShared(gt *testing.T) {
 			t.Mustf(be.ErrorIs(iconErr, page.ErrInvalid), "page.Document{Favicon: %q}", v)
 		}
 	}
+	// Only SafeNext limits the length: stream and icon URLs are written by
+	// the application.
+	long := "/" + strings.Repeat("a", web.MaxNextLen)
+	t.Must(be.Equal("", web.SafeNext(long, "")))
+	t.Must(be.NoError(render(div.Div(sse.Region(long))())))
+	t.Must(be.NoError(render(page.Document{Title: "x", Favicon: long})))
 }
 
 // FuzzSafeNext checks the property that matters: an accepted value, resolved

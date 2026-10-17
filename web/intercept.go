@@ -2,6 +2,7 @@ package web
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -22,14 +23,15 @@ import (
 // mw.SameOrigin, the 404 and 405 answers of http.ServeMux.
 //
 // For an htmx request ([IsHTMX]), Intercept decides when the final status
-// is written (by WriteHeader, or as 200 by the first Write, ReadFrom or
-// Flush), and replaces the response when all of these hold:
+// is written (by WriteHeader, or as 200 by the first Write, a ReadFrom
+// that copies at least one byte, or a Flush of a writer that can flush),
+// and replaces the response when all of these hold:
 //
 //   - the status is 4xx or 5xx;
-//   - the Content-Type header is set and its media type is not text/html
-//     (http.Error sets text/plain);
 //   - the response does not make htmx navigate instead of swapping: it has
-//     no HX-Redirect or HX-Location header, and no HX-Refresh: true.
+//     no HX-Redirect or HX-Location header, and no HX-Refresh: true;
+//   - its Content-Type, when the status is written, is not text/html: any
+//     other media type (http.Error sets text/plain), or none at all.
 //
 // The replacement is the policy's htmx answer to the status, as described
 // at [Errors]: the alert of [DefaultMessage] (or the Fragment hook) with
@@ -39,17 +41,24 @@ import (
 // writes report success and discard their bytes. The replacement is logged
 // at debug level with the status and the media type.
 //
-// Everything else passes through unchanged. A response with Content-Type
-// text/html is taken to be markup made for the page, as [Render] and the
-// policy write it. A response without a Content-Type (absent or empty
-// when the status is written) passes through too, such as the empty 401
-// with HX-Redirect of [Errors.RequireAuth]; net/http then sniffs the type
-// of its body (http.DetectContentType), and htmx swaps that body all the
-// same, so code that writes an error body must set its Content-Type, as
-// http.Error does. A request that is not an htmx request gets its
-// response unchanged too, except that an error response that would be
-// replaced for htmx gets HX-Request added to its Vary header, since the
-// two answers differ.
+// Everything else passes through unchanged. Only an explicit text/html is
+// trusted: such a response is taken to be markup made for the page, as
+// [Render] and the policy write it, so a handler that writes an HTML error
+// fragment of its own (with html/template, say) must set Content-Type
+// text/html before it writes the status. An error without a Content-Type
+// (absent or empty when the status is written), such as
+//
+//	w.WriteHeader(http.StatusBadRequest)
+//	fmt.Fprintf(w, "invalid page: %s", value)
+//
+// is replaced: net/http would sniff the type of its body
+// (http.DetectContentType), which tells markup from text poorly, and htmx
+// swaps the body whatever its type. An empty error body is replaced too,
+// since htmx would swap it into the target and empty it. The empty 401 of
+// [Errors.RequireAuth] passes because of its HX-Redirect. A request that
+// is not an htmx request gets its response unchanged, except that an
+// error response that would be replaced for htmx gets HX-Request added to
+// its Vary header, since the two answers differ.
 //
 // The response writer given to next implements Unwrap, Flush, FlushError,
 // Hijack and ReadFrom, so http.NewResponseController(w) keeps working
@@ -151,24 +160,28 @@ func (w *interceptor) Write(b []byte) (int, error) {
 
 // ReadFrom copies src to the response, with the underlying writer's
 // ReadFrom (sendfile) when it has one, or discards it when the response
-// was replaced.
+// was replaced. While no status was written, its first byte decides, as
+// a Write does ([copyStarting]): a copy of nothing leaves the status open.
 func (w *interceptor) ReadFrom(src io.Reader) (int64, error) {
 	switch w.state {
 	case interceptReplaced:
 		return io.Copy(io.Discard, src)
 	case interceptPending:
-		w.state = interceptPassed
+		return copyStarting(w, w.ResponseWriter, src)
 	}
 	return io.Copy(w.ResponseWriter, src)
 }
 
 // FlushError flushes the response, which starts it with status 200 when
-// no status was written.
+// no status was written, unless the underlying writer cannot flush.
+// net/http writes the status before it flushes, so a flush that fails
+// otherwise, such as on a broken connection, has started the response.
 func (w *interceptor) FlushError() error {
-	if w.state == interceptPending {
+	err := http.NewResponseController(w.ResponseWriter).Flush()
+	if w.state == interceptPending && !errors.Is(err, http.ErrNotSupported) {
 		w.state = interceptPassed
 	}
-	return http.NewResponseController(w.ResponseWriter).Flush()
+	return err
 }
 
 // Flush is FlushError without the error, for [http.Flusher].
@@ -188,20 +201,11 @@ func (w *interceptor) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // swappedAsHTML reports whether htmx would insert the response with the
 // header h and the final status code as HTML although it is an error that
-// is not HTML: [Errors.Intercept] replaces such a response. It returns the
-// media type of the response.
+// is not declared HTML: [Errors.Intercept] replaces such a response. It
+// returns the media type of the response for the log, [noMediaType] when
+// it has none.
 func swappedAsHTML(h http.Header, code int) (mediaType string, ok bool) {
 	if code < 400 || code > 599 {
-		return "", false
-	}
-	contentType := strings.TrimSpace(h.Get("Content-Type"))
-	if contentType == "" {
-		// net/http sniffs the type of the body; see [Errors.Intercept].
-		return "", false
-	}
-	mediaType, _, _ = strings.Cut(contentType, ";")
-	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
-	if mediaType == "text/html" {
 		return "", false
 	}
 	// htmx follows these headers instead of swapping the body.
@@ -209,8 +213,22 @@ func swappedAsHTML(h http.Header, code int) (mediaType string, ok bool) {
 		headerValue(h, hx2.HeaderRefresh) == "true" {
 		return "", false
 	}
+	// Without a Content-Type, net/http sniffs one from the body, which
+	// does not make the body markup made for the page: it is replaced.
+	mediaType, _, _ = strings.Cut(h.Get("Content-Type"), ";")
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	switch mediaType {
+	case "text/html":
+		return "", false
+	case "":
+		return noMediaType, true
+	}
 	return mediaType, true
 }
+
+// noMediaType is the media type logged for a replaced response without
+// one. It is no valid media type, so it cannot be confused with one.
+const noMediaType = "(none)"
 
 // headerValue returns the first value of the header name in h, whatever
 // the letter case of its key: htmx reads response headers that way, and a

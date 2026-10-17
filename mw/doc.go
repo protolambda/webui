@@ -49,8 +49,8 @@
 // [github.com/protolambda/webui/web.Errors.Answer]: htmx requests then get
 // an alert rather than text swapped into their target. The policy's
 // [github.com/protolambda/webui/web.Errors.Intercept] does the same for
-// the plain-text refusals of HostCheck, and for the plain-text errors of
-// any other code, that reach an htmx request.
+// the plain-text refusals of HostCheck, and for the errors of any other
+// code that are not declared text/html, that reach an htmx request.
 //
 // # Origins come from configuration
 //

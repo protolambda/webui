@@ -316,9 +316,10 @@ type ResponseRule struct {
 //   - wrap handlers that write their own error bodies, such as handlers of
 //     other packages that call http.Error, with
 //     [github.com/protolambda/webui/web.Errors.Intercept], which answers
-//     their 4xx and 5xx responses to htmx requests that set a Content-Type
-//     other than text/html, as http.Error does, with the alert of their
-//     status instead (see its documentation for what it lets through);
+//     their 4xx and 5xx responses to htmx requests whose Content-Type is
+//     not text/html (http.Error sets text/plain; a missing one counts too)
+//     with the alert of their status instead (see its documentation for
+//     what it lets through);
 //   - or set [Config.NoErrorSwap] for pages whose htmx requests reach
 //     handlers that neither covers.
 //

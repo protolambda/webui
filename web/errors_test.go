@@ -898,3 +898,78 @@ func TestErrorAfterHijack(gt *testing.T) {
 	t.Must(be.Equal(0, w.status))
 	t.Must(be.Equal("request failed after the response started", l.all()[0].msg))
 }
+
+// TestErrorAfterCopyOfNothing checks that a copy that copies nothing does
+// not start the response: the error that follows gets its error page, on a
+// real server as on a recorder.
+func TestErrorAfterCopyOfNothing(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for name, copyNothing := range copiesNothing {
+		h := web.Errors{}.Handle(copyNothing)
+		for _, onServer := range []bool{false, true} {
+			l := new(logs)
+			var res *cthttp.Result
+			if onServer {
+				res = serveHTTP(t, l, h, request(t, nil, http.MethodGet, hostileQuery, nil))
+			} else {
+				res = cthttp.Serve(h, request(t, l, http.MethodGet, hostileQuery, nil))
+			}
+			t.Mustf(res.Status(http.StatusInternalServerError), "%s (server %t): status", name, onServer)
+			t.Mustf(res.HTML().Find(ct.Role("alert")).Texts(web.DefaultMessage(500)), "%s (server %t): page", name, onServer)
+			t.Mustf(be.False(strings.Contains(res.BodyString(), "hx-post")), "%s (server %t): body", name, onServer)
+			recs := l.all()
+			t.Mustf(be.Equal(1, len(recs)), "%s (server %t): records", name, onServer)
+			t.Mustf(be.Equal("request failed", recs[0].msg), "%s (server %t): record", name, onServer)
+		}
+	}
+}
+
+func TestErrorAfterFlushes(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	// A writer that cannot flush starts nothing.
+	l := new(logs)
+	w := newFakeWriter()
+	web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		if err := http.NewResponseController(w).Flush(); !errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("unexpected flush result: %w", err)
+		}
+		w.(http.Flusher).Flush()
+		return web.NotFound("", nil)
+	}).ServeHTTP(w, request(t, l, http.MethodGet, "/", nil))
+	t.Must(be.Equal(http.StatusNotFound, w.status))
+	t.Must(be.Substring(w.body.String(), `role="alert"`))
+	t.Must(be.Equal("request failed", l.all()[0].msg))
+
+	// A flush that fails after it wrote the status started the response.
+	l = new(logs)
+	rec := brokenFlusher{httptest.NewRecorder()}
+	web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return http.NewResponseController(w).Flush()
+	}).ServeHTTP(rec, request(t, l, http.MethodGet, "/", nil))
+	t.Must(be.Equal(http.StatusOK, rec.Code))
+	t.Must(be.Equal("", rec.Body.String()))
+	t.Must(be.Equal("request failed after the response started", l.all()[0].msg))
+}
+
+// TestWriterLongCopy checks that a copy keeps the ReadFrom of the
+// underlying writer for all but its start, and starts the response.
+func TestWriterLongCopy(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	content := strings.Repeat("0123456789", 300)
+	l := new(logs)
+	w := &readFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+	var n int64
+	web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		// A LimitedReader has no WriteTo, so io.Copy uses the ReadFrom of w.
+		var err error
+		n, err = io.Copy(w, io.LimitReader(strings.NewReader(content), int64(len(content))))
+		if err != nil {
+			return err
+		}
+		return errors.New("late")
+	}).ServeHTTP(w, request(t, l, http.MethodGet, "/", nil))
+	t.Must(be.Equal(int64(len(content)), n))
+	t.Must(be.True(w.copied > 0 && w.copied < n))
+	t.Must(be.Equal(content, w.Body.String()))
+	t.Must(be.Equal("request failed after the response started", l.all()[0].msg))
+}

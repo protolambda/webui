@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -70,6 +71,30 @@ func TestInterceptReplacesPlainError(gt *testing.T) {
 	t.Must(be.False(strings.Contains(l.text(), "hx-post")))
 }
 
+// TestInterceptLogsMissingType checks the log record of a replaced error
+// without a Content-Type.
+func TestInterceptLogsMissingType(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	l := new(logs)
+	h := web.Errors{}.Intercept(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "invalid page: %s", r.FormValue("page"))
+	}))
+	res := cthttp.Serve(h, asHTMX(request(t, l, http.MethodGet, hostileQuery, nil), ""))
+	t.Must(res.Status(http.StatusBadRequest))
+	t.Must(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
+	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger">` + web.DefaultMessage(http.StatusBadRequest) + `</div>`)))
+	recs := l.all()
+	t.Must(be.Equal(1, len(recs)))
+	t.Must(be.Equal("(none)", recs[0].attrs["content_type"]))
+
+	// A plain request gets the response unchanged, with Vary.
+	res = cthttp.Serve(h, request(t, nil, http.MethodGet, "/tasks?page=x", nil))
+	t.Must(res.Status(http.StatusBadRequest))
+	t.Must(res.Body(ct.Exact("invalid page: x")))
+	t.Must(res.Header("Vary", ct.Exact(hx2.HeaderRequest)))
+}
+
 func TestInterceptPassesPlainRequests(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	h := web.Errors{}.Intercept(http.HandlerFunc(echoError))
@@ -114,11 +139,19 @@ func TestInterceptRules(gt *testing.T) {
 		{name: "refresh false", status: 400, header: map[string]string{"Content-Type": "text/plain", "HX-Refresh": "false"}, body: "x", replaced: true},
 		{name: "first 5xx", status: 503, header: map[string]string{"Content-Type": "text/plain"}, body: "x", replaced: true},
 		{name: "last 5xx", status: 599, header: map[string]string{"Content-Type": "text/plain"}, body: "x", replaced: true},
+		// Without a Content-Type, net/http sniffs text/plain from these
+		// bodies, and htmx swaps them as markup all the same.
+		{name: "body without content type", status: 400, body: "invalid page: " + hostile, replaced: true},
+		{name: "markup first without content type", status: 404, body: hostile + " not found", replaced: true},
+		{name: "empty content type with body", status: 400, header: map[string]string{"Content-Type": ""}, body: hostile, replaced: true},
+		{name: "blank content type", status: 400, header: map[string]string{"Content-Type": "  "}, body: hostile, replaced: true},
+		// An empty body would empty the target of the request.
+		{name: "no content type", status: 401, replaced: true},
+		{name: "empty content type", status: 400, header: map[string]string{"Content-Type": ""}, replaced: true},
 
 		{name: "html error", status: 422, header: map[string]string{"Content-Type": web.ContentType}, body: "<p>fix the form</p>"},
 		{name: "html in capitals", status: 400, header: map[string]string{"Content-Type": "TEXT/HTML"}, body: "<p>x</p>"},
-		{name: "no content type", status: 401},
-		{name: "empty content type", status: 400, header: map[string]string{"Content-Type": ""}},
+		{name: "html with parameters", status: 422, header: map[string]string{"Content-Type": "text/html; charset=utf-8"}, body: "<p>x</p>"},
 		{name: "success", status: 200, header: map[string]string{"Content-Type": "text/plain"}, body: "fine"},
 		{name: "redirect status", status: 303, header: map[string]string{"Content-Type": "text/plain", "Location": "/"}},
 		{name: "not an error class", status: 600, header: map[string]string{"Content-Type": "text/plain"}, body: "x"},
@@ -126,6 +159,10 @@ func TestInterceptRules(gt *testing.T) {
 		{name: "htmx location", status: 403, header: map[string]string{"Content-Type": "text/plain", "HX-Location": "/home"}, body: "x"},
 		{name: "htmx refresh", status: 409, header: map[string]string{"Content-Type": "text/plain", "HX-Refresh": "true"}, body: "x"},
 		{name: "non-canonical redirect key", status: 401, header: map[string]string{"Content-Type": "text/plain", "hx-redirect": "/login"}, body: "x"},
+		{name: "htmx redirect without content type", status: 401, header: map[string]string{"HX-Redirect": "/login"}},
+		{name: "htmx location without content type", status: 403, header: map[string]string{"HX-Location": "/home"}, body: "x"},
+		{name: "htmx refresh without content type", status: 409, header: map[string]string{"HX-Refresh": "true"}},
+		{name: "success without content type", status: 200, body: "fine"},
 	}
 	for _, c := range cases {
 		h := web.Errors{}.Intercept(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +183,7 @@ func TestInterceptRules(gt *testing.T) {
 			t.Mustf(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)), "%s: retarget", c.name)
 			t.Mustf(res.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(web.DefaultMessage(c.status)), "%s: alert", c.name)
 			t.Mustf(res.HeaderAbsent("HX-Refresh"), "%s: htmx headers reset", c.name)
+			t.Mustf(be.False(strings.Contains(res.BodyString(), "hx-post")), "%s: body dropped", c.name)
 			continue
 		}
 		t.Mustf(res.HeaderAbsent("HX-Retarget"), "%s: retarget", c.name)
@@ -386,4 +424,181 @@ func TestInterceptUsesHooks(gt *testing.T) {
 	t.Must(res.Header("HX-Retarget", ct.Exact("#errors")))
 	t.Must(res.Header("HX-Reswap", ct.Exact(hx2.SwapAfterBegin)))
 	t.Must(res.Body(ct.Exact("<p>400: " + web.DefaultMessage(400) + "</p>")))
+}
+
+// errReader is a source whose every Read returns err, and which has no
+// WriteTo, so that io.Copy into a response writer calls its ReadFrom.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// copiesNothing are copies into a response that copy no byte, after which
+// net/http has sent nothing and the next status is the real one. Each
+// returns the error of the copy, or a failure that quotes the request when
+// the copy succeeded.
+var copiesNothing = map[string]func(w http.ResponseWriter, r *http.Request) error{
+	"empty source": func(w http.ResponseWriter, r *http.Request) error {
+		if _, err := io.Copy(w, errReader{io.EOF}); err != nil {
+			return err
+		}
+		return errors.New("nothing to send for " + r.FormValue("page"))
+	},
+	"source fails": func(w http.ResponseWriter, r *http.Request) error {
+		_, err := io.Copy(w, errReader{errors.New("read " + r.FormValue("page") + ": failed")})
+		return err
+	},
+	// bufio.Reader has a WriteTo, which hands its source to the ReadFrom
+	// of the writer.
+	"buffered source fails": func(w http.ResponseWriter, r *http.Request) error {
+		_, err := io.Copy(w, bufio.NewReader(errReader{errors.New("read " + r.FormValue("page") + ": failed")}))
+		return err
+	},
+}
+
+// serveHTTP serves r with h on a real net/http server, whose response
+// writer starts a response differently from a recorder, and returns the
+// response. The handler's records go to l.
+func serveHTTP(t devtest.T, l *logs, h http.Handler, r *http.Request) *cthttp.Result {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		h.ServeHTTP(w, req.WithContext(mw.WithLogger(req.Context(), slog.New(l.handler()))))
+	}))
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), r.Method, srv.URL+r.URL.RequestURI(), nil)
+	t.Must(be.NoError(err))
+	req.Header = r.Header.Clone()
+	res, err := srv.Client().Do(req)
+	t.Must(be.NoError(err))
+	return cthttp.FromResponse(res)
+}
+
+// TestInterceptAfterCopyOfNothing checks that a copy into the response
+// that copies nothing does not start it: the plain-text error that follows
+// is replaced, on a real server as on a recorder.
+func TestInterceptAfterCopyOfNothing(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for name, copyNothing := range copiesNothing {
+		h := web.Errors{}.Intercept(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := copyNothing(w, r); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}))
+		for _, onServer := range []bool{false, true} {
+			var res *cthttp.Result
+			if onServer {
+				res = serveHTTP(t, new(logs), h, asHTMX(request(t, nil, http.MethodGet, hostileQuery, nil), ""))
+			} else {
+				res = cthttp.Serve(h, asHTMX(request(t, nil, http.MethodGet, hostileQuery, nil), ""))
+			}
+			t.Mustf(res.Status(http.StatusInternalServerError), "%s (server %t): status", name, onServer)
+			t.Mustf(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)), "%s (server %t): retarget", name, onServer)
+			t.Mustf(res.Body(ct.Exact(`<div class="alert alert-danger">`+web.DefaultMessage(500)+`</div>`)),
+				"%s (server %t): body", name, onServer)
+		}
+	}
+}
+
+func TestInterceptAfterUnsupportedFlush(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	w := newFakeWriter() // it cannot flush
+	var flushErr error
+	web.Errors{}.Intercept(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flushErr = http.NewResponseController(w).Flush()
+		w.(http.Flusher).Flush()
+		http.Error(w, hostile, http.StatusBadRequest)
+	})).ServeHTTP(w, asHTMX(request(t, nil, http.MethodGet, "/", nil), ""))
+	t.Must(be.ErrorIs(flushErr, http.ErrNotSupported))
+	t.Must(be.Equal(http.StatusBadRequest, w.status))
+	t.Must(be.Equal(`<div class="alert alert-danger">`+web.DefaultMessage(400)+`</div>`, w.body.String()))
+}
+
+// brokenFlusher is a recorder whose flush fails after it wrote the status,
+// as the flush of net/http on a broken connection does.
+type brokenFlusher struct{ *httptest.ResponseRecorder }
+
+func (w brokenFlusher) FlushError() error {
+	w.ResponseRecorder.Flush()
+	return errors.New("connection broken")
+}
+
+func TestInterceptAfterFailedFlush(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	w := brokenFlusher{httptest.NewRecorder()}
+	web.Errors{}.Intercept(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).Flush(); err == nil {
+			panic("the flush must fail")
+		}
+		http.Error(w, "late", http.StatusInternalServerError)
+	})).ServeHTTP(w, asHTMX(request(t, nil, http.MethodGet, "/", nil), ""))
+	// The status went out with the flush: the error is the handler's.
+	t.Must(be.Equal(http.StatusOK, w.Code))
+	t.Must(be.Equal("", w.Header().Get("HX-Retarget")))
+	t.Must(be.Substring(w.Body.String(), "late"))
+}
+
+// readFromRecorder is a recorder with a ReadFrom, as net/http's writer has
+// for sendfile, which counts the bytes it copied.
+type readFromRecorder struct {
+	*httptest.ResponseRecorder
+	copied int64
+}
+
+func (w *readFromRecorder) ReadFrom(src io.Reader) (int64, error) {
+	n, err := io.Copy(writerOnly{w.ResponseRecorder}, src)
+	w.copied += n
+	return n, err
+}
+
+// writerOnly hides the methods of a writer other than Write.
+type writerOnly struct{ io.Writer }
+
+// TestInterceptLongCopy checks that a copy keeps the ReadFrom of the
+// underlying writer for all but its start, and passes the response.
+func TestInterceptLongCopy(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	content := strings.Repeat("0123456789", 300)
+	w := &readFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+	var n int64
+	var err error
+	web.Errors{}.Intercept(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A LimitedReader has no WriteTo, so io.Copy uses the ReadFrom of w.
+		n, err = io.Copy(w, io.LimitReader(strings.NewReader(content), int64(len(content))))
+		http.Error(w, "late", http.StatusInternalServerError)
+	})).ServeHTTP(w, asHTMX(request(t, nil, http.MethodGet, "/", nil), ""))
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(int64(len(content)), n))
+	t.Must(be.True(w.copied > 0 && w.copied < n))
+	t.Must(be.Equal(http.StatusOK, w.Code))
+	t.Must(be.Equal(content+"late\n", w.Body.String()))
+}
+
+// TestInterceptStackAfterCopyOfNothing checks the documented stack on a
+// real server: after a copy of nothing, a plain-text error and a returned
+// error get the policy's answer, and the request log has their status.
+func TestInterceptStackAfterCopyOfNothing(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	errs := web.Errors{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /plain", func(w http.ResponseWriter, r *http.Request) {
+		if err := copiesNothing["source fails"](w, r); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+	mux.Handle("GET /handled", errs.Handle(copiesNothing["source fails"]))
+	for _, path := range []string{"/plain", "/handled"} {
+		l := new(logs)
+		h := mw.Chain(mux, mw.LogRequests(mw.RequestLog{Logger: slog.New(l.handler()), Routes: mux}), errs.Recover, errs.Intercept)
+		target := path + "?" + url.Values{"page": {hostile}}.Encode()
+		res := serveHTTP(t, new(logs), h, asHTMX(request(t, nil, http.MethodGet, target, nil), ""))
+		t.Mustf(res.Status(http.StatusInternalServerError), "%s: status", path)
+		t.Mustf(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)), "%s: retarget", path)
+		t.Mustf(res.Body(ct.Exact(`<div class="alert alert-danger">`+web.DefaultMessage(500)+`</div>`)), "%s: body", path)
+		recs := l.all()
+		last := recs[len(recs)-1]
+		t.Mustf(be.Equal("http request", last.msg), "%s: request record", path)
+		t.Mustf(be.Equal("500", last.attrs["status"]), "%s: logged status", path)
+		if path == "/plain" {
+			// Handle logs the error it got; Intercept logs no body.
+			t.Must(be.False(strings.Contains(l.text(), "hx-post")))
+		}
+	}
 }

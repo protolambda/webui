@@ -203,9 +203,10 @@ func errText(msg string) elem.Node {
 	return text.Text(msg)
 }
 
-// formToken returns the CSRF token for the forms of the page that answers
-// r: the session's token when the visitor is signed in, and otherwise a
-// pre-authentication token, whose cookie it sets on w.
+// formToken returns the CSRF token for the forms of the whole page that
+// answers r: the session's token when the visitor is signed in, and
+// otherwise a pre-authentication token (session.PreAuth.Issue), whose
+// cookie it sets or renews on w. Fragments use fragmentToken.
 func (a *App) formToken(w http.ResponseWriter, r *http.Request) (string, error) {
 	if s, ok := session.FromContext[Account](r.Context()); ok {
 		return s.CSRF(), nil
@@ -213,23 +214,29 @@ func (a *App) formToken(w http.ResponseWriter, r *http.Request) (string, error) 
 	return a.preauth.Issue(w, r)
 }
 
-// renewedToken returns formToken's token for r, and whether issuing it set
-// a new pre-authentication cookie on w, which session.PreAuth.Issue does
-// once the old cookie is past half of its lifetime. The browser then
-// replaces its cookie, and refuses the forms already on the page, rendered
-// with the old one: an htmx fragment that renews the cookie must renew
-// those forms too, and a fragment without forms must not ask for a token
-// (choosePage).
-func (a *App) renewedToken(w http.ResponseWriter, r *http.Request) (string, bool, error) {
-	before := len(w.Header().Values("Set-Cookie"))
-	token, err := a.formToken(w, r)
-	return token, len(w.Header().Values("Set-Cookie")) > before, err
+// fragmentToken returns the CSRF token for the forms of an htmx fragment
+// that updates a page of r: the session's token when the visitor is
+// signed in, and otherwise the token of the pre-authentication cookie that
+// the page's forms carry (session.PreAuth.Token), which a fragment must not
+// renew under them. Only when r has no valid cookie (none, or an expired
+// one, which the page's forms fail with as well) does it issue a new
+// cookie on w, and report renewed: the fragment must then renew every form
+// of the page out of band, as the browser's new cookie refuses their
+// tokens.
+func (a *App) fragmentToken(w http.ResponseWriter, r *http.Request) (token string, renewed bool, err error) {
+	if s, ok := session.FromContext[Account](r.Context()); ok {
+		return s.CSRF(), false, nil
+	}
+	if token, ok := a.preauth.Token(r); ok {
+		return token, false, nil
+	}
+	return a.preauth.IssueRenewed(w, r)
 }
 
 // choosePage answers r like web.Choose, with a fragment that holds no
-// form, or the page that full renders for a form token. It issues the
+// form, or the page that full renders for a form token. It asks for the
 // token only for the page, so that a fragment, such as the answer to a
-// poll, never renews the cookie under the forms of the page it updates.
+// poll, never sets a pre-authentication cookie.
 func (a *App) choosePage(w http.ResponseWriter, r *http.Request, fragment elem.Node, full func(token string) elem.Node) error {
 	if web.WantsFragment(r) {
 		return web.Choose(w, r, http.StatusOK, fragment, nil)

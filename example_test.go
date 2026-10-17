@@ -95,6 +95,12 @@ func Example() {
 	t.Must(webuitest.SecurityHeaders(res, webuitest.StrictPolicy()))
 	fmt.Println("page contract passes")
 
+	// The assets are cached for good: their URLs change with their
+	// content.
+	res = webuitest.Serve(t, handler, webuitest.Get(t, assets.URL(theme.HTMXJS)))
+	t.Must(webuitest.SecurityHeaders(res, webuitest.AssetPolicy()))
+	fmt.Println(res.Headers().Get("Cache-Control"))
+
 	// Unknown paths get the error page, with the same headers.
 	res = webuitest.Serve(t, handler, webuitest.Get(t, "/nowhere"))
 	fmt.Println(res.StatusCode())
@@ -103,5 +109,6 @@ func Example() {
 	// text/html; charset=utf-8
 	// script-src 'self'
 	// page contract passes
+	// public, max-age=31536000, immutable
 	// 404
 }

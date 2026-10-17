@@ -94,9 +94,8 @@ func TestRun(gt *testing.T) {
 	t.Must(be.NoError(err))
 	t.Must(be.Equal("event: clock\n", line))
 
-	// A connection that the client dialed but never used counts as busy
-	// for http.Server.Shutdown during its first 5 seconds: close them.
-	client.CloseIdleConnections()
+	// The client's idle connections stay open: server.Run closes those
+	// that never sent a request, and Shutdown the idle keep-alive ones.
 	start := time.Now()
 	cancel()
 	select {

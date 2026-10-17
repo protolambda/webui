@@ -70,7 +70,7 @@ func (a *App) htmxPage(r *http.Request, token string, f filter, q string) elem.N
 				addTaskForm(token, false),
 			),
 			demo("errors", "Error answers",
-				para("This request fails on purpose. The server answers htmx with an alert and HX-Retarget, so the message shows in the alerts region at the top, with the real status (409)."),
+				para("This request fails on purpose. The server answers htmx with an alert, HX-Retarget and HX-Reswap, so the message shows in the alerts region at the top, scrolled into view, with the real status (409)."),
 				failForm(token, false),
 			),
 			demo("search", "Search as you type",
@@ -148,7 +148,9 @@ func (a *App) taskList(token string, f filter) elem.Node {
 }
 
 // addTaskForm renders the form that adds a task; oob renders it empty for
-// an out-of-band swap after an added task.
+// an out-of-band swap after an added task. Its submit button has an id,
+// like its field, so that htmx gives the focus back to the button that
+// sent the form when the swap replaces it.
 func addTaskForm(token string, oob bool) elem.Node {
 	attrs := []attr.Node{
 		attr.ID(addTaskID), form.Novalidate(),
@@ -160,7 +162,7 @@ func addTaskForm(token string, oob bool) elem.Node {
 	return postForm("/htmx/tasks", token, attrs...)(
 		bs.Field{
 			ID: "new-task", Name: "title", Label: text.Text("New task"), Required: true, Attrs: input.Maxlength("80"),
-			After: []elem.Node{submit(bs.VariantPrimary, "Add")},
+			After: []elem.Node{submit(bs.VariantPrimary, "Add", attr.ID(addTaskID+"-submit"))},
 		},
 	)
 }
@@ -173,26 +175,34 @@ func failForm(token string, oob bool) elem.Node {
 		attrs = append(attrs, hx2.SwapOOB("true"))
 	}
 	return postForm("/htmx/fail", token, attrs...)(
-		bs.BtnOutlineWarning(button.Type(button.TypeSubmit))(bi.ExclamationTriangle, text.Text(" Send a failing request")),
+		bs.BtnOutlineWarning(button.Type(button.TypeSubmit), attr.ID(failFormID+"-submit"))(bi.ExclamationTriangle, text.Text(" Send a failing request")),
 	)
 }
 
 // htmxTasks answers the filter links: the list for htmx, with the filter
-// marked out of band; the page for others. When the token for the list's
-// delete forms renewed the pre-authentication cookie, the fragment also
-// renews the page's other forms out of band, as the new cookie refuses
-// their tokens.
+// marked out of band; the page for others. The list's delete forms carry
+// the token of the page's forms (fragmentToken); when the page's
+// pre-authentication cookie was gone and a new one had to be issued, the
+// fragment also renews the page's other forms out of band, as the new
+// cookie refuses their tokens.
 func (a *App) htmxTasks(w http.ResponseWriter, r *http.Request) error {
-	token, renewed, err := a.renewedToken(w, r)
+	f := parseFilter(r.URL.Query().Get("filter"))
+	if !web.WantsFragment(r) {
+		token, err := a.formToken(w, r)
+		if err != nil {
+			return err
+		}
+		return web.Choose(w, r, http.StatusOK, nil, a.htmxPage(r, token, f, ""))
+	}
+	token, renewed, err := a.fragmentToken(w, r)
 	if err != nil {
 		return err
 	}
-	f := parseFilter(r.URL.Query().Get("filter"))
 	fragment := elem.Bundle{a.taskList(token, f), taskFilter(f, true)}
 	if renewed {
 		fragment = append(fragment, addTaskForm(token, true), failForm(token, true))
 	}
-	return web.Choose(w, r, http.StatusOK, fragment, a.htmxPage(r, token, f, ""))
+	return web.Choose(w, r, http.StatusOK, fragment, nil)
 }
 
 // changedList is the htmx answer to an added or deleted task: the list,

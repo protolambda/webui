@@ -14,6 +14,7 @@ import (
 
 	"github.com/protolambda/webui/internal/gallery/app"
 	"github.com/protolambda/webui/session"
+	"github.com/protolambda/webui/web"
 	"github.com/protolambda/webui/webuitest"
 )
 
@@ -51,7 +52,9 @@ func TestHTMXErrors(gt *testing.T) {
 	t.Run("htmx", func(t devtest.T) {
 		res := c.Post(t, "/htmx/fail", webuitest.Form(nil), webuitest.HTMX(), webuitest.HXTarget("errors"))
 		t.Must(webuitest.HXRetarget(res, ct.Exact("#alerts")))
-		t.Must(res.Header("HX-Reswap", ct.Exact("innerHTML")))
+		// The swap scrolls the alerts region into view, as the control
+		// that failed may sit far below it.
+		t.Must(res.Header("HX-Reswap", ct.Exact(web.ErrorReswap)))
 		t.Must(res.Header("Cache-Control", ct.Exact("no-store")))
 		t.Must(res.Header("Vary", ct.Contains("HX-Request")))
 		frag := c.Fragment(t, res, http.StatusConflict, "div")
@@ -179,7 +182,9 @@ func TestHTMXSwaps(gt *testing.T) {
 		res := c.Get(t, "/components/toast", webuitest.HTMX())
 		frag := c.Fragment(t, res, http.StatusOK, "div")
 		t.Must(frag.Find(ct.ID("toasts")).Matches(ct.Attr("hx-swap-oob", "beforeend")))
-		t.Must(frag.Find(ct.ID("toasts")).Find(ct.Class("toast")).Matches(ct.Class("show"), ct.Attr("role", "status")))
+		// The container is the live region that announces the toast; the
+		// toast is none of its own, which would announce it twice.
+		t.Must(frag.Find(ct.ID("toasts")).Find(ct.Class("toast")).Matches(ct.Class("show"), ct.HasAttr("role").Not(), ct.HasAttr("aria-live").Not()))
 
 		// Without htmx, the toast shows in the container of the page.
 		page = c.Page(t, c.Get(t, "/components/toast"), http.StatusOK)
@@ -190,10 +195,12 @@ func TestHTMXSwaps(gt *testing.T) {
 }
 
 // TestPreAuthFragments checks that the htmx fragments keep the anonymous
-// forms of the htmx page valid once a new token would renew their
-// pre-authentication cookie, past half of its lifetime: the poll and the
-// search, whose answers hold no form, issue no token, and the filter, whose
-// delete forms need one, renews the other forms of the page out of band.
+// forms of the htmx page valid: the poll and the search, whose answers
+// hold no form, set no cookie, and the filter renders its delete forms
+// with the token of the page's pre-authentication cookie, also past half
+// of the cookie's lifetime, when a whole page would renew it. Only once
+// that cookie expired does the filter issue a new one, and then renews the
+// other forms of the page out of band.
 func TestPreAuthFragments(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	clock := newFakeClock()
@@ -206,11 +213,20 @@ func TestPreAuthFragments(gt *testing.T) {
 	t.Must(contract("")(page))
 	issued := webuitest.CSRFToken(t, page)
 
-	// A fresh cookie serves the filter as it is: the other forms stay.
-	res = b.Get(t, "/htmx/tasks?filter=open", webuitest.HTMX())
-	t.Must(res.Status(http.StatusOK))
-	t.Must(webuitest.NoCookies(res))
-	t.Must(res.HTMLFragment("div").Find(ct.ID("add-task")).None())
+	// filter checks the filter fragment while the page's cookie is valid:
+	// it sets no cookie, renews no other form, and its delete forms carry
+	// the page's token.
+	filter := func(target string) {
+		t.Helper()
+		res := b.Get(t, target, webuitest.HTMX())
+		t.Mustf(res.Status(http.StatusOK), "%s", target)
+		t.Mustf(webuitest.NoCookies(res), "%s", target)
+		frag := res.HTMLFragment("div")
+		t.Must(fragmentContract(issued)(frag))
+		t.Must(frag.Find(ct.ID("add-task")).None())
+		t.Must(frag.Find(ct.ID("fail-form")).None())
+	}
+	filter("/htmx/tasks?filter=open")
 
 	clock.Advance(session.DefaultPreAuthTTL/2 + time.Second)
 	for _, target := range []string{"/htmx/poll", "/htmx/search?q=release"} {
@@ -218,9 +234,20 @@ func TestPreAuthFragments(gt *testing.T) {
 		t.Mustf(res.Status(http.StatusOK), "%s", target)
 		t.Mustf(webuitest.NoCookies(res), "%s", target)
 	}
+	filter("/htmx/tasks?filter=done")
 	res = b.Submit(t, page, page.Find(ct.ID("add-task")), nil, url.Values{"title": {"After a poll"}}, webuitest.HTMX())
 	t.Must(res.Status(http.StatusOK))
+	// A whole page renews the cookie past half of its lifetime.
+	t.Must(webuitest.Cookie(b.Get(t, "/htmx/tasks?filter=done"), "__Host-preauth", webuitest.CookieWant{
+		HostPrefix: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, Path: "/",
+	}))
 
+	// Once the cookie expired, the page's forms fail, and the filter
+	// renews them with a new cookie.
+	b = webuitest.NewBrowser(t, g, webuitest.BrowserOptions{})
+	page = b.Get(t, "/htmx").HTML()
+	issued = webuitest.CSRFToken(t, page)
+	clock.Advance(session.DefaultPreAuthTTL + time.Second)
 	res = b.Get(t, "/htmx/tasks?filter=all", webuitest.HTMX())
 	t.Must(webuitest.Cookie(res, "__Host-preauth", webuitest.CookieWant{
 		HostPrefix: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, Path: "/",
@@ -230,8 +257,8 @@ func TestPreAuthFragments(gt *testing.T) {
 	for _, id := range []string{"add-task", "fail-form"} {
 		t.Mustf(frag.Find(ct.ID(id), ct.Attr("hx-swap-oob", "true")).Count(1), "%s", id)
 	}
-	// Every form of the fragment carries the renewed token, which the
-	// browser's new cookie accepts in place of the page's old one.
+	// Every form of the fragment carries the new token, which the
+	// browser's new cookie accepts, unlike the page's old one.
 	t.Must(be.NotEqual(issued, webuitest.CSRFToken(t, frag)))
 	res = b.Submit(t, page, page.Find(ct.ID("fail-form")), nil, nil, webuitest.HTMX())
 	t.Must(res.Status(http.StatusForbidden))

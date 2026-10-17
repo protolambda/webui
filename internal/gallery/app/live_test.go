@@ -47,7 +47,9 @@ func endText(gt *testing.T, ev webuitest.Event) string {
 func TestLiveClock(gt *testing.T) {
 	synctest.Test(gt, func(gt *testing.T) {
 		t := mustbe.WrapT(gt)
-		a := newLiveGallery(t, 3*time.Second)
+		// The lifetime falls between two ticks: when both fall due at once,
+		// either may come first.
+		a := newLiveGallery(t, 2500*time.Millisecond)
 		start := time.Now()
 		st := webuitest.ServeStream(gt, a, webuitest.Get(gt, "/live/clock", webuitest.EventSource()))
 		t.Must(st.Status(http.StatusOK))
@@ -62,10 +64,10 @@ func TestLiveClock(gt *testing.T) {
 		// The lifetime ends the stream with the end event, whose fragment
 		// replaces the region and closes the connection for good.
 		end := st.Expect(gt, sse.EventEnd)
-		t.Must(be.Equal("The clock stopped after 3s. Start it again", endText(gt, end)))
+		t.Must(be.Equal("The clock stopped after 2.5s. Start it again", endText(gt, end)))
 		t.Must(end.Fragment("div").Find(ct.Role("link", ct.Named("Start it again"))).Matches(ct.Attr("href", "/live")))
 		st.ExpectEnd(gt)
-		t.Must(be.Equal(3*time.Second, time.Since(start)))
+		t.Must(be.Equal(2500*time.Millisecond, time.Since(start)))
 	})
 }
 

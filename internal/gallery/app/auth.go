@@ -113,8 +113,9 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 }
 
 // logout ends the session of the request, the one whose CSRF token the
-// form carries, and clears its cookie. Without a session there is nothing
-// to end, and nothing to check.
+// form carries, and clears its cookie (session.Store.EndSession, which
+// also ends a detached session of a test). Without a session there is
+// nothing to end, and nothing to check.
 func (a *App) logout(w http.ResponseWriter, r *http.Request) error {
 	s, ok := session.FromContext[Account](r.Context())
 	if !ok {
@@ -127,8 +128,7 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	f.Zero()
-	s.End()
-	a.sessions.ClearCookie(w)
+	a.sessions.EndSession(w, s)
 	notices.Redirect(w, r, "/", "signed-out")
 	return nil
 }

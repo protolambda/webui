@@ -446,7 +446,6 @@ func (a *App) toast(w http.ResponseWriter, r *http.Request) error {
 		Header: elem.Bundle{bi.Bell, text.Strong(attr.Class("ms-2 me-auto"))(text.Text("Toast " + strconv.FormatInt(n, 10)))},
 		Body:   text.Text("Appended by an out-of-band swap."),
 		Shown:  true,
-		Polite: true,
 		Close:  dismissButton(),
 	}
 	fragment := bs.ToastContainer(attr.ID("toasts"), hx2.SwapOOB(hx2.SwapBeforeEnd))(t)

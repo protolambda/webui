@@ -28,6 +28,10 @@ const (
 	eventNotes = "notes"
 )
 
+// clockEvery is the period of the live clock's updates; liveTiming's
+// Interval must not exceed it.
+const clockEvery = time.Second
+
 // liveTiming is the timing of the gallery's live streams.
 func liveTiming(lifetime time.Duration) sse.Timing {
 	return sse.Timing{Interval: time.Second, KeepAlive: 15 * time.Second, Lifetime: lifetime}
@@ -100,28 +104,6 @@ func streamKey(r *http.Request) string {
 	return server.AddrPrefix(ap.Addr()).String()
 }
 
-// ticks returns a channel that receives a signal every d until ctx ends.
-// The goroutine it starts belongs to the caller's request and ends with ctx.
-func ticks(ctx context.Context, d time.Duration) <-chan struct{} {
-	c := make(chan struct{}, 1)
-	go func() {
-		t := time.NewTicker(d)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				select {
-				case c <- struct{}{}:
-				default:
-				}
-			}
-		}
-	}()
-	return c
-}
-
 // liveClock streams the clock and the number of updates, to anyone.
 func (a *App) liveClock(w http.ResponseWriter, r *http.Request) error {
 	if sse.HandleHEAD(w, r) {
@@ -133,8 +115,6 @@ func (a *App) liveClock(w http.ResponseWriter, r *http.Request) error {
 		return s.End(r.Context(), liveEnd("Too many live views are open. Close one and reload.", "/live", "Reload"))
 	}
 	defer release()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
 	updates := 0
 	return sse.Loop{
 		Timing: liveTiming(a.lifetime),
@@ -151,9 +131,9 @@ func (a *App) liveClock(w http.ResponseWriter, r *http.Request) error {
 			}
 			return liveEnd("Live updates stopped.", "/live", "Reload")
 		},
-		Changes: ticks(ctx, time.Second),
-		Stop:    a.stop,
-	}.Run(ctx, s)
+		Every: clockEvery,
+		Stop:  a.stop,
+	}.Run(r.Context(), s)
 }
 
 // notesLive streams the count of the notes of the request's session. It is

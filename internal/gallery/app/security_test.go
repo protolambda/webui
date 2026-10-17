@@ -12,10 +12,9 @@ import (
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
 
+	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/internal/gallery/app"
-	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/session"
-	"github.com/protolambda/webui/theme"
 	"github.com/protolambda/webui/webuitest"
 )
 
@@ -34,10 +33,10 @@ func TestSecurityHeaders(gt *testing.T) {
 	t.Must(webuitest.SecurityHeaders(c.Post(t, "/htmx/fail", webuitest.Form(nil)), webuitest.StrictPolicy()))
 	// Assets replace the default Cache-Control: their URLs change with
 	// their content.
-	set := theme.MustAssets(theme.Options{})
-	assets := webuitest.PolicyFor(mw.Headers{CacheControl: "public, max-age=31536000, immutable"})
-	for info := range set.Files() {
-		t.Mustf(webuitest.SecurityHeaders(c.Get(t, info.URL), assets), "GET %s", info.Name)
+	for _, set := range []*asset.Set{plainAssets, jsAssets} {
+		for info := range set.Files() {
+			t.Mustf(webuitest.SecurityHeaders(c.Get(t, info.URL), webuitest.AssetPolicy()), "GET %s", info.URL)
+		}
 	}
 	res := c.Get(t, "/", webuitest.Host("evil.example"))
 	t.Must(res.Status(http.StatusBadRequest))
@@ -102,7 +101,11 @@ func TestRejectsCrossSite(gt *testing.T) {
 	t.Must(c.Post(t, "/htmx/tasks", webuitest.Form(url.Values{"title": {"Same-site"}})).Status(http.StatusSeeOther))
 	t.Must(c.Post(t, "/notes", webuitest.Form(url.Values{"note": {"Same-site"}})).Status(http.StatusSeeOther))
 	t.Must(be.NotDeepEqual(before, snapshot()))
-	t.Must(c.Post(t, "/logout", webuitest.Form(nil)).Status(http.StatusSeeOther))
+	// The logout ends the detached session too, which carries no cookie,
+	// and clears the session cookie all the same.
+	res := c.Post(t, "/logout", webuitest.Form(nil))
+	t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/?notice=signed-out")))
+	t.Must(webuitest.Cookie(res, "__Host-session", webuitest.CookieWant{HostPrefix: true, Cleared: true}))
 	t.Must(be.True(s.Ended()))
 }
 

@@ -18,8 +18,8 @@ var pages = []string{
 }
 
 // TestCrawl follows every link of the gallery, signed out and signed in,
-// and checks every page against the contract, every target against the
-// routes, every asset against its integrity value, and every hx-get
+// and checks every page against the contract of its URL, every target
+// against the routes, every asset against its integrity value, and every hx-get
 // fragment against the fragment contract.
 func TestCrawl(gt *testing.T) {
 	t := devtest.ParallelT(gt)
@@ -28,6 +28,7 @@ func TestCrawl(gt *testing.T) {
 		report := webuitest.Crawl(t, g.anonymous(), webuitest.CrawlOptions{
 			Routes:           webuitest.MuxRoutes(g.Mux()),
 			Contract:         contract(""),
+			ContractFor:      contractFor(""),
 			FragmentContract: fragmentContract(""),
 			Assets:           true,
 			Fragments:        true,
@@ -43,6 +44,7 @@ func TestCrawl(gt *testing.T) {
 		report := webuitest.Crawl(t, c, webuitest.CrawlOptions{
 			Routes:           webuitest.MuxRoutes(g.Mux()),
 			Contract:         contract(testCSRF),
+			ContractFor:      contractFor(testCSRF),
 			FragmentContract: fragmentContract(testCSRF),
 			Assets:           true,
 			Fragments:        true,

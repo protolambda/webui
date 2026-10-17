@@ -1,9 +1,8 @@
 package app_test
 
 import (
-	"context"
-	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -67,45 +66,41 @@ func newAccount(name string) *session.Session[app.Account] {
 	return session.NewDetached(app.Account{Name: name}, testCSRF)
 }
 
-// Shells of the two asset sets of the gallery.
+// The two asset sets of the gallery, and their shells.
 var (
-	plainShell = webuitest.DefaultShell(theme.MustAssets(theme.Options{}))
-	jsShell    = webuitest.DefaultShell(theme.MustAssets(theme.Options{Prefix: app.BootstrapJSPrefix, BootstrapJS: true}))
+	plainAssets = theme.MustAssets(theme.Options{})
+	jsAssets    = theme.MustAssets(theme.Options{Prefix: app.BootstrapJSPrefix, BootstrapJS: true})
+	plainShell  = webuitest.DefaultShell(plainAssets)
+	jsShell     = webuitest.DefaultShell(jsAssets)
 )
 
-// bootstrapJSTitle is the document title of the only page that loads
-// Bootstrap's script.
-const bootstrapJSTitle = "Bootstrap JS (opt-in) · webui gallery"
-
-// contract is the page contract of the gallery: the shell of the page's
-// asset set, every webui rule (with csrf, when not empty, as the token of
-// every post form) and the regions of page.Layout. The Bootstrap JS page,
-// recognized by its title, has the shell of the second asset set and may
-// use Bootstrap's script; every other page has the default shell, without
-// Bootstrap's script, and may not.
+// contract is the page contract of the gallery: the default shell, every
+// webui rule (with csrf, when not empty, as the token of every post form)
+// and the regions of page.Layout. Pages may not use Bootstrap's script;
+// the one that does has its own contract (contractFor).
 func contract(csrf string) webuitest.Contract {
+	return pageContract(plainShell, webuitest.WithCSRF(csrf))
+}
+
+// contractFor picks the contract of a crawled page by its URL: the
+// Bootstrap JS page has the shell of the second asset set and may use
+// Bootstrap's script; every other page has contract(csrf).
+func contractFor(csrf string) func(u *url.URL) webuitest.Contract {
+	js := pageContract(jsShell, webuitest.WithCSRF(csrf), webuitest.WithBootstrapJS())
+	return func(u *url.URL) webuitest.Contract {
+		if u.Path == "/bootstrap-js" {
+			return js
+		}
+		return nil
+	}
+}
+
+// pageContract is the contract of pages with shell, the webui rules with
+// opts and the regions of page.Layout.
+func pageContract(shell webuitest.Shell, opts ...webuitest.RuleOption) webuitest.Contract {
 	return func(p *ct.Subject) assertion.Assertion {
-		return pageAssertion{page: p, csrf: csrf}
+		return webuitest.PageContract(p, shell, append(webuitest.Rules(opts...), webuitest.LayoutRegions())...)
 	}
-}
-
-type pageAssertion struct {
-	page *ct.Subject
-	csrf string
-}
-
-func (a pageAssertion) String() string { return "gallery page contract of " + a.page.String() }
-
-func (a pageAssertion) Check(ctx context.Context) error {
-	title, err := a.page.Find(ct.Tag("title")).Text(ctx)
-	if err != nil {
-		return fmt.Errorf("page title: %w", err)
-	}
-	shell, opts := plainShell, []webuitest.RuleOption{webuitest.WithCSRF(a.csrf)}
-	if title == bootstrapJSTitle {
-		shell, opts = jsShell, append(opts, webuitest.WithBootstrapJS())
-	}
-	return webuitest.PageContract(a.page, shell, append(webuitest.Rules(opts...), webuitest.LayoutRegions())...).Check(ctx)
 }
 
 // fragmentContract is the contract of the gallery's htmx fragments.

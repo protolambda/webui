@@ -71,6 +71,25 @@ func ExampleStrictCSP() {
 	// base-uri ['none']
 }
 
+// The zero CSP stands for StrictCSP, also when a policy is derived from it:
+// widening the default of a zero Headers keeps the strict baseline. ParseCSP
+// builds a policy without it.
+func ExampleCSP() {
+	var cfg mw.Headers
+	cfg.CSP = cfg.CSP.Add(mw.ConnectSrc, "wss://live.example.com")
+	fmt.Println(cfg.CSP)
+
+	own, err := mw.ParseCSP("default-src 'self'")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(own.With(mw.FrameAncestors, mw.SourceNone))
+	// Output:
+	// default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss://live.example.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'
+	// default-src 'self'; frame-ancestors 'none'
+}
+
 // A page whose form submission redirects to another origin names that origin
 // in form-action; the origin comes from a runtime value, so it is validated
 // with HostSource first.
@@ -268,6 +287,27 @@ func ExampleSameOrigin() {
 	// Output:
 	// 403 This form expired. Reload the page and try again.
 	// 404 404 page not found
+}
+
+// A WebSocket handshake is a GET request, but pages of other origins could
+// read and write the socket it opens, so SameOrigin checks it like a POST.
+func ExampleSameOrigin_webSocket() {
+	site := mw.MustParseSite("https://app.example.com")
+	live := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "handshake accepted") // a WebSocket library takes over here
+	})
+	h := mw.Chain(live, mw.HostCheck(site), mw.SameOrigin(mw.OriginPolicy{}))
+	for _, origin := range []string{"https://app.example.com", "https://other.example.com"} {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/live", nil)
+		req.Header.Set("Upgrade", "websocket")
+		req.Header.Set("Origin", origin)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		fmt.Println(origin, rec.Code, strings.TrimSpace(rec.Body.String()))
+	}
+	// Output:
+	// https://app.example.com 200 handshake accepted
+	// https://other.example.com 403 cross-origin request refused
 }
 
 func ExampleLogRequests() {

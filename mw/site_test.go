@@ -79,6 +79,9 @@ func TestParseSiteErrors(gt *testing.T) {
 		"zero port":         "https://marker.example.com:0",
 		"underscore":        "https://marker_x.example.com",
 		"non-ASCII":         "https://markér.example.com",
+		"dotted I":          "https://\u0130nfo.marker.example.com", // lower-cases to "i" under Unicode rules
+		"Kelvin sign":       "https://\u212Aexample.marker.com",     // lower-cases to "k"
+		"long s":            "https://\u017Fhop.marker.example",
 		"trailing dot":      "https://marker.example.com.",
 		"empty label":       "https://marker..example.com",
 		"wildcard":          "https://*.marker.example.com",
@@ -126,36 +129,38 @@ func TestSiteText(gt *testing.T) {
 func TestIsLoopbackHost(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	cases := map[string]bool{
-		"localhost":          true,
-		"LocalHost":          true,
-		"localhost.":         true,
-		"app.localhost":      true,
-		"a.b.localhost":      true,
-		"127.0.0.1":          true,
-		"127.255.255.254":    true,
-		"::1":                true,
-		"[::1]":              true,
-		"::ffff:127.0.0.1":   true,
-		"":                   false,
-		"localhost:8080":     false,
-		".localhost":         false,
-		"a..localhost":       false,
-		"a_b.localhost":      false,
-		"localhost.example":  false,
-		"notlocalhost":       false,
-		"128.0.0.1":          false,
-		"0.0.0.0":            false,
-		"::":                 false,
-		"[::1":               false,
-		"[localhost]":        false,
-		"[127.0.0.1]":        false,
-		"[::ffff:127.0.0.1]": true,
-		"fe80::1%lo":         false,
-		"::1%lo":             false,
-		"127.1":              false,
-		"192.0.2.1":          false,
-		"2001:db8::1":        false,
-		"localhost.localdom": false,
+		"localhost":           true,
+		"LocalHost":           true,
+		"localhost.":          true,
+		"app.localhost":       true,
+		"a.b.localhost":       true,
+		"127.0.0.1":           true,
+		"127.255.255.254":     true,
+		"::1":                 true,
+		"[::1]":               true,
+		"::ffff:127.0.0.1":    true,
+		"":                    false,
+		"localhost:8080":      false,
+		".localhost":          false,
+		"a..localhost":        false,
+		"a_b.localhost":       false,
+		"localhost.example":   false,
+		"notlocalhost":        false,
+		"128.0.0.1":           false,
+		"0.0.0.0":             false,
+		"::":                  false,
+		"[::1":                false,
+		"[localhost]":         false,
+		"[127.0.0.1]":         false,
+		"[::ffff:127.0.0.1]":  true,
+		"fe80::1%lo":          false,
+		"::1%lo":              false,
+		"127.1":               false,
+		"192.0.2.1":           false,
+		"2001:db8::1":         false,
+		"localhost.localdom":  false,
+		"\u0130nfo.localhost": false,
+		"LOCALHOST":           true,
 	}
 	for host, want := range cases {
 		t.Run(host, func(t devtest.T) {
@@ -222,6 +227,12 @@ func TestSiteMatchHost(gt *testing.T) {
 	t.Must(be.False(mw.Site{}.MatchHost("")))
 	t.Must(be.False(mw.Site{}.MatchHost("app.example.com")))
 	t.Must(be.False(mw.MustParseSite("https://app.example.com").MatchHost(strings.Repeat("a", 301))))
+
+	// No Unicode case folding: U+017F folds to "s", U+212A to "k".
+	t.Must(be.False(mw.MustParseSite("https://shop.example").MatchHost("\u017Fhop.example")))
+	t.Must(be.False(mw.MustParseSite("https://kexample.com").MatchHost("\u212Aexample.com")))
+	t.Must(be.True(mw.MustParseSite("https://kexample.com").MatchHost("KEXAMPLE.com")))
+	t.Must(be.True(mw.MustParseSite("https://[2001:db8::a]").MatchHost("[2001:DB8::A]")))
 }
 
 func TestHostCheck(gt *testing.T) {

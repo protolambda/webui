@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 )
 
 // ErrCrossOrigin reports a request that [OriginPolicy.Check] refuses. The
@@ -74,15 +73,17 @@ type OriginPolicy struct {
 }
 
 // Check reports whether a request comes from a page of site, with nil if it
-// does or is a GET or HEAD request, else with an error wrapping
-// [ErrCrossOrigin]. In order:
+// does, or if it is a GET or HEAD request without an Upgrade header, else
+// with an error wrapping [ErrCrossOrigin]. A GET with an Upgrade header, such
+// as a WebSocket handshake, is checked like other methods (see [SameOrigin]).
+// In order:
 //
 //  1. If Sec-Fetch-Site is present, it decides: "same-origin" and "none" (a
 //     navigation the user started, such as a bookmark) pass; "same-site" is
 //     another origin under the same registrable domain and is refused like
 //     "cross-site" and any other value.
 //  2. Else, if Origin is present, it must equal the site's origin, scheme
-//     included (case-insensitively). "null" never does.
+//     included (ASCII case-insensitively). "null" never does.
 //  3. Else, if Referer is present, its origin must equal the site's origin.
 //  4. Else the request has no origin headers, and p.Headerless decides.
 //
@@ -90,7 +91,7 @@ type OriginPolicy struct {
 // Site is refused. Check never consults the Host header: the site comes from
 // configuration (see [HostCheck]).
 func (p OriginPolicy) Check(r *http.Request, site Site) error {
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !asksUpgrade(r) {
 		return nil
 	}
 	if site.IsZero() {
@@ -107,12 +108,12 @@ func (p OriginPolicy) Check(r *http.Request, site Site) error {
 		}
 		return errFetchSite
 	case len(origin) == 1:
-		if strings.EqualFold(origin[0], site.origin) {
+		if asciiEqualFold(origin[0], site.origin) {
 			return nil
 		}
 		return errOrigin
 	case len(referer) == 1:
-		if o, ok := refererOrigin(referer[0]); ok && strings.EqualFold(o, site.origin) {
+		if o, ok := refererOrigin(referer[0]); ok && o == site.origin {
 			return nil
 		}
 		return errReferer
@@ -128,6 +129,14 @@ func (p OriginPolicy) Check(r *http.Request, site Site) error {
 	return errNoHeaders
 }
 
+// asksUpgrade reports whether a request asks to switch protocols: an HTTP/1
+// request with an Upgrade header, such as a WebSocket handshake. Page scripts
+// cannot set the header; browsers send it for WebSocket handshakes. (HTTP/2
+// has no Upgrade header; its WebSocket handshakes are CONNECT requests.)
+func asksUpgrade(r *http.Request) bool {
+	return len(r.Header.Values("Upgrade")) > 0
+}
+
 // refererOrigin returns the origin of an absolute http(s) Referer: the
 // lower-case scheme and host, without a default port.
 func refererOrigin(ref string) (string, bool) {
@@ -138,7 +147,7 @@ func refererOrigin(ref string) (string, bool) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", false
 	}
-	name, port, ok := splitHost(strings.ToLower(u.Host))
+	name, port, ok := splitHost(asciiLower(u.Host))
 	if !ok {
 		return "", false
 	}
@@ -148,15 +157,27 @@ func refererOrigin(ref string) (string, bool) {
 	return u.Scheme + "://" + name + ":" + port, true
 }
 
-// SameOrigin refuses every request other than GET and HEAD that does not come
-// from a page of the request's site ([OriginPolicy.Check]): this is the
-// origin layer of CSRF protection. The site comes from the request context,
-// so SameOrigin must run inside [HostCheck]; without a site, every such
-// request is refused. Refusals are logged at debug level to [Logger] with
-// their reason.
+// SameOrigin refuses every request other than a plain GET or HEAD that does
+// not come from a page of the request's site ([OriginPolicy.Check]): this is
+// the origin layer of CSRF protection. The site comes from the request
+// context, so SameOrigin must run inside [HostCheck]; without a site, every
+// such request is refused. Refusals are logged at debug level to [Logger]
+// with their reason.
 //
-// GET and HEAD always pass, so they must never change state. OPTIONS is
-// checked like any other method (no CORS preflight passes).
+// GET and HEAD pass, so they must never change state. OPTIONS is checked like
+// any other method (no CORS preflight passes).
+//
+// # WebSocket handshakes
+//
+// A GET or HEAD that asks for a protocol upgrade (an Upgrade header, as in a
+// WebSocket handshake) is checked like a POST. The same-origin policy keeps
+// other origins from reading the responses of GET requests, but it does not
+// apply to WebSockets: any page can open a socket to the server, the browser
+// sends the user's cookies along when the page is same-site (another
+// subdomain, or another port on localhost), and the page can then read and
+// write the socket. Mount WebSocket endpoints inside SameOrigin, or check
+// Origin in the handler. Non-browser WebSocket clients send no origin
+// headers, so [OriginPolicy.Headerless] decides about them.
 //
 // Keep a second, independent CSRF layer, such as a synchronizer token in each
 // form: the origin layer depends on browsers sending the headers, and passes
@@ -167,7 +188,8 @@ func refererOrigin(ref string) (string, bool) {
 // [http.CrossOriginProtection] (Go 1.25) checks Sec-Fetch-Site the same way,
 // but differs where it falls back:
 //
-//   - It exempts OPTIONS besides GET and HEAD.
+//   - It exempts OPTIONS besides GET and HEAD, and GET and HEAD also when
+//     they ask for an upgrade, such as a WebSocket handshake.
 //   - Without Sec-Fetch-Site, it compares the host of Origin with the Host
 //     header and ignores the scheme, so an http page may post to the https
 //     site; SameOrigin compares Origin with the configured site origin,

@@ -18,6 +18,8 @@ func TestOriginPolicyCheck(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	public := mw.MustParseSite("https://app.example.com")
 	local := mw.MustParseSite("http://127.0.0.1:8080")
+	shop := mw.MustParseSite("https://shop.example")
+	info := mw.MustParseSite("https://info.example.com")
 	type headers map[string]string
 	cases := []struct {
 		name    string
@@ -92,6 +94,30 @@ func TestOriginPolicyCheck(gt *testing.T) {
 		{"custom method", public, "PROPFIND", headers{"Sec-Fetch-Site": "same-origin"}, 0, true},
 
 		{"zero site", mw.Site{}, http.MethodPost, headers{"Sec-Fetch-Site": "same-origin"}, 0, false},
+
+		{"origin long s", shop, http.MethodPost, headers{"Origin": "https://\u017Fhop.example"}, 0, false},
+		{"origin ASCII case", shop, http.MethodPost, headers{"Origin": "https://SHOP.example"}, 0, true},
+		{"referer dotted I", info, http.MethodPost, headers{"Referer": "https://\u0130nfo.example.com/"}, 0, false},
+		{"referer ASCII case", info, http.MethodPost, headers{"Referer": "https://INFO.example.com/"}, 0, true},
+
+		{"websocket same-origin", public, http.MethodGet,
+			headers{"Upgrade": "websocket", "Sec-Fetch-Site": "same-origin", "Origin": "https://app.example.com"}, 0, true},
+		{"websocket origin only", public, http.MethodGet, headers{"Upgrade": "websocket", "Origin": "https://app.example.com"}, 0, true},
+		{"websocket same-site", public, http.MethodGet,
+			headers{"Upgrade": "websocket", "Sec-Fetch-Site": "same-site", "Origin": "https://other.example.com"}, 0, false},
+		{"websocket cross-site", public, http.MethodGet,
+			headers{"Upgrade": "websocket", "Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, 0, false},
+		{"websocket other origin", public, http.MethodGet, headers{"Upgrade": "websocket", "Origin": "https://evil.example"}, 0, false},
+		{"websocket other port on loopback", local, http.MethodGet,
+			headers{"Upgrade": "websocket", "Origin": "http://127.0.0.1:9090"}, 0, false},
+		{"websocket headerless public", public, http.MethodGet, headers{"Upgrade": "websocket"}, 0, false},
+		{"websocket headerless loopback", local, http.MethodGet, headers{"Upgrade": "websocket"}, 0, true},
+		{"websocket headerless allowed", public, http.MethodGet, headers{"Upgrade": "websocket"}, mw.HeaderlessAllow, true},
+		{"websocket zero site", mw.Site{}, http.MethodGet, headers{"Upgrade": "websocket", "Sec-Fetch-Site": "same-origin"}, 0, false},
+		{"other upgrade", public, http.MethodGet, headers{"Upgrade": "chat", "Origin": "https://evil.example"}, 0, false},
+		{"HEAD upgrade", public, http.MethodHead, headers{"Upgrade": "websocket", "Origin": "https://evil.example"}, 0, false},
+		{"navigation upgrading to https", public, http.MethodGet,
+			headers{"Upgrade-Insecure-Requests": "1", "Sec-Fetch-Site": "cross-site"}, 0, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t devtest.T) {
@@ -172,6 +198,34 @@ func TestSameOrigin(gt *testing.T) {
 	rec = post(map[string]string{"Sec-Fetch-Site": "same-origin"})
 	t.Must(be.Equal(http.StatusSeeOther, rec.Code))
 	t.Must(be.Equal(1, saved))
+}
+
+// WebSocket handshakes are GET requests whose responses pages of other
+// origins can read and write, so SameOrigin checks them.
+func TestSameOriginWebSocketHandshake(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	site := mw.MustParseSite("https://app.example.com")
+	opened := 0
+	h := mw.Chain(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { opened++ }),
+		mw.HostCheck(site), mw.SameOrigin(mw.OriginPolicy{}))
+	handshake := func(fetchSite, origin string) int {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/live", nil)
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+		req.Header.Set("Sec-WebSocket-Version", "13")
+		req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		req.Header.Set("Sec-Fetch-Mode", "websocket")
+		req.Header.Set("Sec-Fetch-Site", fetchSite)
+		req.Header.Set("Origin", origin)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	t.Must(be.Equal(http.StatusForbidden, handshake("same-site", "https://other.example.com")))
+	t.Must(be.Equal(http.StatusForbidden, handshake("cross-site", "https://evil.example")))
+	t.Must(be.Equal(0, opened))
+	t.Must(be.Equal(http.StatusOK, handshake("same-origin", "https://app.example.com")))
+	t.Must(be.Equal(1, opened))
 }
 
 func TestSameOriginCustomDeny(gt *testing.T) {

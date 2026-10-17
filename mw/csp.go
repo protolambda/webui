@@ -68,16 +68,21 @@ const (
 const cspHeader = "Content-Security-Policy"
 
 // CSP is a Content-Security-Policy: an ordered list of directives, each with
-// its values (source expressions for the fetch directives, form-action,
+// its values (source expressions for the fetch directives, including the
+// -elem and -attr variants of script-src and style-src, and for form-action,
 // frame-ancestors and base-uri; tokens for the others).
 //
 // A CSP is an immutable value: [CSP.With], [CSP.Add] and [CSP.Without] return
 // a new policy and leave the receiver unchanged, so a policy may be shared
 // between goroutines and derived from freely.
 //
-// The zero CSP has no directives and serializes to "". Where a policy is
-// applied ([Headers], [SetCSP]), the zero CSP stands for [StrictCSP], so a
-// forgotten policy fails closed.
+// The zero CSP has no directives and serializes to "", but it stands for
+// [StrictCSP] wherever it is used as a policy: where it is applied ([Headers],
+// [SetCSP]) and where a policy is derived from it ([CSP.With], [CSP.Add],
+// [CSP.Without]). So a forgotten policy fails closed, and so does a widened
+// default, such as h.CSP = h.CSP.Add(...) on a zero [Headers]. [CSP.Values],
+// [CSP.All], [CSP.String] and [CSP.IsZero] describe the value itself. Build
+// a policy from scratch, without the strict baseline, with [ParseCSP].
 //
 // The builder validates every value when it is added: it accepts only
 // syntactically valid source expressions in source lists (keywords, nonces,
@@ -128,27 +133,34 @@ func StrictCSP() CSP { return strictCSP }
 
 // ParseCSP parses a serialized policy, such as the value of a
 // Content-Security-Policy header, with the validation of the builder.
-// Directive names are lower-cased; empty directives (as after a trailing ';')
-// are skipped. A repeated directive, an invalid name or value, or more than
-// 64 KiB of input is an error wrapping [ErrInvalidCSP]; errors never quote the
-// input. The empty string parses to the zero CSP.
+// Directive names are lower-cased (ASCII letters only); empty directives (as
+// after a trailing ';') are skipped. A repeated directive, an invalid name or
+// value, or more than 64 KiB of input is an error wrapping [ErrInvalidCSP];
+// errors never quote the input. The empty string parses to the zero CSP,
+// which callers that derive from it must keep in mind: [CSP.With] and
+// [CSP.Add] on it start from [StrictCSP].
+//
+// Its cost is linear in the length of the input, so it may parse policies
+// that come from outside the program.
 func ParseCSP(s string) (CSP, error) {
 	if len(s) > maxCSPLen {
 		return CSP{}, fmt.Errorf("%w: the policy is longer than %d bytes", ErrInvalidCSP, maxCSPLen)
 	}
 	var p CSP
+	seen := make(map[Directive]struct{})
 	for i, part := range strings.Split(s, ";") {
 		fields := strings.FieldsFunc(part, isASCIIWhitespace)
 		if len(fields) == 0 {
 			continue
 		}
-		name := Directive(strings.ToLower(fields[0]))
+		name := Directive(asciiLower(fields[0]))
 		if !validDirectiveName(string(name)) {
 			return CSP{}, fmt.Errorf("%w: directive %d has an invalid name", ErrInvalidCSP, i+1)
 		}
-		if _, dup := p.Values(name); dup {
+		if _, dup := seen[name]; dup {
 			return CSP{}, fmt.Errorf("%w: directive %d repeats an earlier directive", ErrInvalidCSP, i+1)
 		}
+		seen[name] = struct{}{}
 		values, reason := checkValues(name, fields[1:])
 		if reason != "" {
 			return CSP{}, fmt.Errorf("%w: directive %d: %s", ErrInvalidCSP, i+1, reason)
@@ -161,11 +173,12 @@ func ParseCSP(s string) (CSP, error) {
 // With returns the policy with directive d set to exactly values: in the
 // position of d if the policy has it, else appended. A source-list directive
 // without values matches nothing and is written as 'none'. Duplicate values
-// are dropped.
+// are dropped. A zero receiver starts from [StrictCSP].
 //
 // With panics if d is not a valid directive name or a value is not valid for
 // d (see [CSP]); pass runtime values through [HostSource] first.
 func (p CSP) With(d Directive, values ...string) CSP {
+	p = p.orStrict()
 	name := mustDirectiveName(d)
 	checked, reason := checkValues(name, values)
 	if reason != "" {
@@ -176,10 +189,12 @@ func (p CSP) With(d Directive, values ...string) CSP {
 
 // Add returns the policy with values appended to directive d, which is created
 // (at the end) if the policy lacks it. Adding sources to a list that is just
-// 'none' replaces the 'none'. Duplicate values are dropped.
+// 'none' replaces the 'none'. Duplicate values are dropped. A zero receiver
+// starts from [StrictCSP].
 //
 // Add panics like [CSP.With] on invalid input.
 func (p CSP) Add(d Directive, values ...string) CSP {
+	p = p.orStrict()
 	name := mustDirectiveName(d)
 	old, _ := p.Values(name)
 	merged := make([]string, 0, len(old)+len(values))
@@ -195,9 +210,11 @@ func (p CSP) Add(d Directive, values ...string) CSP {
 }
 
 // Without returns the policy without directive d. A fetch directive that is
-// removed falls back to default-src in browsers.
+// removed falls back to default-src in browsers. A zero receiver starts from
+// [StrictCSP].
 func (p CSP) Without(d Directive) CSP {
-	name := Directive(strings.ToLower(string(d)))
+	p = p.orStrict()
+	name := Directive(asciiLower(string(d)))
 	i := p.index(name)
 	if i < 0 {
 		return p
@@ -209,7 +226,7 @@ func (p CSP) Without(d Directive) CSP {
 // has d. A directive without values, such as upgrade-insecure-requests,
 // returns an empty slice and true.
 func (p CSP) Values(d Directive) ([]string, bool) {
-	i := p.index(Directive(strings.ToLower(string(d))))
+	i := p.index(Directive(asciiLower(string(d))))
 	if i < 0 {
 		return nil, false
 	}
@@ -246,6 +263,14 @@ func (p CSP) String() string {
 		}
 	}
 	return b.String()
+}
+
+// orStrict returns p, or [StrictCSP] for the zero CSP, which stands for it.
+func (p CSP) orStrict() CSP {
+	if p.IsZero() {
+		return strictCSP
+	}
+	return p
 }
 
 func (p CSP) index(name Directive) int {
@@ -338,7 +363,9 @@ func HostSource(rawURL string) (string, error) {
 	if u.User != nil {
 		return "", fmt.Errorf("%w: the URL has user information", ErrInvalidCSP)
 	}
-	host := strings.ToLower(u.Hostname())
+	// ASCII lower-casing keeps other characters for validDNSName to refuse:
+	// Unicode lower-casing would turn U+0130 into "i" and U+212A into "k".
+	host := asciiLower(u.Hostname())
 	if _, err := netip.ParseAddr(host); err == nil || strings.Contains(host, ":") {
 		return "", fmt.Errorf("%w: a CSP source cannot name an IP address", ErrInvalidCSP)
 	}
@@ -382,35 +409,55 @@ func parsePort(s string) (int, bool) {
 }
 
 func mustDirectiveName(d Directive) Directive {
-	name := Directive(strings.ToLower(string(d)))
+	name := Directive(asciiLower(string(d)))
 	if !validDirectiveName(string(name)) {
 		panic(fmt.Errorf("%w: invalid directive name", ErrInvalidCSP))
 	}
 	return name
 }
 
-// isSourceList reports whether a directive's value is a source list.
+// isSourceList reports whether a directive's value is a source list: the
+// fetch directives (names ending in -src, and the -src-elem and -src-attr
+// variants of CSP Level 3), form-action, frame-ancestors and base-uri.
 func isSourceList(name Directive) bool {
-	return strings.HasSuffix(string(name), "-src") || name == FormAction || name == FrameAncestors || name == BaseURI
+	n := string(name)
+	return strings.HasSuffix(n, "-src") || strings.HasSuffix(n, "-src-elem") || strings.HasSuffix(n, "-src-attr") ||
+		name == FormAction || name == FrameAncestors || name == BaseURI
 }
+
+// smallValueList is the length up to which checkValues finds duplicates by
+// scanning; longer lists, which only parsed input has, use a set, so that the
+// cost stays linear.
+const smallValueList = 16
 
 // checkValues validates the values of a directive and returns them as a new
 // slice without duplicates, or the reason why they are invalid (which never
 // quotes them). An empty source list becomes 'none'.
 func checkValues(name Directive, values []string) ([]string, string) {
+	sourceList := isSourceList(name)
 	out := make([]string, 0, len(values))
+	var seen map[string]struct{}
+	if len(values) > smallValueList {
+		seen = make(map[string]struct{}, len(values))
+	}
 	for i, v := range values {
 		if !validValueToken(v) {
 			return nil, fmt.Sprintf("value %d is not a CSP token", i+1)
 		}
-		if isSourceList(name) && !validSource(name, v) {
+		if sourceList && !validSource(name, v) {
 			return nil, fmt.Sprintf("value %d is not a valid source expression", i+1)
 		}
-		if !slices.Contains(out, v) {
-			out = append(out, v)
+		if seen != nil {
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
+		} else if slices.Contains(out, v) {
+			continue
 		}
+		out = append(out, v)
 	}
-	if !isSourceList(name) {
+	if !sourceList {
 		return out, ""
 	}
 	if len(out) == 0 {
@@ -576,6 +623,44 @@ func isAlpha(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' 
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 
 func isHexDigit(c byte) bool { return isDigit(c) || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F' }
+
+// asciiLower lower-cases the ASCII letters of s and keeps every other byte,
+// so that validation still sees non-ASCII characters (strings.ToLower maps
+// U+0130 to "i" and U+212A to "k").
+func asciiLower(s string) string {
+	for i := 0; i < len(s); i++ {
+		if 'A' <= s[i] && s[i] <= 'Z' {
+			b := []byte(s)
+			for j := i; j < len(b); j++ {
+				b[j] = lowerASCII(b[j])
+			}
+			return string(b)
+		}
+	}
+	return s
+}
+
+// asciiEqualFold reports whether a and b are equal with ASCII letters
+// compared case-insensitively. Unlike strings.EqualFold it applies no Unicode
+// folding, under which U+017F equals "s" and U+212A equals "k".
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
+}
 
 func isASCIIWhitespace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\f' || r == '\r'

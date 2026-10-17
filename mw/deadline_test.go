@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,6 +55,7 @@ func TestWriteDeadlineStartsWithResponse(gt *testing.T) {
 	sleep := func(d time.Duration) step { return func(http.ResponseWriter) { time.Sleep(d) } }
 	write := func(w http.ResponseWriter) { _, _ = w.Write([]byte("x")) }
 	header := func(w http.ResponseWriter) { w.WriteHeader(http.StatusNoContent) }
+	hints := func(w http.ResponseWriter) { w.WriteHeader(http.StatusEarlyHints) }
 	flush := func(w http.ResponseWriter) { _ = http.NewResponseController(w).Flush() }
 	readFrom := func(w http.ResponseWriter) {
 		// A LimitedReader has no WriteTo, so io.Copy uses the writer's ReadFrom.
@@ -100,6 +102,14 @@ func TestWriteDeadlineStartsWithResponse(gt *testing.T) {
 		{"HTTP/1 hijack", 1, true, []step{sleep(time.Second), hijack}, []time.Time{t0.Add(timeout)}},
 		{"HTTP/2 failed hijack", 2, false, []step{hijack, sleep(time.Second)},
 			[]time.Time{t0.Add(time.Second + timeout)}},
+		{"HTTP/1 early hints", 1, false, []step{hints, sleep(time.Minute), header, sleep(time.Second)},
+			[]time.Time{t0.Add(timeout), t0.Add(time.Minute + timeout), t0.Add(61*time.Second + timeout)}},
+		{"HTTP/2 early hints", 2, false, []step{hints, sleep(time.Minute), header, sleep(time.Second)},
+			[]time.Time{t0.Add(time.Minute + timeout), t0.Add(61*time.Second + timeout)}},
+		{"HTTP/1 early hints after take over", 1, false, []step{takeOver(far), hints, write},
+			[]time.Time{far, t0.Add(timeout)}},
+		{"HTTP/1 early hints after start", 1, false, []step{write, sleep(time.Second), hints},
+			[]time.Time{t0.Add(timeout), t0.Add(time.Second + timeout)}},
 	}
 	for _, c := range cases {
 		gt.Run(c.name, func(gt *testing.T) {
@@ -171,6 +181,41 @@ func TestWriteDeadlineContinue(gt *testing.T) {
 		body, err := io.ReadAll(res.Body)
 		t.Must(be.NoError(err))
 		t.Must(be.Equal("stored 5 bytes", string(body)))
+	})
+}
+
+// An informational response, such as 103 Early Hints, does not start the
+// response's deadline: the work after it does not count.
+func TestWriteDeadlineEarlyHints(gt *testing.T) {
+	synctest.Test(gt, func(st *testing.T) {
+		t := mustbe.WrapT(st)
+		var flushErr error
+		h := mw.WriteDeadline(30 * time.Second)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Link", "</assets/app.css>; rel=preload; as=style")
+			w.WriteHeader(http.StatusEarlyHints)
+			time.Sleep(40 * time.Second) // work after the hint does not count
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "page")
+			flushErr = http.NewResponseController(w).Flush()
+		}))
+		ln, stop := serve(h)
+		defer stop()
+		c, err := ln.Dial()
+		t.Must(be.NoError(err))
+		defer c.Close()
+		_, err = io.WriteString(c, "GET /page HTTP/1.1\r\nHost: app.example.com\r\n\r\n")
+		t.Must(be.NoError(err))
+		br := bufio.NewReader(c)
+		interim, err := http.ReadResponse(br, nil)
+		t.Must(be.NoError(err))
+		t.Must(be.Equal(http.StatusEarlyHints, interim.StatusCode))
+		res, err := http.ReadResponse(br, nil)
+		t.Must(be.NoError(err))
+		t.Must(be.Equal(http.StatusOK, res.StatusCode))
+		body, err := io.ReadAll(res.Body)
+		t.Must(be.NoError(err))
+		t.Must(be.Equal("page", string(body)))
+		t.Must(be.NoError(flushErr))
 	})
 }
 
@@ -382,4 +427,72 @@ func TestMaxBody(gt *testing.T) {
 	t.Must(be.True(errors.As(err, &tooLarge)))
 	t.Must(be.Equal(int64(4), tooLarge.Limit))
 	t.Must(be.True(errors.As(read(0, "x"), &tooLarge)))
+}
+
+func TestMaxBodyKeepsMissingBodies(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	var bodies []io.ReadCloser
+	h := mw.MaxBody(10)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		bodies = append(bodies, r.Body)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Body = nil
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	t.Must(be.Len(bodies, 2))
+	t.Mustf(be.True(bodies[0] == http.NoBody), "a request without a body keeps http.NoBody")
+	t.Must(be.True(bodies[1] == nil))
+}
+
+// Behind the writers of the recommended stack, MaxBody still makes an HTTP/1
+// server close the connection after a body over the bound, instead of
+// reading the rest of the body and serving the next request.
+func TestMaxBodyClosesConnectionBehindWrappers(gt *testing.T) {
+	stacks := map[string][]mw.Middleware{
+		"alone": {mw.MaxBody(10)},
+		"recommended": {
+			mw.LogRequests(mw.RequestLog{Logger: slog.New(slog.DiscardHandler)}),
+			mw.BodyDeadline(mw.DefaultBodyTimeout),
+			mw.WriteDeadline(mw.DefaultWriteTimeout),
+			mw.SecurityHeaders(mw.Headers{}),
+			mw.MaxBody(10),
+		},
+	}
+	for name, stack := range stacks {
+		gt.Run(name, func(gt *testing.T) {
+			synctest.Test(gt, func(st *testing.T) {
+				t := mustbe.WrapT(st)
+				h := mw.Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if _, err := io.ReadAll(r.Body); err != nil {
+						var tooLarge *http.MaxBytesError
+						if errors.As(err, &tooLarge) {
+							http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+							return
+						}
+					}
+					_, _ = io.WriteString(w, "ok")
+				}), stack...)
+				ln, stop := serve(h)
+				defer stop()
+				c, err := ln.Dial()
+				t.Must(be.NoError(err))
+				defer c.Close()
+				body := strings.Repeat("x", 1000)
+				go func() {
+					// Pipelined: the second request follows the oversized body.
+					_, _ = io.WriteString(c, "POST /notes HTTP/1.1\r\nHost: app.example.com\r\nContent-Length: 1000\r\n\r\n"+
+						body+"GET / HTTP/1.1\r\nHost: app.example.com\r\n\r\n")
+				}()
+				br := bufio.NewReader(c)
+				res, err := http.ReadResponse(br, nil)
+				t.Must(be.NoError(err))
+				t.Must(be.Equal(http.StatusRequestEntityTooLarge, res.StatusCode))
+				t.Mustf(be.True(res.Close), "the response announces Connection: close")
+				_, err = io.Copy(io.Discard, res.Body)
+				t.Must(be.NoError(err))
+				_, err = http.ReadResponse(br, nil)
+				t.Mustf(be.Error(err), "the connection serves no further request")
+			})
+		})
+	}
 }

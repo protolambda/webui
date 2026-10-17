@@ -25,7 +25,9 @@ var ErrInvalidHeaders = errors.New("mw: invalid security headers")
 // configuration; every field's documentation names its default. Values must
 // be visible ASCII and spaces ([Headers.Validate]).
 type Headers struct {
-	// CSP is the Content-Security-Policy. The zero CSP means [StrictCSP].
+	// CSP is the Content-Security-Policy. The zero CSP means [StrictCSP],
+	// also as the receiver of [CSP.With], [CSP.Add] and [CSP.Without], so
+	// h.CSP = h.CSP.Add(...) widens the strict default.
 	CSP CSP
 
 	// ReferrerPolicy is the Referrer-Policy. "" means "same-origin": other

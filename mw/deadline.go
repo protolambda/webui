@@ -61,9 +61,12 @@ func BodyDeadline(timeout time.Duration) Middleware {
 // not count. For an HTTP/1 request that expects 100 Continue, it is also set
 // when the request arrives, for that interim response, which the server
 // writes when the handler first reads the body; such a handler reads the body
-// within timeout or takes the deadline over. (On HTTP/1 a deadline bounds
-// writes only, while on HTTP/2 it is a timer that resets the stream, which is
-// why it is not started earlier there.)
+// within timeout or takes the deadline over. An informational response that
+// the handler sends (1xx other than 101, such as 103 Early Hints) does not
+// start the response either: on HTTP/1 the deadline is set for its write, as
+// for 100 Continue, and set again when the response starts. (On HTTP/1 a
+// deadline bounds writes only, while on HTTP/2 it is a timer that resets the
+// stream, which is why it is not started earlier there.)
 //
 // Responses that stream, such as server-sent events, set their own deadline,
 // typically one per event: a handler that calls
@@ -88,8 +91,8 @@ func WriteDeadline(timeout time.Duration) Middleware {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			dw := &deadlineWriter{ResponseWriter: w, timeout: timeout}
-			if r.ProtoMajor == 1 && expectsContinue(r) {
+			dw := &deadlineWriter{ResponseWriter: w, timeout: timeout, http1: r.ProtoMajor == 1}
+			if dw.http1 && expectsContinue(r) {
 				dw.set()
 			}
 			next.ServeHTTP(dw, r)
@@ -102,7 +105,7 @@ func WriteDeadline(timeout time.Duration) Middleware {
 // sends its body.
 func expectsContinue(r *http.Request) bool {
 	return r.Body != nil && r.Body != http.NoBody &&
-		strings.Contains(strings.ToLower(r.Header.Get("Expect")), "100-continue")
+		strings.Contains(asciiLower(r.Header.Get("Expect")), "100-continue")
 }
 
 // deadlineWriter sets the write deadline of a response when it starts, unless
@@ -111,6 +114,8 @@ func expectsContinue(r *http.Request) bool {
 type deadlineWriter struct {
 	http.ResponseWriter
 	timeout time.Duration
+	// http1 is set for HTTP/1 requests, where a deadline bounds writes only.
+	http1 bool
 	// done is set once the response started, the handler set a deadline, or
 	// the connection was hijacked.
 	done atomic.Bool
@@ -146,8 +151,18 @@ func (w *deadlineWriter) end() {
 	}
 }
 
+// WriteHeader starts the response, unless code is informational (1xx other
+// than 101 Switching Protocols): an interim response precedes the final one
+// and does not start it. On HTTP/1 its write is bounded, as for 100 Continue,
+// unless the deadline is done.
 func (w *deadlineWriter) WriteHeader(code int) {
-	w.start()
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		if w.http1 && !w.done.Load() {
+			w.set()
+		}
+	} else {
+		w.start()
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
@@ -194,16 +209,47 @@ func (w *deadlineWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter 
 
 // MaxBody bounds request bodies to n bytes with [http.MaxBytesReader]: a read
 // beyond the bound fails with an [*http.MaxBytesError], which handlers should
-// answer with 413 Content Too Large, and the server closes the connection
-// after the response. A nested MaxBody can lower the bound but not raise it,
-// so routes that accept more, such as uploads, are mounted outside of it,
-// with a MaxBody of their own. A bound of 0 refuses every non-empty body.
-// MaxBody panics if n is negative.
+// answer with 413 Content Too Large, and an HTTP/1 server closes the
+// connection after the response instead of reading the rest of the body.
+// MaxBody reaches the server's own writer for that through the writers that
+// wrap it, as long as they implement Unwrap (as those of [WriteDeadline] and
+// [LogRequests] do), so it may run inside them.
+//
+// Requests without a body (a nil Body or [http.NoBody]) are passed on
+// unchanged, so inner layers and handlers still see that they have none.
+//
+// A nested MaxBody can lower the bound but not raise it, so routes that
+// accept more, such as uploads, are mounted outside of it, with a MaxBody of
+// their own. A bound of 0 refuses every non-empty body. MaxBody panics if n
+// is negative.
 func MaxBody(n int64) Middleware {
 	if n < 0 {
 		panic("mw: MaxBody needs a non-negative bound")
 	}
 	return func(next http.Handler) http.Handler {
-		return http.MaxBytesHandler(next, n)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body == nil || r.Body == http.NoBody {
+				next.ServeHTTP(w, r)
+				return
+			}
+			r2 := *r
+			// MaxBytesReader uses the writer only to tell the server to close
+			// the connection, and does so only for the server's own writer,
+			// which it does not unwrap itself.
+			r2.Body = http.MaxBytesReader(innermostWriter(w), r.Body, n)
+			next.ServeHTTP(w, &r2)
+		})
+	}
+}
+
+// innermostWriter follows Unwrap to the writer that the wrappers wrap, which
+// is the server's own one when every wrapper implements Unwrap.
+func innermostWriter(w http.ResponseWriter) http.ResponseWriter {
+	for {
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return w
+		}
+		w = u.Unwrap()
 	}
 }

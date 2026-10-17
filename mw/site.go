@@ -95,7 +95,9 @@ func ParseSite(raw string) (Site, error) {
 // siteHostname returns the normalized host of a site URL, with brackets for
 // IPv6.
 func siteHostname(u *url.URL) (string, error) {
-	name := strings.ToLower(u.Hostname())
+	// ASCII lower-casing keeps other characters for validDNSName to refuse:
+	// Unicode lower-casing would turn U+0130 into "i" and U+212A into "k".
+	name := asciiLower(u.Hostname())
 	if strings.HasPrefix(u.Host, "[") {
 		a, err := netip.ParseAddr(name)
 		switch {
@@ -167,8 +169,9 @@ func (s *Site) UnmarshalText(text []byte) error {
 }
 
 // MatchHost reports whether a Host header names the site. It tolerates what
-// clients legitimately vary: letter case, a trailing dot on the name, and an
-// explicit default port. It never matches for the zero Site.
+// clients legitimately vary: the case of ASCII letters, a trailing dot on the
+// name, and an explicit default port. It applies no Unicode case folding, so
+// a non-ASCII character never matches. It never matches for the zero Site.
 func (s Site) MatchHost(host string) bool {
 	if s.IsZero() || host == "" || len(host) > 300 {
 		return false
@@ -181,7 +184,7 @@ func (s Site) MatchHost(host string) bool {
 	if (s.https && port == "443") || (!s.https && port == "80") {
 		port = ""
 	}
-	return port == s.port && strings.EqualFold(name, s.hostname)
+	return port == s.port && asciiEqualFold(name, s.hostname)
 }
 
 // splitHost splits a Host header into its name (IPv6 with brackets) and port,
@@ -215,10 +218,11 @@ func splitHost(hostport string) (name, port string, ok bool) {
 // IsLoopbackHost reports whether a host name (without port) names the local
 // machine: "localhost" and names under ".localhost" (which browsers resolve
 // to loopback themselves), addresses in 127.0.0.0/8, and ::1 (also in
-// brackets, or as an IPv4-mapped loopback address). Letter case and a trailing
-// dot are ignored. Addresses with a zone are not loopback hosts.
+// brackets, or as an IPv4-mapped loopback address). The case of ASCII letters
+// and a trailing dot are ignored; names with non-ASCII characters are not
+// loopback hosts. Addresses with a zone are not loopback hosts.
 func IsLoopbackHost(host string) bool {
-	h := strings.TrimSuffix(strings.ToLower(host), ".")
+	h := strings.TrimSuffix(asciiLower(host), ".")
 	bracketed := false
 	if inner, ok := strings.CutPrefix(h, "["); ok {
 		h, bracketed = strings.CutSuffix(inner, "]")

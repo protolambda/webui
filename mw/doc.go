@@ -41,5 +41,6 @@
 // [LogRequests]) implements Unwrap, Flush, FlushError and Hijack, so
 // [http.ResponseController] and the [http.Flusher] and [http.Hijacker]
 // assertions keep working through it. Other optional interfaces are reached
-// with http.ResponseController.
+// with http.ResponseController. [MaxBody] follows Unwrap to the server's own
+// writer, which it needs to close the connection after an oversized body.
 package mw

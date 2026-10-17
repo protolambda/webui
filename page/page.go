@@ -11,6 +11,7 @@ import (
 
 	"github.com/protolambda/webui/bi"
 	"github.com/protolambda/webui/bs"
+	"github.com/protolambda/webui/internal/urlpath"
 )
 
 var (
@@ -20,9 +21,10 @@ var (
 	// allowed where it is used. Errors wrapping it name the component and
 	// the option, never the value.
 	//
-	// It is bs.ErrInvalidOption, so one errors.Is check covers the page
-	// components and the bs components placed in a page. Errors for an
-	// invalid id also wrap bs.ErrInvalidID.
+	// It is bs.ErrInvalidOption, so one errors.Is check covers the invalid
+	// options of the page components and of the bs components placed in a
+	// page, such as a bs.Dialog in [Layout.Dialogs]. An invalid id, of
+	// either package, wraps bs.ErrInvalidID, which matches ErrInvalid too.
 	ErrInvalid = bs.ErrInvalidOption
 
 	// ErrNoName indicates a component that would render without an
@@ -64,29 +66,13 @@ func blank(s string) bool {
 	return strings.TrimSpace(s) == ""
 }
 
-// printableASCII reports whether s is non-empty and consists of printable
-// ASCII other than space and backslash. Browsers drop tabs and newlines
-// inside URLs, strip leading and trailing spaces, and read a backslash as a
-// slash, so any of these could change what a URL means.
-func printableASCII(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; c <= ' ' || c >= 0x7f || c == '\\' {
-			return false
-		}
-	}
-	return true
-}
-
 // linkURL reports whether href may be the target of a navigation link: a
 // relative reference, or an absolute http or https URL, written in
 // printable ASCII without spaces or backslashes (escape other characters,
 // e.g. with url.PathEscape). Other schemes, such as javascript: and data:,
 // are refused.
 func linkURL(href string) bool {
-	if !printableASCII(href) {
+	if !urlpath.Printable(href) {
 		return false
 	}
 	u, err := url.Parse(href)
@@ -100,25 +86,14 @@ func linkURL(href string) bool {
 	return false
 }
 
-// localPath reports whether href is a path on the page's own origin: it
-// starts with a single slash, and is printable ASCII without spaces or
-// backslashes.
-func localPath(href string) bool {
-	if !printableASCII(href) || href[0] != '/' || strings.HasPrefix(href, "//") {
-		return false
-	}
-	u, err := url.Parse(href)
-	return err == nil && u.Scheme == "" && u.Host == "" && u.User == nil
-}
-
 // iconURL reports whether href may be the favicon of a page: a path on the
 // page's own origin, or a data: URL of an image (or the empty "data:,").
 // The icon is never loaded from another origin.
 func iconURL(href string) bool {
 	if strings.HasPrefix(href, "data:") {
-		return printableASCII(href) && (href == "data:," || strings.HasPrefix(href, "data:image/"))
+		return urlpath.Printable(href) && (href == "data:," || strings.HasPrefix(href, "data:image/"))
 	}
-	return localPath(href)
+	return urlpath.Local(href)
 }
 
 // validLang reports whether tag has the shape of a BCP 47 language tag: a
@@ -170,14 +145,15 @@ func badge(component string, label string, v bs.Variant, extra ...attr.Node) (el
 }
 
 // checkID returns the id to render: def when id is empty, else id when it
-// is a valid token. An invalid id fails with an error wrapping both
-// [ErrInvalid] and bs.ErrInvalidID, which is how bs classifies ids.
+// is a valid token. An invalid id fails with an error wrapping
+// bs.ErrInvalidID, which also matches [ErrInvalid], as the bs components
+// classify ids.
 func checkID(component, id, def string) (string, error) {
 	if id == "" {
 		return def, nil
 	}
 	if !bs.ValidID(id) {
-		return "", fmt.Errorf("%s: %w: id: %w", component, ErrInvalid, bs.ErrInvalidID)
+		return "", fmt.Errorf("%s: %w", component, bs.ErrInvalidID)
 	}
 	return id, nil
 }

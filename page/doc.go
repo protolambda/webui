@@ -49,6 +49,46 @@
 //   - [NavbarID] and [SidebarID]: the default ids of the [Navbar] and the
 //     [Sidebar], for out-of-band updates of their badges.
 //
+// # Alerts and announcements
+//
+// The alerts region is a polite live region (aria-live="polite") that
+// stays in the page: screen readers announce what is added to it, once.
+// [ErrorAlert] (role="alert") and [Notice] (role="status") are live regions
+// of their own, which announce themselves. To have exactly one of the two
+// announce each message, as with the toasts of a bs.ToastContainer:
+//
+//   - Alerts that come with the page ([Layout.Alerts], [AlertsRegion])
+//     keep their roles. The region does not announce the content it loads
+//     with; an error alert may be announced as the page loads.
+//   - Alerts that htmx swaps into the region while the page is open go
+//     through [AlertsOOB] (an out-of-band swap) or [AlertsContent] (an
+//     answer that targets the region), whose [ErrorAlert] and [Notice]
+//     values render without a role. The region announces them, politely,
+//     errors too.
+//   - Outside the region, such as a form's error summary that a swap
+//     replaces with the form, an alert announces itself through its role.
+//
+// Swap content into the region (innerHTML), never the region itself: a
+// live region that is inserted together with its content is generally not
+// announced. [ShowAlerts] scrolls the region into view after an htmx swap.
+//
+// # Dialogs and focus
+//
+// Dialogs (bs.Dialog) open and close without script, through the buttons
+// that name them. An htmx answer does not close an open dialog: the answer
+// to a form in the dialog swaps other parts of the page and leaves the
+// dialog open, modal over the new content. Re-render the dialogs region
+// out of band ([DialogsOOB]) to close it, and give the main content of the
+// answer a [FocusTarget], since the focus is lost with the removed dialog:
+//
+//	elem.Bundle{
+//		taskList(tasks), // the list, its heading with page.FocusTarget()
+//		page.DialogsOOB(dialogs...), // the dialogs still needed
+//		page.AlertsOOB(page.Notice("", text.Text("Task deleted."))),
+//	}
+//
+// The example of [DialogsOOB] shows the whole exchange.
+//
 // # Accessibility
 //
 // Components require accessible names and fail the render with [ErrNoName]
@@ -72,6 +112,10 @@
 // [ErrInvalid] and [ErrNoName] are the bs package's sentinels
 // (bs.ErrInvalidOption and bs.ErrNoName), so one errors.Is check covers the
 // page components and the bs components rendered in a [Document] or
-// [Layout], such as a bs.Dialog without a title. An invalid id also matches
-// bs.ErrInvalidID, as it does in bs.
+// [Layout], such as a bs.Dialog without a title. An invalid id, of a page
+// or a bs component, matches both [ErrInvalid] and bs.ErrInvalidID:
+//
+//	if errors.Is(err, page.ErrInvalid) {
+//		// an option or an id that the code got wrong
+//	}
 package page

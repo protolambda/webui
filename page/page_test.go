@@ -12,7 +12,10 @@ import (
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthtml"
 	"github.com/protolambda/chord/html/form"
+	"github.com/protolambda/chord/html/form/button"
+	"github.com/protolambda/chord/html/group/div"
 	"github.com/protolambda/chord/html/meta"
+	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/text"
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
@@ -21,6 +24,7 @@ import (
 	"github.com/protolambda/webui/bs"
 	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/page"
+	"github.com/protolambda/webui/session"
 	"github.com/protolambda/webui/theme"
 	"github.com/protolambda/webui/webuitest"
 )
@@ -238,8 +242,72 @@ func TestRegions(gt *testing.T) {
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(`<div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">x</div></div>`+
 		`<div id="dialogs"></div>`+
-		`<div id="alerts" hx-swap-oob="innerHTML"><div class="alert alert-info" role="status">y</div></div>`+
+		`<div id="alerts" hx-swap-oob="innerHTML"><div class="alert alert-info">y</div></div>`+
 		`<div id="alerts" hx-swap-oob="innerHTML"></div>`, out))
+
+	out, err = render(elem.Bundle{
+		page.DialogsOOB(bs.Dialog{ID: "help", Title: text.Text("Help")}),
+		page.DialogsOOB(),
+		page.AlertsContent(),
+	})
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(`<div id="dialogs" hx-swap-oob="innerHTML"><dialog id="help" class="modal" popover aria-labelledby="help-title"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h2 class="modal-title h5" id="help-title">Help</h2><button class="btn-close" type="button" aria-label="Close" commandfor="help" command="close" popovertarget="help" popovertargetaction="hide" autofocus></button></div></div></div></dialog></div>`+
+		`<div id="dialogs" hx-swap-oob="innerHTML"></div>`, out))
+}
+
+// live selects the elements that are live regions: those with aria-live
+// and the roles that imply it.
+var live = ct.HasAttr("aria-live").Or(ct.Attr("role", "alert"), ct.Attr("role", "status"))
+
+// TestAlertsAnnounceOnce checks that each message has one live region to
+// announce it: the alerts region for alerts swapped into it, the alert's
+// role for alerts that come with the page or sit elsewhere.
+func TestAlertsAnnounceOnce(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	alerts := func() []elem.Node {
+		return []elem.Node{
+			page.ErrorAlert(text.Text("Refused.")),
+			page.Notice("", text.Text("Saved.")),
+			// Deeper in the content too, as in a list of results.
+			div.Div(attr.Class("vstack gap-2"))(page.Notice(bs.VariantWarning, text.Text("Saved, with warnings."))),
+		}
+	}
+	t.Run("out of band", func(t devtest.T) {
+		frag := ct.View(page.AlertsOOB(alerts()...))
+		t.Must(frag.Find(live).None())
+		t.Must(frag.Find(ct.ID(page.AlertsID)).Find(ct.Class("alert")).Texts("Refused.", "Saved.", "Saved, with warnings."))
+		t.Must(webuitest.FragmentContract(frag, webuitest.Rules()...))
+	})
+	t.Run("retargeted answer", func(t devtest.T) {
+		frag := ct.View(page.AlertsContent(alerts()...))
+		t.Must(frag.Find(live).None())
+		t.Must(frag.Find(ct.Class("alert-danger")).Texts("Refused."))
+		t.Must(frag.Find(ct.Class("alert-success")).Texts("Saved."))
+	})
+	t.Run("swapped into the page", func(t devtest.T) {
+		// The region after htmx swapped the content in (innerHTML): one
+		// live region, the alerts region itself.
+		view := ct.View(page.AlertsRegion(page.AlertsContent(alerts()...)))
+		t.Must(view.Find(live).Count(1))
+		t.Must(view.Find(live).Matches(ct.ID(page.AlertsID), ct.Attr("aria-live", "polite")))
+		t.Must(view.Find(live).Find(live).None())
+	})
+	t.Run("with the page", func(t devtest.T) {
+		doc := ct.View(page.Layout{Alerts: alerts(), Main: text.P()(text.Text("x"))})
+		region := doc.Find(ct.ID(page.AlertsID))
+		t.Must(region.Matches(ct.Attr("aria-live", "polite")))
+		t.Must(region.Find(ct.Role("alert")).Texts("Refused."))
+		t.Must(region.Find(ct.Role("status")).Texts("Saved.", "Saved, with warnings."))
+	})
+	t.Run("elsewhere", func(t devtest.T) {
+		view := ct.View(text.P()(page.ErrorAlert(text.Text("Check the fields."))))
+		t.Must(view.Find(ct.Role("alert")).Texts("Check the fields."))
+	})
+	t.Run("bs alerts keep their role", func(t devtest.T) {
+		// Documented: only the page alerts follow the region.
+		view := ct.View(page.AlertsContent(bs.AlertWarning()(text.Text("Check the date."))))
+		t.Must(view.Find(ct.Role("alert")).Texts("Check the date."))
+	})
 }
 
 func TestNavbar(gt *testing.T) {
@@ -407,6 +475,22 @@ func TestSentinelsAreBootstraps(gt *testing.T) {
 		t.Mustf(be.False(errors.Is(err, page.ErrNoName)), "%s id", name)
 		t.Mustf(be.False(strings.Contains(err.Error(), "two words") || strings.Contains(err.Error(), "#x")), "%s id error quotes the id", name)
 	}
+
+	// ErrInvalid and bs.ErrInvalidID each catch an invalid id in a page,
+	// whichever package's component has it, as the ErrInvalid
+	// documentation says.
+	for name, node := range map[string]elem.Node{
+		"page navbar":  page.Layout{Navbar: page.Navbar{ID: "two words"}},
+		"page sidebar": page.Layout{Sidebar: page.Sidebar{ID: "two words"}},
+		"bs dialog":    page.Layout{Dialogs: []elem.Node{bs.Dialog{ID: "two words", Title: text.Text("T")}}},
+		"bs field":     page.Layout{Main: bs.Field{ID: "two words", Name: "f", Label: text.Text("F")}},
+		"bs opener":    page.Header{Title: text.Text("T"), Actions: []elem.Node{bs.BtnPrimary(bs.DialogOpen("two words"))(text.Text("Open"))}},
+	} {
+		_, err := render(node)
+		t.Mustf(be.ErrorIs(err, bs.ErrInvalidID), "%s id", name)
+		t.Mustf(be.ErrorIs(err, page.ErrInvalid), "%s id", name)
+		t.Mustf(be.False(strings.Contains(err.Error(), "two words")), "%s id error quotes the id", name)
+	}
 }
 
 func TestHeader(gt *testing.T) {
@@ -514,11 +598,6 @@ func TestGallery(gt *testing.T) {
 // side (head order, region ids, defaults) fails here.
 func TestWebuitestContract(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	t.Must(be.Equal(webuitest.MainID, page.MainID))
-	t.Must(be.Equal(webuitest.AlertsID, page.AlertsID))
-	t.Must(be.Equal(webuitest.DialogsID, page.DialogsID))
-	t.Must(be.Equal(webuitest.HeaderID, page.HeaderID))
-
 	themeSet, app := theme.MustAssets(theme.Options{}), appAssets()
 	shell := webuitest.DefaultShell(themeSet, app)
 	contract := append(webuitest.Rules(webuitest.WithCSRF("token")), webuitest.LayoutRegions())
@@ -581,4 +660,43 @@ func TestErrorsWrapSentinels(gt *testing.T) {
 	t.Must(be.ErrorIs(err, page.ErrInvalid))
 	t.Must(be.ErrorContains(err, "page.Navbar item 0: invalid option: href"))
 	t.Must(be.False(errors.Is(err, page.ErrNoName)))
+
+	// The alerts name their own component, not the bs one they build on,
+	// and never the value.
+	for _, node := range []elem.Node{page.Notice("pink"), page.AlertsContent(page.Notice("pink"))} {
+		_, err = render(node)
+		t.Must(be.ErrorIs(err, page.ErrInvalid))
+		t.Must(be.ErrorContains(err, "page.Notice: invalid option: variant"))
+		t.Must(be.False(strings.Contains(err.Error(), "pink")))
+	}
+}
+
+// TestDialogsOOB checks the answer that closes a dialog after an htmx
+// action: it passes the fragment contract, replaces the dialogs region
+// rather than the region's element, and gives the focus to its heading.
+func TestDialogsOOB(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	dialog := func(id string) elem.Node {
+		return bs.Dialog{ID: id, Title: text.Text("Delete the task?"), Footer: form.Form(
+			form.Method(form.MethodPost), form.Action("/tasks/"+id), hx2.Post("/tasks/"+id),
+			hx2.Target("#task-list"), hx2.Swap(hx2.SwapOuterHTML+" "+page.ShowAlerts),
+		)(
+			session.CSRFInput("token"),
+			bs.BtnDanger(button.Type(button.TypeSubmit))(text.Text("Delete")),
+		)}
+	}
+	answer := ct.View(elem.Bundle{
+		section.Section(attr.ID("task-list"))(
+			section.H2(page.FocusTarget())(text.Text("Tasks")),
+			bs.BtnOutlineDanger(bs.DialogOpen("task-8"))(text.Text("Delete")),
+		),
+		page.DialogsOOB(dialog("task-8")),
+		page.AlertsOOB(page.Notice("", text.Text("Task deleted."))),
+	})
+	t.Must(webuitest.FragmentContract(answer, webuitest.Rules(webuitest.WithCSRF("token"))...))
+	t.Must(answer.Find(ct.ID(page.DialogsID)).Matches(ct.Attr("hx-swap-oob", "innerHTML")))
+	t.Must(answer.Find(ct.ID(page.DialogsID)).Find(ct.Tag("dialog")).Matches(ct.ID("task-8"), ct.HasAttr("open").Not()))
+	t.Must(answer.Find(ct.Attr("autofocus", "").And(ct.Tag("h2"))).Matches(ct.Attr("tabindex", "-1"), ct.InnerText("Tasks")))
+	t.Must(answer.Find(ct.Attr("hx-swap", "outerHTML show:#alerts:top")).Count(1))
+	t.Must(be.Equal("show:#alerts:top", page.ShowAlerts))
 }

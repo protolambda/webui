@@ -8,11 +8,15 @@ import (
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/html/form"
 	"github.com/protolambda/chord/html/form/button"
+	"github.com/protolambda/chord/html/group/list"
+	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/text"
 
 	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/bs"
+	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/page"
+	"github.com/protolambda/webui/session"
 )
 
 // A document loads the stylesheets and then the deferred scripts of its
@@ -160,25 +164,100 @@ func ExampleSidebar() {
 	// <nav id="sidebar" aria-label="Projects"><h2 class="h6 small text-uppercase text-body-secondary px-3 mb-2">Active</h2><ul class="nav nav-pills flex-column mb-3"><li class="nav-item"><a class="nav-link active d-flex align-items-center gap-2" aria-current="page" href="/p/garden"><i class="bi bi-flower1" aria-hidden="true"></i><span class="text-break">Garden</span></a></li><li class="nav-item"><a class="nav-link d-flex align-items-center gap-2" href="/p/kitchen"><span class="text-break">Kitchen</span> <span class="badge text-bg-secondary ms-auto">2</span></a></li></ul></nav>
 }
 
-// Alerts for the alerts region: an error interrupts screen readers, a
+// Alerts that come with the page: an error interrupts screen readers, a
 // notice does not.
 func ExampleNotice() {
 	core.Dump(page.ErrorAlert(text.Text("The task could not be saved.")))
 	core.Dump(page.Notice("", text.Text("Task saved.")))
 	core.Dump(page.Notice(bs.VariantInfo, text.Text("The import runs in the background.")))
+	core.Dump(page.Notice("pink", text.Text("Saved.")))
 	// Output:
 	// <div class="alert alert-danger" role="alert">The task could not be saved.</div>
 	// <div class="alert alert-success" role="status">Task saved.</div>
 	// <div class="alert alert-info" role="status">The import runs in the background.</div>
+	// ERROR: render: at [0]: page.Notice: invalid option: variant
 }
 
 // An htmx response swaps its main fragment and, out of band, the content of
-// the alerts region.
+// the alerts region. The region, a live region already in the page,
+// announces the notice, which therefore has no role of its own.
 func ExampleAlertsOOB() {
 	core.Dump(elem.Bundle{
 		text.P(attr.ID("task-7"))(text.Text("Water the plants (done)")),
 		page.AlertsOOB(page.Notice("", text.Text("Task completed."))),
 	})
 	// Output:
-	// <p id="task-7">Water the plants (done)</p><div id="alerts" hx-swap-oob="innerHTML"><div class="alert alert-success" role="status">Task completed.</div></div>
+	// <p id="task-7">Water the plants (done)</p><div id="alerts" hx-swap-oob="innerHTML"><div class="alert alert-success">Task completed.</div></div>
+}
+
+// An out-of-band swap does not scroll. The element that makes the request
+// asks for the scroll to the alerts region with the ShowAlerts modifier.
+func ExampleAlertsOOB_scroll() {
+	core.Dump(form.Form(form.Method(form.MethodPost), form.Action("/tasks/7/done"),
+		hx2.Post("/tasks/7/done"), hx2.Target("#task-7"), hx2.Swap(hx2.SwapOuterHTML+" "+page.ShowAlerts))(
+		session.CSRFInput("dG9rZW4"),
+		bs.BtnSuccess(button.Type(button.TypeSubmit), attr.ID("task-7-done"))(text.Text("Done")),
+	))
+	// Output:
+	// <form method="post" action="/tasks/7/done" hx-post="/tasks/7/done" hx-target="#task-7" hx-swap="outerHTML show:#alerts:top"><input type="hidden" name="csrf" value="dG9rZW4"/><button class="btn btn-success" type="submit" id="task-7-done">Done</button></form>
+}
+
+// An answer that htmx swaps into the alerts region (its hx-target, or an
+// HX-Retarget header, names the region): the region announces the alerts,
+// which have no role of their own.
+func ExampleAlertsContent() {
+	core.Dump(page.AlertsContent(page.ErrorAlert(text.Text("The task list is full. Delete a task first."))))
+	// Output:
+	// <div class="alert alert-danger">The task list is full. Delete a task first.</div>
+}
+
+// A dialog confirms the deletion of a task, and its form deletes the task
+// through htmx. The answer swaps the list, closes the dialog by rendering
+// the dialogs region again without it, shows a notice, and gives the focus
+// to the list's heading: the button that had it left with the dialog.
+func ExampleDialogsOOB() {
+	type task struct{ id, title string }
+	deleteDialog := func(t task) elem.Node {
+		id := "delete-task-" + t.id
+		action := "/tasks/" + t.id + "/delete"
+		return bs.Dialog{ID: id, Title: text.Text("Delete " + t.title + "?"), Footer: elem.Bundle{
+			bs.BtnSecondary(bs.DialogClose(id))(text.Text("Keep")),
+			form.Form(form.Method(form.MethodPost), form.Action(action),
+				hx2.Post(action), hx2.Target("#task-list"), hx2.Swap(hx2.SwapOuterHTML+" "+page.ShowAlerts))(
+				session.CSRFInput("dG9rZW4"),
+				bs.BtnDanger(button.Type(button.TypeSubmit))(text.Text("Delete")),
+			),
+		}}
+	}
+	// taskList renders the list; focus marks its heading as the focus
+	// target, in htmx answers only.
+	taskList := func(focus bool, tasks ...task) elem.Node {
+		items := make([]elem.Node, 0, len(tasks))
+		for _, t := range tasks {
+			items = append(items, list.LI()(text.Text(t.title+" "),
+				bs.BtnOutlineDanger(bs.DialogOpen("delete-task-"+t.id))(text.Text("Delete"))))
+		}
+		return section.Section(attr.ID("task-list"))(
+			section.H2(attr.If(focus, page.FocusTarget()))(text.Text("Tasks")),
+			list.UL()(items...),
+		)
+	}
+
+	// The answer to the deletion of task 7, with task 8 left.
+	left := task{id: "8", title: "Sweep the porch"}
+	core.Dump(elem.Bundle{
+		taskList(true, left),
+		page.DialogsOOB(deleteDialog(left)),
+		page.AlertsOOB(page.Notice(bs.VariantInfo, text.Text("Task deleted."))),
+	})
+	// Output:
+	// <section id="task-list"><h2 tabindex="-1" autofocus>Tasks</h2><ul><li>Sweep the porch <button class="btn btn-outline-danger" type="button" commandfor="delete-task-8" command="show-modal" popovertarget="delete-task-8">Delete</button></li></ul></section><div id="dialogs" hx-swap-oob="innerHTML"><dialog id="delete-task-8" class="modal" popover aria-labelledby="delete-task-8-title"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h2 class="modal-title h5" id="delete-task-8-title">Delete Sweep the porch?</h2><button class="btn-close" type="button" aria-label="Close" commandfor="delete-task-8" command="close" popovertarget="delete-task-8" popovertargetaction="hide" autofocus></button></div><div class="modal-footer"><button class="btn btn-secondary" type="button" commandfor="delete-task-8" command="close" popovertarget="delete-task-8" popovertargetaction="hide">Keep</button><form method="post" action="/tasks/8/delete" hx-post="/tasks/8/delete" hx-target="#task-list" hx-swap="outerHTML show:#alerts:top"><input type="hidden" name="csrf" value="dG9rZW4"/><button class="btn btn-danger" type="submit">Delete</button></form></div></div></div></dialog></div><div id="alerts" hx-swap-oob="innerHTML"><div class="alert alert-info">Task deleted.</div></div>
+}
+
+// FocusTarget lets an element that is not a control take the focus after
+// an htmx swap.
+func ExampleFocusTarget() {
+	core.Dump(section.H2(attr.ID("tasks-title"), page.FocusTarget())(text.Text("Tasks")))
+	// Output:
+	// <h2 id="tasks-title" tabindex="-1" autofocus>Tasks</h2>
 }

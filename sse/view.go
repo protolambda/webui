@@ -1,0 +1,97 @@
+package sse
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/protolambda/chord/core/attr"
+
+	"github.com/protolambda/webui/hx2"
+)
+
+// ErrURL reports a stream URL that [Region] or [Connect] rejects.
+var ErrURL = errors.New("sse: invalid stream URL")
+
+// Region returns the attributes of a live region's container:
+//
+//	hx-ext="sse" sse-connect="URL" sse-swap="end" sse-close="end"
+//
+// The container opens the stream at url, its content is replaced by the
+// fragment of the [EventEnd] event, and that event closes the connection
+// for good. Mark children that other events update with [Swap]. Add other
+// htmx extensions on an ancestor (hx-ext is inherited): a second hx-ext on
+// the container fails to render.
+//
+// url must be a same-origin path: it starts with one '/', and has no
+// backslash, space or control character (URL parsers drop tabs and line
+// breaks, and read a backslash as a slash, which could turn the path into
+// another host). Otherwise the attributes fail to render with an error
+// wrapping [ErrURL]. Use [hx2.SSEConnect] directly for anything else.
+func Region(url string) attr.Node {
+	if err := checkURL(url); err != nil {
+		return failed{err}
+	}
+	return attr.Bundle{hx2.Ext("sse"), hx2.SSEConnect(url), hx2.SSESwap(EventEnd), hx2.SSEClose(EventEnd)}
+}
+
+// Connect returns the attributes that open a stream without swapping the
+// end event into the element:
+//
+//	hx-ext="sse" sse-connect="URL" sse-close="end"
+//
+// Use it when the end fragment belongs elsewhere: mark that element with
+// Swap(EventEnd). url is checked as for [Region].
+func Connect(url string) attr.Node {
+	if err := checkURL(url); err != nil {
+		return failed{err}
+	}
+	return attr.Bundle{hx2.Ext("sse"), hx2.SSEConnect(url), hx2.SSEClose(EventEnd)}
+}
+
+// Swap returns the sse-swap attribute of an element inside a live region:
+// the data of each named event replaces the element's content (or what its
+// hx-target and hx-swap select). With more events, the attribute lists them
+// all. A name that [CheckEventName] rejects makes the attribute fail to
+// render with an error wrapping [ErrEventName].
+//
+// Put aria-live="polite" (or role="status") on targets whose changes people
+// should hear, and leave it off targets that change every second.
+func Swap(event string, more ...string) attr.Node {
+	if err := CheckEventName(event); err != nil {
+		return failed{err}
+	}
+	if len(more) == 0 {
+		return hx2.SSESwap(event)
+	}
+	for _, name := range more {
+		if err := CheckEventName(name); err != nil {
+			return failed{err}
+		}
+	}
+	return hx2.SSESwap(event + "," + strings.Join(more, ","))
+}
+
+// checkURL accepts same-origin paths.
+func checkURL(url string) error {
+	if url == "" || url[0] != '/' {
+		return fmt.Errorf("%w: not a path starting with '/'", ErrURL)
+	}
+	if len(url) > 1 && url[1] == '/' {
+		return fmt.Errorf("%w: starts with '//', which names another host", ErrURL)
+	}
+	for i := 0; i < len(url); i++ {
+		if c := url[i]; c <= ' ' || c == 0x7f || c == '\\' {
+			return fmt.Errorf("%w: byte %d is a backslash, space or control character", ErrURL, i)
+		}
+	}
+	return nil
+}
+
+var _ attr.Node = failed{}
+
+// failed is an attribute that fails to render with err.
+type failed struct{ err error }
+
+func (f failed) Eval(context.Context) (attr.Obj, error) { return attr.Obj{}, f.err }

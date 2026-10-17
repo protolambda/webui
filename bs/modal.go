@@ -19,12 +19,19 @@ import (
 // The markup follows Bootstrap 5.3: div.modal.fade#ID tabindex="-1"
 // aria-hidden="true" aria-labelledby="ID-title", holding .modal-dialog >
 // .modal-content > .modal-header (the title heading with id ID-title and a
-// close button), .modal-body and .modal-footer. Attrs are added to the
-// div.modal; they may replace the tabindex, aria-hidden and
-// aria-labelledby defaults, but must not set an id.
+// close button), .modal-body and .modal-footer. The aria-labelledby is
+// rendered only when Title is set: without a Title, name the modal with an
+// aria-label in Attrs. Attrs are added to the div.modal; they may replace
+// the tabindex, aria-hidden, aria-labelledby and (with Static)
+// data-bs-keyboard defaults, but must not set an id or (with Static)
+// data-bs-backdrop.
 type Modal struct {
-	ID         string       // required id: a token, see ValidID
-	Title      elem.Node    // .modal-title content, the modal's accessible name; nil leaves out the title
+	ID string // required id: a token, see ValidID
+	// Title is the .modal-title content, the modal's accessible name. Nil
+	// leaves out the title and aria-labelledby; then set an aria-label in
+	// Attrs, since Bootstrap's script gives the open modal role="dialog",
+	// which needs a name.
+	Title      elem.Node
 	TitleLevel HeadingLevel // heading level of the title; zero means h2
 	CloseLabel string       // accessible name of the close button; empty means "Close"
 	Body       elem.Node    // .modal-body content; nil leaves out the body
@@ -32,8 +39,12 @@ type Modal struct {
 	Size       ModalSize    // dialog size; zero means Bootstrap's default width
 	Centered   bool         // vertically centered
 	Scrollable bool         // scroll the body instead of the page
-	Static     bool         // static backdrop: clicking beside the modal or Escape does not close it
-	Attrs      attr.Node    // additional attributes of the div.modal
+	// Static gives the modal a static backdrop (data-bs-backdrop="static"
+	// data-bs-keyboard="false"): clicking beside the modal does not close
+	// it, nor does Escape. Set data-bs-keyboard="true" in Attrs to keep
+	// Escape working.
+	Static bool
+	Attrs  attr.Node // additional attributes of the div.modal
 }
 
 // Eval builds the modal structure with Bootstrap markup. It fails with
@@ -62,7 +73,7 @@ func (m Modal) Eval(ctx context.Context) (elem.Obj, error) {
 	if m.Static {
 		own = append(own,
 			attr.Name("data-bs-backdrop").Raw("static"),
-			attr.Name("data-bs-keyboard").Raw("false"),
+			fallbackRaw("data-bs-keyboard", "false"),
 		)
 	}
 

@@ -36,9 +36,9 @@ import (
 //
 // Value and Placeholder are escaped by chord. Never put a secret in Value:
 // it is sent to the browser, and stays in the page source, history and
-// caches. A password field must not have a Value (Eval fails), and the
-// same holds for any other secret: render the field empty and let the user
-// type it.
+// caches. A password field must not have a value, in Value or in Attrs
+// (Eval fails), and the same holds for any other secret: render the field
+// empty and let the user type it.
 type Field struct {
 	// ID is the input's id: a token, see ValidID. The help and error ids
 	// derive from it (ID-help, ID-error).
@@ -100,7 +100,8 @@ func fieldClass(t input.InputType) (string, bool) {
 
 // Eval builds the field. It fails with [ErrInvalidID] for an invalid ID,
 // with [ErrNoName] without a label, and with [ErrInvalidOption] for an
-// unsupported Type or InputMode, or a password field with a Value.
+// unsupported Type or InputMode, or a password field with a value (in
+// Value or in Attrs).
 func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	const component = "bs.Field"
 	if err := checkID(component, f.ID); err != nil {
@@ -123,6 +124,11 @@ func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	c, err := newControl(ctx, component, f.ID, f.Label, f.Help, f.Error, f.Attrs)
 	if err != nil {
 		return elem.Obj{}, err
+	}
+	// Without a Value the field renders no value attribute of its own, so a
+	// value in Attrs is not a duplicate: check it here.
+	if typ == input.Password && sets(c.objs, "value") {
+		return elem.Obj{}, fmt.Errorf("%s: %w: a password field must not carry a value", component, ErrInvalidOption)
 	}
 
 	own := []attr.Node{
@@ -465,6 +471,7 @@ type control struct {
 	help, err   elem.Node
 	describedBy string      // the ids of aria-describedby, the caller's included
 	user        []attr.Node // the caller's evaluated attributes, without aria-describedby
+	objs        []attr.Obj  // the caller's evaluated attributes, aria-describedby included
 }
 
 // newControl evaluates the caller's attributes of a form control once,
@@ -500,6 +507,7 @@ func newControl(ctx context.Context, component, id string, labelNode, help, errN
 		err:         errNode,
 		describedBy: strings.Join(ids, " "),
 		user:        user,
+		objs:        objs,
 	}, nil
 }
 

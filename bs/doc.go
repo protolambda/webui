@@ -58,9 +58,16 @@
 // unknown value fails the render with [ErrInvalidOption] instead of
 // emitting a class that does not exist. Ids that components use in CSS
 // selectors, id references or derived ids must be tokens (see [ValidID]),
-// or the render fails with [ErrInvalidID]. Components that would have no
-// accessible name fail with [ErrNoName]. Error messages name the component
-// and the problem, never the offending value.
+// or the render fails with [ErrInvalidID]. Error messages name the
+// component and the problem, never the offending value.
+//
+// [Dialog], the form fields ([Field], [Textarea], [Select], [Checkbox],
+// [Radio]) and [DetailsDropdown] fail with [ErrNoName] when they would have
+// no accessible name: no Title, Label or Toggle, and no aria-label or
+// aria-labelledby in their attributes. [Modal], [Offcanvas] and [Dropdown]
+// accept a nil Title or Toggle, as in earlier versions, and do not check:
+// their callers must then give the name themselves, with an aria-label in
+// Attrs (ToggleAttrs for a Dropdown).
 //
 // # Components
 //

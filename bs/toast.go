@@ -12,7 +12,10 @@ import (
 //
 // Bootstrap hides a toast (.toast:not(.show)) until its script shows it.
 // Set Shown to render a visible toast from the server, without script: for
-// example as an htmx out-of-band swap into a [ToastContainer].
+// example appended by an htmx out-of-band swap (beforeend) into a
+// [ToastContainer] that is already in the page. Screen readers announce
+// content added to a live region that already exists; a toast inserted
+// together with a new live region around it is generally not announced.
 //
 // It renders div.toast[.show] with role="alert" aria-live="assertive"
 // aria-atomic="true" (or role="status" aria-live="polite" when Polite),
@@ -66,9 +69,17 @@ func (t Toast) Eval(ctx context.Context) (elem.Obj, error) {
 }
 
 // ToastContainer creates a Bootstrap toast container (div.toast-container),
-// which stacks the toasts in it. Position it among attrs, e.g. with the
-// classes "position-fixed bottom-0 end-0 p-3", and give it an id when
-// htmx swaps toasts into it.
+// which stacks the toasts in it. It is a polite live region
+// (aria-live="polite", which attrs may replace), so that screen readers
+// announce the toasts added to it. Position it among attrs, e.g. with the
+// classes "position-fixed bottom-0 end-0 p-3".
+//
+// To show toasts from htmx responses, render the container with the page,
+// empty, with an id. Then add each toast with an out-of-band swap that
+// inserts into it: a ToastContainer with the same id and
+// hx-swap-oob="beforeend" around the toast. Do not replace the container
+// itself (an outerHTML or hx-swap-oob="true" swap): a live region that is
+// inserted together with its content is generally not announced.
 func ToastContainer(attrs ...attr.Node) elem.Scope {
-	return div.Div(attr.Cons(rawClass("toast-container"), attrs...))
+	return div.Div(compose(attrs, rawClass("toast-container"), fallbackRaw("aria-live", "polite")))
 }

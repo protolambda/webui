@@ -25,7 +25,9 @@ import (
 // It renders div.dropdown > button.btn.btn-{variant}.dropdown-toggle
 // (type="button" data-bs-toggle="dropdown" aria-expanded="false") +
 // ul.dropdown-menu with the items. Every field is optional: a nil Toggle
-// renders the toggle button without content.
+// renders the toggle button without content, which then needs an
+// aria-label in ToggleAttrs for an accessible name (unlike
+// [DetailsDropdown], Dropdown does not check this).
 type Dropdown struct {
 	Toggle      elem.Node   // toggle button content, its accessible name
 	Items       []elem.Node // menu items: DropdownItem, DropdownButton, DropdownDivider, DropdownHeader

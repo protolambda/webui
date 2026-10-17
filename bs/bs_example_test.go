@@ -221,12 +221,20 @@ func ExampleProgress() {
 	// Output: <div class="progress" role="progressbar" aria-label="Upload" aria-valuenow="50" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar w-50"></div></div>
 }
 
-// A toast rendered visible by the server, without Bootstrap's script.
+// Toasts rendered visible by the server, without Bootstrap's script. The
+// page renders an empty container, a polite live region; an htmx response
+// then appends a toast to it with an out-of-band swap, so that screen
+// readers announce it.
 func ExampleToast() {
-	core.Dump(bs.ToastContainer(attr.Class("position-fixed bottom-0 end-0 p-3"), attr.ID("toasts"))(
+	// In the page:
+	core.Dump(bs.ToastContainer(attr.Class("position-fixed bottom-0 end-0 p-3"), attr.ID("toasts"))())
+	// In an htmx response:
+	core.Dump(bs.ToastContainer(attr.ID("toasts"), attr.KV("hx-swap-oob", "beforeend"))(
 		bs.Toast{Body: text.Text("Note saved."), Shown: true, Polite: true},
 	))
-	// Output: <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toasts"><div class="toast show" role="status" aria-live="polite" aria-atomic="true"><div class="toast-body">Note saved.</div></div></div>
+	// Output:
+	// <div class="toast-container position-fixed bottom-0 end-0 p-3" aria-live="polite" id="toasts"></div>
+	// <div class="toast-container" aria-live="polite" id="toasts" hx-swap-oob="beforeend"><div class="toast show" role="status" aria-live="polite" aria-atomic="true"><div class="toast-body">Note saved.</div></div></div>
 }
 
 // Bootstrap JS components

@@ -3,6 +3,7 @@ package bs
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/protolambda/chord/core/attr"
@@ -50,8 +51,9 @@ func TableResponsive(attrs ...attr.Node) elem.Scope {
 // screen text at the far end of a wide table widens the whole page.
 //
 // Every row must have one cell per column; Eval fails with
-// [ErrInvalidOption] otherwise, and when there are no columns. The table
-// renders the nodes as given: cell text is escaped by chord as usual.
+// [ErrInvalidOption] otherwise, when there are no columns, and when a
+// column's Attrs set an id. The table renders the nodes as given: cell text
+// is escaped by chord as usual.
 type DataTable struct {
 	// Caption names the table (its accessible name). Without a caption,
 	// give the table a name with aria-labelledby or aria-label in Attrs.
@@ -86,9 +88,20 @@ type Column struct {
 	// RowHeader makes the cells of this column row headers
 	// (th scope="row"), such as the name column of a list of items.
 	RowHeader bool
-	// Attrs are added to the header cell and to every cell of the column,
-	// typically a class such as text-end. They must not set an id.
+	// Attrs are added to the header cell and to every body cell of the
+	// column, typically a class such as text-end. They are evaluated once
+	// per render, and the result is shared by all those cells, so lazy and
+	// single-use attribute nodes work. They must not set an id (Eval fails).
+	// A scope among them replaces the default scope of every th of the
+	// column (the header cell's, and the row headers' on a RowHeader
+	// column). Attributes for the header cell alone, such as aria-sort, go
+	// in HeaderAttrs.
 	Attrs attr.Node
+	// HeaderAttrs are added only to the column's header cell (th
+	// scope="col" in thead), after Attrs: for example aria-sort, abbr, an
+	// id, or a scope that replaces scope="col". They must not repeat an
+	// attribute of Attrs other than class (classes merge).
+	HeaderAttrs attr.Node
 }
 
 // TableRow is a row of a [DataTable].
@@ -134,13 +147,32 @@ func (t DataTable) Eval(ctx context.Context) (elem.Obj, error) {
 		parts = append(parts, table.Caption(captionAttrs...)(t.Caption))
 	}
 
+	// Evaluate each column's attributes once, here: the evaluated objects
+	// are shared by the header cell and every body cell of the column.
+	colAttrs := make([][]attr.Node, len(t.Columns))
+	for i, c := range t.Columns {
+		objs, err := flatten(ctx, userAttrs(c.Attrs), nil)
+		if err != nil {
+			return elem.Obj{}, fmt.Errorf("bs.DataTable: column %d: %w", i, err)
+		}
+		if sets(objs, "id") {
+			return elem.Obj{}, fmt.Errorf("bs.DataTable: %w: column %d attributes set an id, which every cell would repeat", ErrInvalidOption, i)
+		}
+		user := make([]attr.Node, len(objs))
+		for k, o := range objs {
+			user[k] = o
+		}
+		colAttrs[i] = user
+	}
+
 	headers := make([]elem.Node, 0, len(t.Columns))
-	for _, c := range t.Columns {
+	for i, c := range t.Columns {
 		content := optional(c.Header)
 		if c.HeaderHidden && c.Header != nil {
 			content = []elem.Node{visuallyHidden(c.Header)}
 		}
-		headers = append(headers, table.TH(compose(userAttrs(c.Attrs), fallbackRaw("scope", "col")))(content...))
+		user := slices.Concat(colAttrs[i], userAttrs(c.HeaderAttrs))
+		headers = append(headers, table.TH(compose(user, fallbackRaw("scope", "col")))(content...))
 	}
 	parts = append(parts, table.Thead()(table.TR()(headers...)))
 
@@ -148,11 +180,10 @@ func (t DataTable) Eval(ctx context.Context) (elem.Obj, error) {
 	for _, r := range t.Rows {
 		cells := make([]elem.Node, 0, len(r.Cells))
 		for j, cell := range r.Cells {
-			c := t.Columns[j]
-			if c.RowHeader {
-				cells = append(cells, table.TH(compose(userAttrs(c.Attrs), fallbackRaw("scope", "row")))(optional(cell)...))
+			if t.Columns[j].RowHeader {
+				cells = append(cells, table.TH(compose(colAttrs[j], fallbackRaw("scope", "row")))(optional(cell)...))
 			} else {
-				cells = append(cells, table.TD(userAttrs(c.Attrs)...)(optional(cell)...))
+				cells = append(cells, table.TD(colAttrs[j]...)(optional(cell)...))
 			}
 		}
 		rows = append(rows, table.TR(userAttrs(r.Attrs)...)(cells...))

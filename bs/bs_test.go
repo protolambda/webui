@@ -60,6 +60,13 @@ func TestModalStatic(gt *testing.T) {
 			`<div class="modal-header"><button class="btn-close" type="button" data-bs-dismiss="modal" aria-label="Dismiss"></button></div>`+
 			`<div class="modal-footer">OK</div></div></div></div>`,
 		render(t, bs.Modal{ID: "m", Footer: text.Text("OK"), Static: true, Size: bs.ModalFullscreenSMDown, Centered: true, CloseLabel: "Dismiss"})))
+	// Escape still closes a static modal whose Attrs set data-bs-keyboard.
+	t.Must(be.Equal(
+		`<div class="modal fade" id="m" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="true">`+
+			`<div class="modal-dialog"><div class="modal-content">`+
+			`<div class="modal-header"><button class="btn-close" type="button" aria-label="Close" data-bs-dismiss="modal"></button></div>`+
+			`</div></div></div>`,
+		render(t, bs.Modal{ID: "m", Static: true, Attrs: attr.Data("bs-keyboard", "true")})))
 }
 
 func TestAccordionOptionalFields(gt *testing.T) {
@@ -249,6 +256,7 @@ func TestDefaultsReplacedByCallerAttributes(gt *testing.T) {
 	lazy := func(n attr.Node) attr.Node {
 		return attr.Fn(func(context.Context) (attr.Node, error) { return n, nil })
 	}
+	oneRow := []bs.TableRow{{Cells: []elem.Node{text.Text("a")}}}
 	tests := map[string]struct {
 		node      elem.Node
 		attr, val string
@@ -271,12 +279,15 @@ func TestDefaultsReplacedByCallerAttributes(gt *testing.T) {
 		"toast role":             {bs.Toast{Attrs: role("log")}, "role", "log"},
 		"toast live":             {bs.Toast{Attrs: aria.Live("off")}, "aria-live", "off"},
 		"modal tabindex":         {bs.Modal{ID: "m", Attrs: attr.Tabindex("0")}, "tabindex", "0"},
+		"modal static keyboard":  {bs.Modal{ID: "m", Static: true, Attrs: attr.Data("bs-keyboard", "true")}, "data-bs-keyboard", "true"},
+		"modal static no keys":   {bs.Modal{ID: "m", Static: true, Attrs: attr.Name("data-bs-keyboard").Raw("false")}, "data-bs-keyboard", "false"},
+		"toast container live":   {bs.ToastContainer(aria.Live("off"))(), "aria-live", "off"},
 		"offcanvas labelledby":   {bs.Offcanvas{ID: "o", Title: text.Text("T"), Attrs: aria.Labelledby("o")}, "aria-labelledby", "o"},
 		"dialog popover":         {bs.Dialog{ID: "d", Title: text.Text("T"), Attrs: attr.Popover("manual")}, "popover", "manual"},
 		"dialog label":           {bs.Dialog{ID: "d", Attrs: aria.Label("Settings")}, "aria-label", "Settings"},
 		"checkbox switch role":   {bs.Checkbox{ID: "c", Label: text.Text("C"), Switch: true, Attrs: role("checkbox")}, "role", "checkbox"},
 		"field invalid":          {bs.Field{ID: "f", Label: text.Text("F"), Error: text.Text("E"), Attrs: aria.Invalid("grammar")}, "aria-invalid", "grammar"},
-		"table scope":            {bs.DataTable{Columns: []bs.Column{{Header: text.Text("H"), Attrs: attr.KV("scope", "colgroup")}}}, "scope", "colgroup"},
+		"table header scope":     {bs.DataTable{Columns: []bs.Column{{HeaderAttrs: attr.KV("scope", "colgroup")}}, Rows: oneRow}, "scope", "colgroup"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t devtest.T) {
@@ -324,6 +335,8 @@ func TestCallerAttributesEvaluatedOnce(gt *testing.T) {
 		"dialog":   bs.Dialog{ID: "d", Title: text.Text("T"), Attrs: broken},
 		"field":    bs.Field{ID: "f", Label: text.Text("F"), Attrs: broken},
 		"dropdown": bs.DetailsDropdown{ToggleAttrs: broken},
+		"table":    bs.DataTable{Columns: []bs.Column{{Attrs: broken}}},
+		"header":   bs.DataTable{Columns: []bs.Column{{HeaderAttrs: broken}}},
 	} {
 		t.Run(name, func(t devtest.T) {
 			t.Must(be.ErrorIs(renderErr(t, node), errBroken))
@@ -340,6 +353,7 @@ func TestRequiredAttributesAreNotReplaced(gt *testing.T) {
 		"accordion id": bs.Accordion{ID: "a", Attrs: attr.ID("b")},
 		"dialog id":    bs.Dialog{ID: "a", Title: text.Text("T"), Attrs: attr.ID("b")},
 		"modal id":     bs.Modal{ID: "a", Attrs: attr.ID("b")},
+		"modal static": bs.Modal{ID: "a", Static: true, Attrs: attr.Data("bs-backdrop", "true")},
 		"field name":   bs.Field{ID: "f", Name: "n", Label: text.Text("F"), Attrs: input.Name("m")},
 		"field type":   bs.Field{ID: "f", Label: text.Text("F"), Attrs: input.Type(input.Hidden)},
 	} {
@@ -402,6 +416,7 @@ func TestInvalidOptionsFailTheRender(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	row := func(cells ...elem.Node) bs.TableRow { return bs.TableRow{Cells: cells} }
 	col := bs.Column{Header: text.Text("H")}
+	lazyValue := attr.Fn(func(context.Context) (attr.Node, error) { return input.Value("x"), nil })
 	tests := map[string]elem.Node{
 		"BtnOf":                    bs.BtnOf("purple"),
 		"BtnOutlineOf":             bs.BtnOutlineOf(""),
@@ -431,6 +446,10 @@ func TestInvalidOptionsFailTheRender(gt *testing.T) {
 		"Field submit type":        bs.Field{ID: "f", Label: text.Text("F"), Type: input.Submit},
 		"Field unknown type":       bs.Field{ID: "f", Label: text.Text("F"), Type: "bogus"},
 		"Field password value":     bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Value: "x"},
+		"Field password attr":      bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: input.Value(`x"onclick="y`)},
+		"Field password VALUE":     bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: attr.KV("VALUE", "x")},
+		"Field password bundle":    bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: attr.Bundle{input.Minlength("8"), input.Value("x")}},
+		"Field password lazy":      bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: lazyValue},
 		"Field input mode":         bs.Field{ID: "f", Label: text.Text("F"), InputMode: "phone"},
 		"Textarea rows":            bs.Textarea{ID: "t", Label: text.Text("T"), Rows: -1},
 		"Select two selected":      bs.Select{ID: "s", Label: text.Text("S"), Options: []bs.SelectOption{{Selected: true}, {Selected: true}}},
@@ -441,6 +460,7 @@ func TestInvalidOptionsFailTheRender(gt *testing.T) {
 		"DataTable short row":      bs.DataTable{Columns: []bs.Column{col, col}, Rows: []bs.TableRow{row(text.Text("a"))}},
 		"DataTable long row":       bs.DataTable{Columns: []bs.Column{col}, Rows: []bs.TableRow{row(nil, nil)}},
 		"DataTable empty row":      bs.DataTable{Columns: []bs.Column{col}, Rows: []bs.TableRow{{}}},
+		"DataTable column id":      bs.DataTable{Columns: []bs.Column{col, {Attrs: attr.Bundle{attr.Class("x"), attr.ID("c")}}}},
 		"Select multiple selected": bs.Select{ID: "s", Label: text.Text("S"), Options: []bs.SelectOption{{Selected: true}, {Selected: true}, {Selected: true}}},
 	}
 	for name, node := range tests {
@@ -465,6 +485,8 @@ func TestInvalidOptionsFailTheRender(gt *testing.T) {
 		"offcanvas bottom":  bs.Offcanvas{ID: "o", Placement: bs.OffcanvasBottom},
 		"fullscreen":        bs.Dialog{ID: "d", Title: text.Text("T"), Size: bs.ModalFullscreen},
 		"textarea 0 rows":   bs.Textarea{ID: "t", Label: text.Text("T")},
+		"password attrs":    bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: input.Minlength("8")},
+		"header id":         bs.DataTable{Columns: []bs.Column{{HeaderAttrs: attr.ID("h")}}},
 	} {
 		t.Run("valid "+name, func(t devtest.T) {
 			t.Must(be.NoError(renderErr(t, node)))
@@ -672,6 +694,20 @@ func TestFieldTypesAndStates(gt *testing.T) {
 	t.Must(be.Equal(
 		`<div class="mb-3"><label class="form-label" for="p">Price</label><div class="input-group"><span class="input-group-text">$</span><input class="form-control" type="number" id="p" inputmode="decimal"/></div></div>`,
 		render(t, bs.Field{ID: "p", Label: text.Text("Price"), Type: input.Number, InputMode: bs.InputModeDecimal, Before: []elem.Node{bs.InputGroupText()(text.Text("$"))}})))
+	// With an error, the feedback is the input group's last child, after
+	// every After addon: Bootstrap's has-validation corner rules and its
+	// .is-invalid ~ .invalid-feedback selector need this. The help text
+	// stays outside the group.
+	t.Must(be.Equal(
+		`<div class="mb-3"><label class="form-label" for="u">User</label><div class="input-group has-validation">`+
+			`<span class="input-group-text">@</span>`+
+			`<input class="form-control is-invalid" type="text" id="u" aria-invalid="true" aria-describedby="u-error u-help"/>`+
+			`<button class="btn btn-outline-secondary" type="button">Check</button>`+
+			`<div class="invalid-feedback" id="u-error">Taken.</div></div>`+
+			`<div class="form-text" id="u-help">Help</div></div>`,
+		render(t, bs.Field{ID: "u", Label: text.Text("User"), Error: text.Text("Taken."), Help: text.Text("Help"),
+			Before: []elem.Node{bs.InputGroupText()(text.Text("@"))},
+			After:  []elem.Node{bs.BtnOutlineSecondary()(text.Text("Check"))}})))
 	// A boolean aria-describedby adds no ids.
 	t.Must(be.Equal(
 		`<div class="mb-3"><label class="form-label" for="b">B</label><input class="form-control" type="text" id="b"/></div>`,
@@ -684,6 +720,60 @@ func TestCardImage(gt *testing.T) {
 		`<div class="x card"><img class="card-img-top" alt=""/><div class="card-body"><h6 class="card-subtitle mb-2 text-body-secondary">Sub</h6>More</div></div>`,
 		render(t, bs.Card{Attrs: attr.Class("x"), Img: elem.Name("img").Void(attr.Class("card-img-top"), attr.KV("alt", "")),
 			Body: bs.CardBody{Subtitle: text.Text("Sub"), Content: text.Text("More")}})))
+}
+
+// Column.Attrs go on the header cell and every body cell, evaluated once
+// per render; Column.HeaderAttrs go on the header cell only.
+func TestDataTableColumnAttrs(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	rows := []bs.TableRow{
+		{Cells: []elem.Node{text.Text("a"), text.Text("1")}},
+		{Cells: []elem.Node{text.Text("b"), text.Text("2")}},
+		{Cells: []elem.Node{text.Text("c"), text.Text("3")}},
+	}
+	sorted := bs.DataTable{Columns: []bs.Column{
+		{Header: text.Text("Name"), RowHeader: true, Attrs: attr.Class("text-nowrap"), HeaderAttrs: attr.KV("aria-sort", "ascending")},
+		{Header: text.Text("Count"), HeaderAttrs: attr.KV("scope", "colgroup")},
+	}, Rows: rows}
+	page := ct.View(sorted)
+	t.Must(page.Find(ct.HasAttr("aria-sort")).Count(1))
+	t.Must(page.Find(ct.Tag("thead")).Find(ct.Tag("th")).AttrValues("scope", "col", "colgroup"))
+	t.Must(page.Find(ct.Tag("tbody")).Find(ct.Tag("th")).AttrValues("scope", "row", "row", "row"))
+	t.Must(page.Find(ct.Tag("tbody")).Find(ct.Tag("td")).Each(ct.HasAttr("scope").Not()))
+	t.Must(page.Find(ct.Class("text-nowrap")).Count(4))
+	t.Must(be.Equal(
+		`<div class="table-responsive position-relative"><table class="table">`+
+			`<thead><tr><th scope="col" class="text-nowrap" aria-sort="ascending">Name</th><th scope="colgroup">Count</th></tr></thead>`+
+			`<tbody><tr><th scope="row" class="text-nowrap">a</th><td>1</td></tr>`+
+			`<tr><th scope="row" class="text-nowrap">b</th><td>2</td></tr>`+
+			`<tr><th scope="row" class="text-nowrap">c</th><td>3</td></tr></tbody></table></div>`,
+		render(t, sorted)))
+
+	// A lazy node runs once per render, not once per cell.
+	calls := 0
+	counted := attr.Fn(func(context.Context) (attr.Node, error) {
+		calls++
+		return attr.Class("text-end"), nil
+	})
+	counting := bs.DataTable{Columns: []bs.Column{{Header: text.Text("H")}, {Header: text.Text("N"), Attrs: counted}}, Rows: rows}
+	render(t, counting)
+	t.Must(be.Equal(1, calls))
+
+	// A single-use sequence reaches every cell of its column.
+	used := false
+	once := attr.Seq(func(yield func(attr.Node) bool) {
+		if used {
+			return
+		}
+		used = true
+		yield(attr.Class("text-end"))
+	})
+	t.Must(be.Equal(
+		`<div class="table-responsive position-relative"><table class="table">`+
+			`<thead><tr><th scope="col" class="text-end">N</th></tr></thead>`+
+			`<tbody><tr><td class="text-end">1</td></tr><tr><td class="text-end">2</td></tr></tbody></table></div>`,
+		render(t, bs.DataTable{Columns: []bs.Column{{Header: text.Text("N"), Attrs: once}},
+			Rows: []bs.TableRow{{Cells: []elem.Node{text.Text("1")}}, {Cells: []elem.Node{text.Text("2")}}}})))
 }
 
 func TestDataTableOptions(gt *testing.T) {

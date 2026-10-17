@@ -50,12 +50,14 @@ func ExampleField_inputGroup() {
 	// Output: <div class="mb-3"><label class="form-label visually-hidden" for="search">Search notes</label><div class="input-group"><input class="form-control" type="search" id="search" name="q" inputmode="search"/><button class="btn btn-outline-secondary" type="button">Search</button></div></div>
 }
 
-// A password field never carries a value.
+// A password field never carries a value, neither in Value nor in Attrs.
 func ExampleField_password() {
 	core.Dump(bs.Field{ID: "password", Name: "password", Label: text.Text("Password"), Type: input.Password, Autocomplete: "current-password"})
 	core.Dump(bs.Field{ID: "password", Name: "password", Label: text.Text("Password"), Type: input.Password, Value: "hunter2"})
+	core.Dump(bs.Field{ID: "password", Name: "password", Label: text.Text("Password"), Type: input.Password, Attrs: input.Value("hunter2")})
 	// Output:
 	// <div class="mb-3"><label class="form-label" for="password">Password</label><input class="form-control" type="password" id="password" name="password" autocomplete="current-password"/></div>
+	// ERROR: render: at [0]: bs.Field: invalid option: a password field must not carry a value
 	// ERROR: render: at [0]: bs.Field: invalid option: a password field must not carry a value
 }
 

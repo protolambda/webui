@@ -87,7 +87,8 @@ func ExampleDetailsDropdown() {
 }
 
 // A typed table: header cells have scope="col", the first column holds row
-// headers, and the actions column has a visually hidden header.
+// headers (and is sorted: aria-sort on its header cell only), and the
+// actions column has a visually hidden header.
 func ExampleDataTable() {
 	core.Dump(bs.DataTable{
 		Caption:       text.Text("Projects"),
@@ -95,7 +96,7 @@ func ExampleDataTable() {
 		Small:         true,
 		Hover:         true,
 		Columns: []bs.Column{
-			{Header: text.Text("Name"), RowHeader: true},
+			{Header: text.Text("Name"), RowHeader: true, HeaderAttrs: attr.KV("aria-sort", "ascending")},
 			{Header: text.Text("Tasks"), Attrs: attr.Class("text-end")},
 			{Header: text.Text("Actions"), HeaderHidden: true},
 		},
@@ -103,7 +104,7 @@ func ExampleDataTable() {
 			{Cells: []elem.Node{text.Text("Website"), text.Text("12"), text.A(text.Href("/projects/1"))(text.Text("Open"))}},
 		},
 	})
-	// Output: <div class="table-responsive position-relative"><table class="table table-sm table-hover"><caption class="visually-hidden">Projects</caption><thead><tr><th scope="col">Name</th><th scope="col" class="text-end">Tasks</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody><tr><th scope="row">Website</th><td class="text-end">12</td><td><a href="/projects/1">Open</a></td></tr></tbody></table></div>
+	// Output: <div class="table-responsive position-relative"><table class="table table-sm table-hover"><caption class="visually-hidden">Projects</caption><thead><tr><th scope="col" aria-sort="ascending">Name</th><th scope="col" class="text-end">Tasks</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody><tr><th scope="row">Website</th><td class="text-end">12</td><td><a href="/projects/1">Open</a></td></tr></tbody></table></div>
 }
 
 // Without rows, the Empty node fills one row across all columns.

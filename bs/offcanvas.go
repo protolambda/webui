@@ -20,11 +20,17 @@ import (
 // The markup follows Bootstrap 5.3: div.offcanvas.offcanvas-{placement}#ID
 // tabindex="-1" aria-labelledby="ID-title", holding .offcanvas-header (the
 // title heading with id ID-title and a close button) and .offcanvas-body.
-// Attrs are added to the div.offcanvas; they may replace the tabindex and
-// aria-labelledby defaults, but must not set an id.
+// The aria-labelledby is rendered only when Title is set: without a Title,
+// name the panel with an aria-label in Attrs. Attrs are added to the
+// div.offcanvas; they may replace the tabindex and aria-labelledby
+// defaults, but must not set an id.
 type Offcanvas struct {
-	ID         string             // required id: a token, see ValidID
-	Title      elem.Node          // .offcanvas-title content, the panel's accessible name; nil leaves out the title
+	ID string // required id: a token, see ValidID
+	// Title is the .offcanvas-title content, the panel's accessible name.
+	// Nil leaves out the title and aria-labelledby; then set an aria-label
+	// in Attrs, since Bootstrap's script gives the open panel
+	// role="dialog", which needs a name.
+	Title      elem.Node
 	TitleLevel HeadingLevel       // heading level of the title; zero means h2
 	CloseLabel string             // accessible name of the close button; empty means "Close"
 	Body       elem.Node          // .offcanvas-body content; nil leaves out the body

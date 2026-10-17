@@ -52,10 +52,12 @@ func TestOptions(gt *testing.T) {
 	t.Must(be.Panic(func() { theme.MustAssets(theme.Options{Prefix: "no-slash"}) }))
 }
 
-// TestPublishedIntegrity pins every third-party file twice, by the version in
-// its name and by the value its project publishes, so that a file and its
-// constant cannot be replaced together by mistake.
-func TestPublishedIntegrity(gt *testing.T) {
+// TestPinnedIntegrity pins every third-party file twice, by the version in
+// its name and by its expected integrity value (the one its project
+// publishes, or for Bootstrap Icons, which publishes none, the value checked
+// against the npm registry and jsDelivr), so that a file and its constant
+// cannot be replaced together by mistake.
+func TestPinnedIntegrity(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	pins := map[string]string{
 		"bootstrap-5.3.8.min.css":        "sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB",
@@ -71,9 +73,9 @@ func TestPublishedIntegrity(gt *testing.T) {
 		theme.BootstrapJS:  theme.BootstrapJSIntegrity,
 		theme.IconsCSS:     theme.IconsCSSIntegrity,
 		theme.IconsFont:    theme.IconsFontIntegrity,
-		theme.HTMXJS:       theme.HTMXIntegrity,
-		theme.SSEJS:        theme.SSEIntegrity,
-		theme.WSJS:         theme.WSIntegrity,
+		theme.HTMXJS:       theme.HTMXJSIntegrity,
+		theme.SSEJS:        theme.SSEJSIntegrity,
+		theme.WSJS:         theme.WSJSIntegrity,
 	}
 	t.Must(be.DeepEqual(pins, consts))
 	for name, want := range pins {
@@ -119,15 +121,42 @@ func TestIconsFontPath(gt *testing.T) {
 	t.Must(be.Equal(s.URL(theme.IconsFont), font))
 }
 
-// TestNoEval checks that the scripts that run by default do not evaluate
-// strings as code, which the content security policy forbids.
+// evalCall matches the ways a script evaluates a string as code: eval in any
+// form (direct, indirect as (0,eval)(s), or by name as window["eval"]) and
+// the Function constructor, with or without new.
+var evalCall = regexp.MustCompile(`\beval\b|\bFunction\s*\(`)
+
+// TestNoEval checks that the htmx extensions and Bootstrap's script never
+// evaluate strings as code, which the content security policy forbids.
+//
+// htmx itself is left out on purpose: it has eval paths (hx-on handlers,
+// event filters, js: and javascript: values), and webui keeps them unused
+// in two ways: hx2.Config's zero value sets allowEval false, and the default
+// content security policy has no 'unsafe-eval'. The check on htmx shows the
+// pattern finds them, so a clean result elsewhere means something.
 func TestNoEval(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	for _, name := range []string{theme.SSEJS, theme.WSJS} {
+	for _, name := range []string{theme.SSEJS, theme.WSJS, theme.BootstrapJS} {
 		data, err := fs.ReadFile(theme.FS(), name)
 		t.Must(be.NoError(err))
-		t.Must(be.False(strings.Contains(string(data), "eval(")))
-		t.Must(be.False(strings.Contains(string(data), "new Function")))
+		t.Mustf(be.Nil(evalCall.Find(data)), "%s evaluates strings: %q", name, evalCall.Find(data))
+	}
+	htmx, err := fs.ReadFile(theme.FS(), theme.HTMXJS)
+	t.Must(be.NoError(err))
+	t.Must(be.GreaterOrEq(len(evalCall.FindAll(htmx, -1)), 3))
+
+	for _, c := range []struct {
+		src  string
+		want bool
+	}{
+		{`return Function(t)()`, true},
+		{`new Function("event", n)`, true},
+		{`(0,eval)(x)`, true},
+		{`window["eval"](x)`, true},
+		{`eval (x)`, true},
+		{`isFunction(x); retrieval(x); evaluate(x)`, false},
+	} {
+		t.Mustf(be.Equal(c.want, evalCall.MatchString(c.src)), "%s", c.src)
 	}
 }
 

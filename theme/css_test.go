@@ -3,9 +3,11 @@ package theme_test
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,8 +32,21 @@ const (
 // htmxClasses are the classes htmx itself puts on elements during a request and a swap.
 var htmxClasses = []string{"htmx-added", "htmx-indicator", "htmx-request", "htmx-settling", "htmx-swapping"}
 
-// darkScopes are the prefixes that scope a theme selector to the dark color mode.
-var darkScopes = []string{`[data-bs-theme="dark"]`, `:where([data-bs-theme="dark"])`, `html[data-bs-theme="dark"]`}
+// The scopes of the theme part of webui.css. Each is anchored on the root element in the dark color mode, so that
+// Bootstrap's per-component color modes on a light page (a navbar marked data-bs-theme="dark") stay stock Bootstrap.
+const (
+	// darkVars is the selector of the rules that declare variables: the dark root, and again every element marked
+	// dark inside it, as Bootstrap's own [data-bs-theme=dark] block does. It is as specific as one attribute, so that
+	// a page's [data-bs-theme="dark"] { --webui-...: ... } linked later overrides it.
+	darkVars = `[data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *)`
+	// darkRoot is the selector of the rules on the root element itself.
+	darkRoot = `html[data-bs-theme="dark"]`
+	// darkScope prefixes the other theme selectors: as specific as one attribute, so that it beats Bootstrap's
+	// rule for the same classes.
+	darkScope = `[data-bs-theme="dark"]:where(:root) `
+	// darkDefault prefixes the theme selectors of defaults, which add no specificity (see "Specificity" in webui.css).
+	darkDefault = `:where(:root[data-bs-theme="dark"]) `
+)
 
 // allowedAtRules are the at-rules webui.css may use.
 var allowedAtRules = []string{"media", "supports"}
@@ -486,14 +501,16 @@ func emptyOrDuplicated(sh *sheet) []string {
 	return out
 }
 
-// misscoped lists the selectors outside the dark scope in the theme part of sh (before the byte offset marker), and
+// misscoped lists the selectors outside the dark scopes in the theme part of sh (before the byte offset marker), and
 // those that name a color mode in the behavior part (from marker on).
 func misscoped(sh *sheet, marker int) []string {
 	var out []string
 	for _, r := range sh.rules {
 		for _, sel := range r.selectors {
 			if r.offset < marker {
-				if !slices.ContainsFunc(darkScopes, func(p string) bool { return strings.HasPrefix(sel, p) }) {
+				scoped := sel == darkVars || sel == darkRoot ||
+					strings.HasPrefix(sel, darkScope) || strings.HasPrefix(sel, darkDefault)
+				if !scoped {
 					out = append(out, "theme rule outside the dark scope: "+sel)
 				}
 			} else if strings.Contains(sel, "data-bs-theme") {
@@ -520,6 +537,106 @@ func forbiddenIn(src string, sh *sheet) ([]string, error) {
 	for _, name := range sh.atRules {
 		if !slices.Contains(allowedAtRules, name) {
 			out = append(out, "@"+name)
+		}
+	}
+	return out, nil
+}
+
+// fragilePseudos are the pseudo-classes and pseudo-elements that some browser may not know: vendor-prefixed ones
+// (Chromium and Safari do not know the ::-moz- ones, Firefox not most ::-webkit- ones) and recent ones. A browser drops
+// a whole selector list that names one it does not know, so a selector with one of them must be the only one of its
+// rule.
+var fragilePseudos = []string{":-moz-", ":-webkit-", ":modal", ":popover-open", ":has("}
+
+// fragileLists lists the selectors that name a fragile pseudo-class or pseudo-element in a rule with other selectors.
+func fragileLists(sh *sheet) []string {
+	var out []string
+	for _, r := range sh.rules {
+		if len(r.selectors) < 2 {
+			continue
+		}
+		for _, sel := range r.selectors {
+			s := strings.ToLower(withoutAttributes(sel))
+			if slices.ContainsFunc(fragilePseudos, func(p string) bool { return strings.Contains(s, p) }) {
+				out = append(out, sel)
+			}
+		}
+	}
+	return out
+}
+
+// notArguments returns the selectors in the arguments of every :not() of sel, whitespace-normalized.
+func notArguments(sel string) ([]string, error) {
+	var out []string
+	for rest := sel; ; {
+		i := strings.Index(rest, ":not(")
+		if i < 0 {
+			return out, nil
+		}
+		start := i + len(":not(")
+		end, err := scan(rest, start, ")")
+		if err != nil {
+			return nil, err
+		}
+		if end == len(rest) {
+			return nil, fmt.Errorf("%w :not( in %q", errUnbalanced, sel)
+		}
+		args, err := split(rest[start:end], ',')
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range args {
+			out = append(out, strings.Join(strings.Fields(a), " "))
+		}
+		rest = rest[end+1:]
+	}
+}
+
+var tableVariantPattern = regexp.MustCompile(`^\.table-[a-z]+$`)
+
+// tableVariants returns the contextual table variants of base (.table-light and the others): the single-class rules
+// that set both the text and the background color of a table's cells.
+func tableVariants(base *sheet) []string {
+	var out []string
+	for _, r := range base.rules {
+		if len(r.selectors) != 1 || !tableVariantPattern.MatchString(r.selectors[0]) {
+			continue
+		}
+		props := make(map[string]bool)
+		for _, d := range r.decls {
+			props[d.prop] = true
+		}
+		if props["--bs-table-color"] && props["--bs-table-bg"] && !slices.Contains(out, r.selectors[0]) {
+			out = append(out, r.selectors[0])
+		}
+	}
+	return out
+}
+
+// tableColorsOverVariants lists the selectors of sh that set the text color of table cells without leaving out every
+// variant, both on the cell itself and on an ancestor (the table, its head or body, the row): a variant keeps its
+// fixed light background in dark mode, so the theme's light text would vanish on it.
+func tableColorsOverVariants(sh *sheet, variants []string) ([]string, error) {
+	var out []string
+	for _, r := range sh.rules {
+		if !slices.ContainsFunc(r.decls, func(d decl) bool { return d.prop == "color" }) {
+			continue
+		}
+		for _, sel := range r.selectors {
+			classes := classPattern.FindAllStringSubmatch(withoutAttributes(sel), -1)
+			if !slices.ContainsFunc(classes, func(m []string) bool { return m[1] == "table" || m[1] == "table-sm" }) {
+				continue
+			}
+			args, err := notArguments(sel)
+			if err != nil {
+				return nil, err
+			}
+			for _, v := range variants {
+				if !slices.Contains(args, v) || !slices.Contains(args, v+" *") {
+					out = append(out, sel)
+					break
+				}
+			}
 		}
 	}
 	return out, nil
@@ -559,6 +676,80 @@ func load(t devtest.T) *themeSheets {
 	return s
 }
 
+var varOnly = regexp.MustCompile(`^var\(\s*(--[_a-zA-Z0-9-]+)\s*\)$`)
+
+// darkColor returns the color that the custom property prop has on an element with the class cls, on a page in the
+// dark color mode: the theme's declaration for cls, else Bootstrap's for cls, else the dark mode's global value (the
+// theme's, else Bootstrap's dark one, else Bootstrap's root one), following var() references. It understands just
+// what the color checks need: values that are a single var() or a hex color.
+func (s *themeSheets) darkColor(cls, prop string) (rgb [3]uint8, err error) {
+	name := prop
+	for range 10 {
+		value, ok := s.theme.lookup(darkScope+cls, name)
+		if !ok {
+			value, ok = s.bootstrap.lookup(cls, name)
+		}
+		if !ok {
+			value, ok = s.theme.lookup(darkVars, name)
+		}
+		if !ok {
+			value, ok = s.bootstrap.lookup("[data-bs-theme=dark]", name)
+		}
+		if !ok {
+			value, ok = s.bootstrap.lookup(":root", name)
+		}
+		if !ok {
+			return rgb, fmt.Errorf("%s: %s is declared nowhere", prop, name)
+		}
+		if m := varOnly.FindStringSubmatch(value); m != nil {
+			name = m[1]
+			continue
+		}
+		return parseHex(value)
+	}
+	return rgb, fmt.Errorf("%s: too many var() references", prop)
+}
+
+// parseHex parses a #rgb or #rrggbb color.
+func parseHex(value string) (rgb [3]uint8, err error) {
+	h, ok := strings.CutPrefix(strings.ToLower(value), "#")
+	if len(h) == 3 {
+		h = string([]byte{h[0], h[0], h[1], h[1], h[2], h[2]})
+	}
+	if !ok || len(h) != 6 {
+		return rgb, fmt.Errorf("%w: not a hex color: %q", errSyntax, value)
+	}
+	for i := range rgb {
+		n, err := strconv.ParseUint(h[2*i:2*i+2], 16, 8)
+		if err != nil {
+			return rgb, fmt.Errorf("%w: not a hex color: %q", errSyntax, value)
+		}
+		rgb[i] = uint8(n)
+	}
+	return rgb, nil
+}
+
+// contrast returns the WCAG 2 contrast ratio of two colors.
+func contrast(a, b [3]uint8) float64 {
+	luminance := func(c [3]uint8) float64 {
+		var l [3]float64
+		for i, v := range c {
+			f := float64(v) / 255
+			if f <= 0.04045 {
+				l[i] = f / 12.92
+			} else {
+				l[i] = math.Pow((f+0.055)/1.055, 2.4)
+			}
+		}
+		return 0.2126*l[0] + 0.7152*l[1] + 0.0722*l[2]
+	}
+	la, lb := luminance(a), luminance(b)
+	if la < lb {
+		la, lb = lb, la
+	}
+	return (la + 0.05) / (lb + 0.05)
+}
+
 // tokens returns the --webui- tokens of sh with their defaults, sorted by name.
 func tokens(sh *sheet) [][2]string {
 	var out [][2]string
@@ -571,35 +762,38 @@ func tokens(sh *sheet) [][2]string {
 	return out
 }
 
-// The theme's own custom properties and their defaults. A page tunes the theme by overriding them in a stylesheet of
-// its own, linked after the theme, e.g. [data-bs-theme="dark"] { --webui-focus-color: var(--bs-warning); }.
-func Example_tokens() {
-	s, err := loadSheets()
-	if err != nil {
-		fmt.Println(err)
-		return
+// TestTokens pins the theme's own custom properties, the tuning surface that the package documentation lists, and
+// their defaults. They are declared only on darkVars, as specific as the [data-bs-theme="dark"] selector that the
+// documentation gives for overrides.
+func TestTokens(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	s := load(t)
+	t.Must(be.DeepEqual([][2]string{
+		{"--webui-control-border", "var(--bs-border-color)"},
+		{"--webui-fill-danger", "#a12733"},
+		{"--webui-fill-danger-hover", "#bb2d3b"},
+		{"--webui-fill-info", "#0ba5c3"},
+		{"--webui-fill-info-hover", "#0cb5d8"},
+		{"--webui-fill-primary", "#0b4aa8"},
+		{"--webui-fill-primary-hover", "#0d58c8"},
+		{"--webui-fill-secondary", "#3a4047"},
+		{"--webui-fill-secondary-hover", "#4a5159"},
+		{"--webui-fill-success", "#126239"},
+		{"--webui-fill-success-hover", "#157347"},
+		{"--webui-fill-warning", "#c79100"},
+		{"--webui-fill-warning-hover", "#dba000"},
+		{"--webui-focus-color", "var(--bs-primary)"},
+		{"--webui-focus-offset", "1px"},
+		{"--webui-focus-width", "2px"},
+		{"--webui-nav-link-color", "#9cc4ff"},
+	}, tokens(s.theme)))
+	for _, r := range s.theme.rules {
+		for _, d := range r.decls {
+			if strings.HasPrefix(d.prop, "--webui-") {
+				t.Mustf(be.DeepEqual([]string{darkVars}, r.selectors), "%s declared on %q", d.prop, r.selectors)
+			}
+		}
 	}
-	for _, tok := range tokens(s.theme) {
-		fmt.Printf("%s: %s\n", tok[0], tok[1])
-	}
-	// Output:
-	// --webui-control-border: var(--bs-border-color)
-	// --webui-fill-danger: #a12733
-	// --webui-fill-danger-hover: #bb2d3b
-	// --webui-fill-info: #0ba5c3
-	// --webui-fill-info-hover: #0cb5d8
-	// --webui-fill-primary: #0b4aa8
-	// --webui-fill-primary-hover: #0d58c8
-	// --webui-fill-secondary: #3a4047
-	// --webui-fill-secondary-hover: #4a5159
-	// --webui-fill-success: #126239
-	// --webui-fill-success-hover: #157347
-	// --webui-fill-warning: #c79100
-	// --webui-fill-warning-hover: #dba000
-	// --webui-focus-color: var(--bs-primary)
-	// --webui-focus-offset: 1px
-	// --webui-focus-width: 2px
-	// --webui-nav-link-color: #9cc4ff
 }
 
 // TestThemeFile checks the encoding and the shape of the file, and that both stylesheets parse into a plausible
@@ -632,6 +826,91 @@ func TestThemeSelectors(gt *testing.T) {
 	t.Mustf(be.Empty(ids), "id selectors: %q", ids)
 	scope := misscoped(s.theme, strings.Index(s.src, behaviorMarker))
 	t.Mustf(be.Empty(scope), "%q", scope)
+	fragile := fragileLists(s.theme)
+	t.Mustf(be.Empty(fragile), "fragile selectors in a selector list: %q", fragile)
+}
+
+// TestThemeTableVariants checks that the theme's text colors for table cells leave Bootstrap's contextual table
+// variants alone, wherever the variant class is: they keep their light backgrounds in dark mode, with black text.
+func TestThemeTableVariants(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	s := load(t)
+	variants := tableVariants(s.bootstrap)
+	t.Must(be.DeepEqual([]string{".table-primary", ".table-secondary", ".table-success", ".table-info",
+		".table-warning", ".table-danger", ".table-light", ".table-dark"}, variants))
+	over, err := tableColorsOverVariants(s.theme, variants)
+	t.Must(be.NoError(err))
+	t.Mustf(be.Empty(over), "table cell colors over the variants: %q", over)
+
+	// The header cells still get the muted color and the caption size.
+	head := darkScope + `.table > thead th`
+	got, ok := s.theme.lookup(head, "font-size")
+	t.Must(be.True(ok))
+	t.Must(be.Equal("0.8em", got))
+	var muted []string
+	for _, r := range s.theme.rules {
+		for _, sel := range r.selectors {
+			if strings.HasPrefix(sel, head+":not(") &&
+				slices.ContainsFunc(r.decls, func(d decl) bool { return d.prop == "color" && d.value == "var(--bs-secondary-color)" }) {
+				muted = append(muted, sel)
+			}
+		}
+	}
+	t.Must(be.Len(muted, 1))
+}
+
+// TestThemeContrast checks the non-text contrast of the selected states and of the progress bar, on the black body, as
+// computed from the declared colors: 3:1 for the state, 4.5:1 for the text on a fill. A state without a border is
+// shown by its fill alone.
+func TestThemeContrast(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	s := load(t)
+	color := func(t devtest.T, cls, prop string) [3]uint8 {
+		t.Helper()
+		c, err := s.darkColor(cls, prop)
+		t.Must(be.NoError(err))
+		return c
+	}
+	body := color(t, ".x", "--bs-body-bg")
+	bar := color(t, ".x", "--bs-tertiary-bg")
+	t.Must(be.Equal([3]uint8{0, 0, 0}, body))
+	for _, c := range []struct {
+		name     string
+		fg, bg   [3]uint8
+		minRatio float64
+	}{
+		{"active nav pill", color(t, ".nav-pills", "--bs-nav-pills-link-active-bg"), body, 3},
+		{"active nav pill on a bar", color(t, ".nav-pills", "--bs-nav-pills-link-active-bg"), bar, 3},
+		{"active nav pill text", color(t, ".nav-pills", "--bs-nav-pills-link-active-color"),
+			color(t, ".nav-pills", "--bs-nav-pills-link-active-bg"), 4.5},
+		{"active dropdown item", color(t, ".dropdown-menu", "--bs-dropdown-link-active-bg"),
+			color(t, ".dropdown-menu", "--bs-dropdown-bg"), 3},
+		{"active dropdown item text", color(t, ".dropdown-menu", "--bs-dropdown-link-active-color"),
+			color(t, ".dropdown-menu", "--bs-dropdown-link-active-bg"), 4.5},
+		{"active list item border", color(t, ".list-group", "--bs-list-group-active-border-color"), body, 3},
+		{"active page border", color(t, ".pagination", "--bs-pagination-active-border-color"), body, 3},
+		{"progress bar on its track", color(t, ".progress", "--bs-progress-bar-bg"),
+			color(t, ".progress", "--bs-progress-bg"), 3},
+		{"progress bar on the body", color(t, ".progress", "--bs-progress-bar-bg"), body, 3},
+		{"progress label", color(t, ".progress", "--bs-progress-bar-color"),
+			color(t, ".progress", "--bs-progress-bar-bg"), 4.5},
+		{"progress track border", color(t, ".x", "--webui-control-border"), body, 3},
+		{"focus outline", color(t, ".x", "--webui-focus-color"), body, 3},
+	} {
+		ratio := contrast(c.fg, c.bg)
+		t.Mustf(be.GreaterOrEq(ratio, c.minRatio), "%s: %.2f:1", c.name, ratio)
+	}
+
+	// The track of a progress bar has the border whose contrast is checked above; the segments of a stacked bar do not.
+	for _, want := range []struct{ selector, value string }{
+		{darkScope + ".progress", "var(--bs-border-width) solid var(--webui-control-border)"},
+		{darkScope + ".progress-stacked", "var(--bs-border-width) solid var(--webui-control-border)"},
+		{darkScope + ".progress-stacked > .progress", "0"},
+	} {
+		got, ok := s.theme.lookup(want.selector, "border")
+		t.Mustf(be.True(ok), "%s { border }", want.selector)
+		t.Mustf(be.Equal(want.value, got), "%s { border }", want.selector)
+	}
 }
 
 // TestThemeVariables checks the custom properties: every one read is declared by the theme or by Bootstrap, every
@@ -772,13 +1051,73 @@ func TestCheckers(gt *testing.T) {
 		t.Must(be.DeepEqual([]string{"empty: .btn", "duplicate color: .modal"}, emptyOrDuplicated(sh)))
 	})
 	t.Run("scope", func(t devtest.T) {
-		src := `[data-bs-theme="dark"] .btn, .modal {color:red}
+		src := `[data-bs-theme="dark"]:where(:root) .btn, .modal {color:red}
+			[data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *) {--bs-body-bg:#000}
+			:where(:root[data-bs-theme="dark"]) .btn, html[data-bs-theme="dark"] {color:red}
+			[data-bs-theme="dark"] {--bs-body-bg:#000} [data-bs-theme="dark"] .btn {color:red}
 			/* ---- Behavior */ [data-bs-theme="dark"] .x, dialog {color:red}`
 		sh := parse(t, src)
 		t.Must(be.DeepEqual([]string{
 			"theme rule outside the dark scope: .modal",
+			`theme rule outside the dark scope: [data-bs-theme="dark"]`,
+			`theme rule outside the dark scope: [data-bs-theme="dark"] .btn`,
 			`behavior rule bound to a color mode: [data-bs-theme="dark"] .x`,
 		}, misscoped(sh, strings.Index(src, behaviorMarker))))
+	})
+	t.Run("fragile", func(t devtest.T) {
+		sh := parse(t, `.a::-moz-range-thumb, .b {color:red} dialog:modal {display:block}
+			.c:has(.d), [data-x=":modal"] {color:red} .e::-webkit-slider-thumb {color:red}`)
+		t.Must(be.DeepEqual([]string{".a::-moz-range-thumb", ".c:has(.d)"}, fragileLists(sh)))
+	})
+	t.Run("table variants", func(t devtest.T) {
+		bs := parse(t, `.table-light{--bs-table-color:#000;--bs-table-bg:#f8f9fa}.table-dark{--bs-table-color:#fff;
+			--bs-table-bg:#212529}.table-active{--bs-table-color-state:#fff}.table-sm>*{padding:0}`)
+		variants := tableVariants(bs)
+		t.Must(be.DeepEqual([]string{".table-light", ".table-dark"}, variants))
+		sh := parse(t, `.table > thead th {color:red} .table th:not(.table-light, .table-dark) {color:red}
+			.table td:not(.table-light, .table-light *, .table-dark, .table-dark *) {color:red}
+			.table > thead th {font-weight:600} .x th {color:red}`)
+		over, err := tableColorsOverVariants(sh, variants)
+		t.Must(be.NoError(err))
+		t.Must(be.DeepEqual([]string{".table > thead th", ".table th:not(.table-light, .table-dark)"}, over))
+	})
+	t.Run("colors", func(t devtest.T) {
+		got, err := parseHex("#0D6efd")
+		t.Must(be.NoError(err))
+		t.Must(be.Equal([3]uint8{13, 110, 253}, got))
+		got, err = parseHex("#fff")
+		t.Must(be.NoError(err))
+		t.Must(be.Equal([3]uint8{255, 255, 255}, got))
+		for _, bad := range []string{"fff", "#ffff", "#ggg", "rgba(0, 0, 0, 0.5)", "var(--x)"} {
+			_, err = parseHex(bad)
+			t.Mustf(be.ErrorIs(err, errSyntax), "%q", bad)
+		}
+		t.Must(be.InDelta(21, contrast([3]uint8{255, 255, 255}, [3]uint8{0, 0, 0}), 0.001))
+		t.Must(be.InDelta(2.559, contrast([3]uint8{0, 0, 0}, [3]uint8{0x0b, 0x4a, 0xa8}), 0.001))
+		t.Must(be.InDelta(2.559, contrast([3]uint8{0x0b, 0x4a, 0xa8}, [3]uint8{0, 0, 0}), 0.001))
+
+		sheets := &themeSheets{
+			theme: parse(t, `[data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *){--webui-a:var(--bs-a)}
+				[data-bs-theme="dark"]:where(:root) .c{--bs-c:var(--webui-a)}`),
+			bootstrap: parse(t, `:root{--bs-a:#111;--bs-b:#222}[data-bs-theme=dark]{--bs-a:#333}.c{--bs-c:#444;--bs-d:var(--bs-b)}
+				.loop{--bs-e:var(--bs-f);--bs-f:var(--bs-e)}`),
+		}
+		for _, c := range []struct {
+			cls, prop string
+			want      [3]uint8
+		}{
+			{".c", "--bs-c", [3]uint8{0x33, 0x33, 0x33}},
+			{".c", "--bs-d", [3]uint8{0x22, 0x22, 0x22}},
+			{".x", "--webui-a", [3]uint8{0x33, 0x33, 0x33}},
+		} {
+			got, err := sheets.darkColor(c.cls, c.prop)
+			t.Must(be.NoError(err))
+			t.Mustf(be.Equal(c.want, got), "%s %s", c.cls, c.prop)
+		}
+		_, err = sheets.darkColor(".c", "--bs-nope")
+		t.Must(be.Error(err))
+		_, err = sheets.darkColor(".loop", "--bs-e")
+		t.Must(be.Error(err))
 	})
 	t.Run("forbidden", func(t devtest.T) {
 		src := `/* url( and @import in a comment are prose */

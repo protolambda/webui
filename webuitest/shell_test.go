@@ -250,7 +250,7 @@ func TestDefaultShell(gt *testing.T) {
 	}
 	t.Must(be.DeepEqual([]string{theme.HTMXJS, theme.SSEJS}, names))
 	t.Must(be.Equal(theme.BootstrapCSSIntegrity, s.Stylesheets[0].Integrity))
-	t.Must(be.Equal(theme.HTMXIntegrity, s.Scripts[0].Integrity))
+	t.Must(be.Equal(theme.HTMXJSIntegrity, s.Scripts[0].Integrity))
 	t.Must(be.Equal("/assets/webui/", s.Scripts[0].URL[:len("/assets/webui/")]))
 
 	app := asset.Must(asset.New(asset.Options{Prefix: "/assets/app/", FS: fstest.MapFS{

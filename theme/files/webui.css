@@ -7,38 +7,55 @@
  * - The pages keep using Bootstrap's classes and theme colors; this file changes what they look like. Its selectors
  *   name only Bootstrap's classes and htmx's classes (besides elements, attributes and pseudo-classes): it adds no
  *   classes of its own, and it assumes no ids and no page layout.
- * - Its own custom properties are prefixed --webui-. A page may override them, on <html> or on any element, to tune
- *   the theme. Everything else re-points Bootstrap's own --bs-* properties.
- * - The theme rules are scoped to [data-bs-theme="dark"], so a page in the light color mode gets stock Bootstrap. The
- *   theme is made for a whole page in dark mode: a light region nested in a dark page is not supported. The behavior
- *   rules at the end (a dialog as a modal, the details-based accordion and dropdown, the htmx request indicators)
- *   apply in every color mode.
+ * - Its own custom properties are prefixed --webui- (the tokens, declared at the top). A page tunes the theme by
+ *   overriding them in a stylesheet of its own, linked after this one, with a selector at least as specific as
+ *   [data-bs-theme="dark"]: [data-bs-theme="dark"] { --webui-focus-color: var(--bs-warning); } (a bare html selector
+ *   is less specific, and loses), or with a class on an element, for that element's subtree. Everything else
+ *   re-points Bootstrap's own --bs-* properties.
+ * - The theme is anchored on the root: it applies when <html> has data-bs-theme="dark", to the whole page. Bootstrap's
+ *   per-component color modes keep Bootstrap's look: on a light page, an element marked data-bs-theme="dark" (a
+ *   navbar, a dropdown) is stock Bootstrap dark, and the rest of the page stock Bootstrap light. On a dark page, an
+ *   element marked dark again keeps the theme (its variables are declared again there, as Bootstrap's are); a light
+ *   region nested in a dark page is not supported. The behavior rules at the end (a dialog as a modal, the
+ *   details-based accordion and dropdown, the htmx request indicators) apply in every color mode.
  * - It works under a strict Content Security Policy (style-src 'self'): no @import (a sheet pulled in that way would
  *   escape the integrity check and add a fetch), no url() (no fetches at all; Bootstrap's own icons are data: URIs),
  *   and nothing that needs an inline style or a script.
  * - No @layer: Bootstrap is not layered, and unlayered rules beat layered ones, so a layered theme would lose
  *   everywhere.
+ * - A selector that names a pseudo-class or pseudo-element that some browser does not know (a vendor-prefixed one,
+ *   :modal, :popover-open, :has()) is the only selector of its rule: a browser drops a whole selector list when it
+ *   does not know one of its entries.
  *
- * Specificity: [data-bs-theme="dark"] .x is one attribute more specific than Bootstrap's .x, so it wins. The rules
- * that set a default which Bootstrap's modifiers must still override (the padding and border of a field, the fill of
- * a checked box, the height of a button) are scoped with :where([data-bs-theme="dark"]) instead, which adds no
- * specificity: such a rule beats Bootstrap's base rule by coming later, and loses to its state and size rules
+ * Specificity: the theme rules are scoped with [data-bs-theme="dark"]:where(:root), as specific as one attribute
+ * (:where adds none), so [data-bs-theme="dark"]:where(:root) .x beats Bootstrap's .x. The variables are declared on
+ * [data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *), as specific as Bootstrap's [data-bs-theme=dark]
+ * block and later, so they win there, and a page's [data-bs-theme="dark"] override linked later wins over them. The
+ * rules that set a default which Bootstrap's modifiers must still override (the padding and border of a field, the
+ * fill of a checked box, the height of a button) are scoped with :where(:root[data-bs-theme="dark"]) instead, which
+ * adds no specificity: such a rule beats Bootstrap's base rule by coming later, and loses to its state and size rules
  * (.is-invalid, .was-validated, .form-control-sm, .btn-group-sm, .form-floating) as Bootstrap intends.
  *
  * Contrast, as WCAG 2 ratios (rounded down) on the black body unless noted:
  * - Text 18.2:1. Muted text (secondary) 15.2:1, and 14.3:1 on a bar (tertiary). Faint text (tertiary, placeholders)
  *   8.2:1, and 7.6:1 on a disabled field. Links 13.4:1, 17.9:1 on hover; nav links 11.7:1; code 13.0:1; navbar links
  *   14.1:1 on a tertiary bar.
- * - Borders and rules (of fields, outline buttons, list groups, tables, floating layers, hr) 5.6:1, so a panel and a
- *   field are found by their outline; the translucent borders (cards, dividers) 4.4:1.
+ * - Borders and rules (of fields, outline buttons, list groups, tables, floating layers, hr, progress tracks) 5.6:1,
+ *   so a panel and a field are found by their outline; the translucent borders (cards, dividers) 4.4:1.
  * - White text on the primary, secondary, success and danger fills 7.3:1 or more at rest, 5.8:1 or more on hover;
  *   black text on the warning and info fills 7.1:1 or more.
+ * - Selected states, as the 3:1 asked of non-text contrast: the list group, pagination and checked box add a primary
+ *   border, 4.6:1. The active nav pill and dropdown item have no border, so they take the lighter primary fill, 3.2:1
+ *   (3.0:1 on a tertiary bar), white text on it 6.4:1. A progress bar keeps Bootstrap's primary, 3.9:1 on its track
+ *   and 4.6:1 on black, its white label 4.5:1; the track is bordered.
  * - The focus outline (Bootstrap's primary) 4.6:1, above the 3:1 asked of non-text contrast.
  *
  * Fixed-color classes keep Bootstrap's colors, which glare or fall short on black: .bg-primary and the other .bg-*
- * utilities, .text-secondary (4.48:1, below the 4.5:1 asked of text), .btn-light, .btn-dark, .navbar-dark,
- * .dropdown-menu-dark. Use the classes that follow the theme instead: .text-bg-*, .text-body-secondary,
- * .bg-body-tertiary, .border.
+ * utilities, .text-secondary (4.48:1, below the 4.5:1 asked of text), .btn-light, .btn-dark, and the contextual table
+ * variants (.table-light, .table-primary and the others, whose light backgrounds stay, with their black text, header
+ * cells included). .navbar-dark takes the theme's navbar link colors, and .dropdown-menu-dark keeps Bootstrap's
+ * background but takes the theme's border, header and active colors. Use the classes that follow the theme instead:
+ * .text-bg-*, .text-body-secondary, .bg-body-tertiary, .border.
  */
 
 /* Density: every rem of Bootstrap (text, paddings, gaps) follows the root size, which stays relative to the size the
@@ -47,8 +64,9 @@ html[data-bs-theme="dark"] {
   font-size: 87.5%;
 }
 
-[data-bs-theme="dark"] {
-  /* The border of a control (fields, outline buttons) and of a floating layer (dropdown menu, modal, toast). */
+[data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *) {
+  /* The border of a control (fields, outline buttons), of a floating layer (dropdown menu, modal, toast) and of a
+   * progress track. */
   --webui-control-border: var(--bs-border-color);
 
   /* The keyboard focus: one outline for every focusable element (see "Focus" below). */
@@ -60,9 +78,11 @@ html[data-bs-theme="dark"] {
   --webui-nav-link-color: #9cc4ff;
 
   /*
-   * The fills of filled elements (buttons, badges, the selected item of a list, a checked box, a progress bar): darker
-   * than Bootstrap's theme colors, which glare on black. The hover fills are lighter. Bootstrap's own theme colors
-   * (--bs-primary and the others) are kept: they draw the borders of the filled buttons.
+   * The fills of filled elements (buttons, badges, the selected item of a list or a pagination, a checked box): darker
+   * than Bootstrap's theme colors, which glare on black. The hover fills are lighter; the selected items that have no
+   * border (an active nav pill, the active item of a dropdown menu) take the primary hover fill, so that they stand
+   * out from black. Bootstrap's own theme colors (--bs-primary and the others) are kept: they draw the borders of the
+   * filled elements, and a progress bar keeps --bs-primary as its fill.
    */
   --webui-fill-danger: #a12733;
   --webui-fill-danger-hover: #bb2d3b;
@@ -116,7 +136,7 @@ html[data-bs-theme="dark"] {
 }
 
 /* Links: the underline a little below the text, clear of the descenders. */
-[data-bs-theme="dark"] a {
+[data-bs-theme="dark"]:where(:root) a {
   text-underline-offset: 0.25em;
 }
 
@@ -130,40 +150,40 @@ html[data-bs-theme="dark"] {
  * too, and nothing on a click. The full-viewport layers of a modal and an offcanvas panel, which take the focus from
  * script, get no outline. A component that needs a ring of its own sets it with a more specific rule.
  */
-[data-bs-theme="dark"] {
+[data-bs-theme="dark"]:where(:root, :root[data-bs-theme="dark"] *) {
   --bs-focus-ring-width: 0;
 }
 
-[data-bs-theme="dark"] .btn {
+[data-bs-theme="dark"]:where(:root) .btn {
   --bs-btn-focus-box-shadow: none;
 }
 
 /* The close button: no glow on a click either, and the corners of the theme. */
-[data-bs-theme="dark"] .btn-close {
+[data-bs-theme="dark"]:where(:root) .btn-close {
   --bs-btn-close-focus-shadow: none;
   border-radius: var(--bs-border-radius);
 }
 
-[data-bs-theme="dark"] .accordion {
+[data-bs-theme="dark"]:where(:root) .accordion {
   --bs-accordion-btn-focus-box-shadow: none;
 }
 
-[data-bs-theme="dark"] .pagination {
+[data-bs-theme="dark"]:where(:root) .pagination {
   --bs-pagination-focus-box-shadow: none;
 }
 
-[data-bs-theme="dark"] .navbar {
+[data-bs-theme="dark"]:where(:root) .navbar {
   --bs-navbar-toggler-focus-width: 0;
 }
 
-[data-bs-theme="dark"] :focus-visible:not(.modal):not(.offcanvas),
-[data-bs-theme="dark"] .form-control:focus,
-[data-bs-theme="dark"] .form-select:focus,
-[data-bs-theme="dark"] .form-check-input:focus,
-[data-bs-theme="dark"] .btn-check:focus-visible + .btn,
-[data-bs-theme="dark"] .was-validated .form-control:focus,
-[data-bs-theme="dark"] .was-validated .form-select:focus,
-[data-bs-theme="dark"] .was-validated .form-check-input:focus {
+[data-bs-theme="dark"]:where(:root) :focus-visible:not(.modal):not(.offcanvas),
+[data-bs-theme="dark"]:where(:root) .form-control:focus,
+[data-bs-theme="dark"]:where(:root) .form-select:focus,
+[data-bs-theme="dark"]:where(:root) .form-check-input:focus,
+[data-bs-theme="dark"]:where(:root) .btn-check:focus-visible + .btn,
+[data-bs-theme="dark"]:where(:root) .was-validated .form-control:focus,
+[data-bs-theme="dark"]:where(:root) .was-validated .form-select:focus,
+[data-bs-theme="dark"]:where(:root) .was-validated .form-check-input:focus {
   box-shadow: none;
   outline: var(--webui-focus-width) solid var(--webui-focus-color);
   outline-offset: var(--webui-focus-offset);
@@ -171,18 +191,18 @@ html[data-bs-theme="dark"] {
 
 /* The thumb of a focused range: Bootstrap glows it with a fixed shadow. One rule each: a browser drops a selector
  * list that names a pseudo-element it does not know. */
-[data-bs-theme="dark"] .form-range:focus::-webkit-slider-thumb {
+[data-bs-theme="dark"]:where(:root) .form-range:focus::-webkit-slider-thumb {
   box-shadow: none;
 }
 
-[data-bs-theme="dark"] .form-range:focus::-moz-range-thumb {
+[data-bs-theme="dark"]:where(:root) .form-range:focus::-moz-range-thumb {
   box-shadow: none;
 }
 
 /* Rules: a horizontal or vertical rule as visible as the borders. Bootstrap draws it in the text color at a quarter of
  * its opacity, 1.9:1 on black. */
-[data-bs-theme="dark"] hr,
-[data-bs-theme="dark"] .vr {
+[data-bs-theme="dark"]:where(:root) hr,
+[data-bs-theme="dark"]:where(:root) .vr {
   color: var(--bs-border-color);
   opacity: 1;
 }
@@ -193,55 +213,55 @@ html[data-bs-theme="dark"] {
  * field keeps the border color of its state and the room for its state icon. A select keeps its right padding, the
  * room for its arrow; the button of a file field follows the field's padding.
  */
-:where([data-bs-theme="dark"]) .form-control:where(:not(.form-control-sm):not(.form-control-lg):not(.form-control-color)) {
+:where(:root[data-bs-theme="dark"]) .form-control:where(:not(.form-control-sm):not(.form-control-lg):not(.form-control-color)) {
   padding: 0.25rem 0.5rem;
 }
 
-:where([data-bs-theme="dark"]) .form-control:where(:not(.form-control-sm):not(.form-control-lg))::file-selector-button {
+:where(:root[data-bs-theme="dark"]) .form-control:where(:not(.form-control-sm):not(.form-control-lg))::file-selector-button {
   margin: -0.25rem -0.5rem;
   margin-inline-end: 0.5rem;
   padding: 0.25rem 0.5rem;
 }
 
-:where([data-bs-theme="dark"]) .form-select:where(:not(.form-select-sm):not(.form-select-lg)) {
+:where(:root[data-bs-theme="dark"]) .form-select:where(:not(.form-select-sm):not(.form-select-lg)) {
   padding-bottom: 0.25rem;
   padding-left: 0.5rem;
   padding-top: 0.25rem;
 }
 
-:where([data-bs-theme="dark"]) .input-group-text {
+:where(:root[data-bs-theme="dark"]) .input-group-text {
   padding: 0.25rem 0.5rem;
 }
 
-:where([data-bs-theme="dark"]) .form-control,
-:where([data-bs-theme="dark"]) .form-select,
-:where([data-bs-theme="dark"]) .form-check-input,
-:where([data-bs-theme="dark"]) .input-group-text {
+:where(:root[data-bs-theme="dark"]) .form-control,
+:where(:root[data-bs-theme="dark"]) .form-select,
+:where(:root[data-bs-theme="dark"]) .form-check-input,
+:where(:root[data-bs-theme="dark"]) .input-group-text {
   border-color: var(--webui-control-border);
 }
 
-:where([data-bs-theme="dark"]) .form-control:focus:where(:not(.is-invalid):not(.is-valid)),
-:where([data-bs-theme="dark"]) .form-select:focus:where(:not(.is-invalid):not(.is-valid)),
-:where([data-bs-theme="dark"]) .form-check-input:focus:where(:not(.is-invalid):not(.is-valid)) {
+:where(:root[data-bs-theme="dark"]) .form-control:focus:where(:not(.is-invalid):not(.is-valid)),
+:where(:root[data-bs-theme="dark"]) .form-select:focus:where(:not(.is-invalid):not(.is-valid)),
+:where(:root[data-bs-theme="dark"]) .form-check-input:focus:where(:not(.is-invalid):not(.is-valid)) {
   border-color: var(--bs-primary);
 }
 
 /* Placeholders: the faint text, so that a hint in an empty field does not read as a value. In a floating label,
  * Bootstrap's transparent placeholder stays. */
-:where([data-bs-theme="dark"]) .form-control::placeholder {
+:where(:root[data-bs-theme="dark"]) .form-control::placeholder {
   color: var(--bs-tertiary-color);
 }
 
 /* A checked box or radio, and a checkbox in the mixed state, take the primary fill; a valid or invalid one keeps the
  * color of its state. */
-:where([data-bs-theme="dark"]) .form-check-input:checked:where(:not(.is-invalid):not(.is-valid)),
-:where([data-bs-theme="dark"]) .form-check-input[type="checkbox"]:indeterminate:where(:not(.is-invalid):not(.is-valid)) {
+:where(:root[data-bs-theme="dark"]) .form-check-input:checked:where(:not(.is-invalid):not(.is-valid)),
+:where(:root[data-bs-theme="dark"]) .form-check-input[type="checkbox"]:indeterminate:where(:not(.is-invalid):not(.is-valid)) {
   background-color: var(--webui-fill-primary);
   border-color: var(--bs-primary);
 }
 
 /* The label of a field: semibold and underlined, so that it reads as the heading of its field. */
-[data-bs-theme="dark"] .form-label {
+[data-bs-theme="dark"]:where(:root) .form-label {
   font-weight: 600;
   margin-bottom: 0.25rem;
   text-decoration: underline;
@@ -249,13 +269,13 @@ html[data-bs-theme="dark"] {
 }
 
 /* Buttons: as high as a field. A default, so that .btn-sm, .btn-lg and the sized button groups keep their size. */
-:where([data-bs-theme="dark"]) .btn:where(:not(.btn-sm):not(.btn-lg)) {
+:where(:root[data-bs-theme="dark"]) .btn:where(:not(.btn-sm):not(.btn-lg)) {
   --bs-btn-padding-x: 0.625rem;
   --bs-btn-padding-y: 0.25rem;
 }
 
 /* The secondary outline button is the everyday button: muted text that reads well, with the border of a control. */
-[data-bs-theme="dark"] .btn-outline-secondary {
+[data-bs-theme="dark"]:where(:root) .btn-outline-secondary {
   --bs-btn-active-bg: var(--webui-fill-secondary);
   --bs-btn-active-border-color: var(--webui-control-border);
   --bs-btn-border-color: var(--webui-control-border);
@@ -270,8 +290,8 @@ html[data-bs-theme="dark"] {
  * stay: white on primary, secondary, success and danger, black on warning and info. The light, dark and link buttons
  * keep Bootstrap's look.
  */
-[data-bs-theme="dark"] .btn-primary,
-[data-bs-theme="dark"] .btn-outline-primary {
+[data-bs-theme="dark"]:where(:root) .btn-primary,
+[data-bs-theme="dark"]:where(:root) .btn-outline-primary {
   --bs-btn-active-bg: var(--webui-fill-primary-hover);
   --bs-btn-active-border-color: var(--bs-primary);
   --bs-btn-border-color: var(--bs-primary);
@@ -281,16 +301,16 @@ html[data-bs-theme="dark"] {
   --bs-btn-hover-border-color: var(--bs-primary);
 }
 
-[data-bs-theme="dark"] .btn-primary {
+[data-bs-theme="dark"]:where(:root) .btn-primary {
   --bs-btn-bg: var(--webui-fill-primary);
 }
 
-[data-bs-theme="dark"] .btn-outline-primary {
+[data-bs-theme="dark"]:where(:root) .btn-outline-primary {
   --bs-btn-color: var(--bs-link-color);
   --bs-btn-disabled-bg: transparent;
 }
 
-[data-bs-theme="dark"] .btn-secondary {
+[data-bs-theme="dark"]:where(:root) .btn-secondary {
   --bs-btn-active-bg: var(--webui-fill-secondary-hover);
   --bs-btn-active-border-color: var(--webui-control-border);
   --bs-btn-bg: var(--webui-fill-secondary);
@@ -301,8 +321,8 @@ html[data-bs-theme="dark"] {
   --bs-btn-hover-border-color: var(--webui-control-border);
 }
 
-[data-bs-theme="dark"] .btn-success,
-[data-bs-theme="dark"] .btn-outline-success {
+[data-bs-theme="dark"]:where(:root) .btn-success,
+[data-bs-theme="dark"]:where(:root) .btn-outline-success {
   --bs-btn-active-bg: var(--webui-fill-success-hover);
   --bs-btn-active-border-color: var(--bs-success);
   --bs-btn-border-color: var(--bs-success);
@@ -312,17 +332,17 @@ html[data-bs-theme="dark"] {
   --bs-btn-hover-border-color: var(--bs-success);
 }
 
-[data-bs-theme="dark"] .btn-success {
+[data-bs-theme="dark"]:where(:root) .btn-success {
   --bs-btn-bg: var(--webui-fill-success);
 }
 
-[data-bs-theme="dark"] .btn-outline-success {
+[data-bs-theme="dark"]:where(:root) .btn-outline-success {
   --bs-btn-color: var(--bs-success-text-emphasis);
   --bs-btn-disabled-bg: transparent;
 }
 
-[data-bs-theme="dark"] .btn-danger,
-[data-bs-theme="dark"] .btn-outline-danger {
+[data-bs-theme="dark"]:where(:root) .btn-danger,
+[data-bs-theme="dark"]:where(:root) .btn-outline-danger {
   --bs-btn-active-bg: var(--webui-fill-danger-hover);
   --bs-btn-active-border-color: var(--bs-danger);
   --bs-btn-border-color: var(--bs-danger);
@@ -332,17 +352,17 @@ html[data-bs-theme="dark"] {
   --bs-btn-hover-border-color: var(--bs-danger);
 }
 
-[data-bs-theme="dark"] .btn-danger {
+[data-bs-theme="dark"]:where(:root) .btn-danger {
   --bs-btn-bg: var(--webui-fill-danger);
 }
 
-[data-bs-theme="dark"] .btn-outline-danger {
+[data-bs-theme="dark"]:where(:root) .btn-outline-danger {
   --bs-btn-color: var(--bs-danger-text-emphasis);
   --bs-btn-disabled-bg: transparent;
 }
 
-[data-bs-theme="dark"] .btn-warning,
-[data-bs-theme="dark"] .btn-outline-warning {
+[data-bs-theme="dark"]:where(:root) .btn-warning,
+[data-bs-theme="dark"]:where(:root) .btn-outline-warning {
   --bs-btn-active-bg: var(--webui-fill-warning-hover);
   --bs-btn-active-border-color: var(--bs-warning);
   --bs-btn-border-color: var(--bs-warning);
@@ -352,17 +372,17 @@ html[data-bs-theme="dark"] {
   --bs-btn-hover-border-color: var(--bs-warning);
 }
 
-[data-bs-theme="dark"] .btn-warning {
+[data-bs-theme="dark"]:where(:root) .btn-warning {
   --bs-btn-bg: var(--webui-fill-warning);
 }
 
-[data-bs-theme="dark"] .btn-outline-warning {
+[data-bs-theme="dark"]:where(:root) .btn-outline-warning {
   --bs-btn-color: var(--bs-warning-text-emphasis);
   --bs-btn-disabled-bg: transparent;
 }
 
-[data-bs-theme="dark"] .btn-info,
-[data-bs-theme="dark"] .btn-outline-info {
+[data-bs-theme="dark"]:where(:root) .btn-info,
+[data-bs-theme="dark"]:where(:root) .btn-outline-info {
   --bs-btn-active-bg: var(--webui-fill-info-hover);
   --bs-btn-active-border-color: var(--bs-info);
   --bs-btn-border-color: var(--bs-info);
@@ -372,102 +392,120 @@ html[data-bs-theme="dark"] {
   --bs-btn-hover-border-color: var(--bs-info);
 }
 
-[data-bs-theme="dark"] .btn-info {
+[data-bs-theme="dark"]:where(:root) .btn-info {
   --bs-btn-bg: var(--webui-fill-info);
 }
 
-[data-bs-theme="dark"] .btn-outline-info {
+[data-bs-theme="dark"]:where(:root) .btn-outline-info {
   --bs-btn-color: var(--bs-info-text-emphasis);
   --bs-btn-disabled-bg: transparent;
 }
 
 /* The links of a nav, and those of the navbar: less translucent than Bootstrap's (0.65, and 0.8 on hover). */
-[data-bs-theme="dark"] .nav {
+[data-bs-theme="dark"]:where(:root) .nav {
   --bs-nav-link-color: var(--webui-nav-link-color);
 }
 
-[data-bs-theme="dark"] .navbar {
+[data-bs-theme="dark"]:where(:root) .navbar {
   --bs-navbar-color: rgba(var(--bs-emphasis-color-rgb), 0.85);
   --bs-navbar-hover-color: rgba(var(--bs-emphasis-color-rgb), 0.95);
 }
 
-/* The other filled elements: the selected item of a nav, a list or a pagination, and a progress bar. (A checked box is
- * with the forms, the active item of a dropdown menu with the floating layers.) */
-[data-bs-theme="dark"] .nav-pills {
-  --bs-nav-pills-link-active-bg: var(--webui-fill-primary);
+/* The other filled elements: the selected item of a nav, a list or a pagination. A selected item without a border (a
+ * nav pill) takes the lighter fill, 3.2:1 on black; those with a border take the dark fill and a primary border,
+ * 4.6:1. (A checked box is with the forms, the active item of a dropdown menu with the floating layers.) */
+[data-bs-theme="dark"]:where(:root) .nav-pills {
+  --bs-nav-pills-link-active-bg: var(--webui-fill-primary-hover);
 }
 
-[data-bs-theme="dark"] .list-group {
+[data-bs-theme="dark"]:where(:root) .list-group {
   --bs-list-group-active-bg: var(--webui-fill-primary);
   --bs-list-group-active-border-color: var(--bs-primary);
 }
 
-[data-bs-theme="dark"] .pagination {
+[data-bs-theme="dark"]:where(:root) .pagination {
   --bs-pagination-active-bg: var(--webui-fill-primary);
   --bs-pagination-active-border-color: var(--bs-primary);
 }
 
-[data-bs-theme="dark"] .progress,
-[data-bs-theme="dark"] .progress-stacked {
-  --bs-progress-bar-bg: var(--webui-fill-primary);
+/* A progress bar keeps Bootstrap's primary fill, 3.9:1 on its track (the dark fill would be 2.1:1), and the track is
+ * bordered, so that its extent shows on black (the track alone is 1.1:1). The segments of a stacked bar have no
+ * border of their own: the stacked track has it. */
+[data-bs-theme="dark"]:where(:root) .progress,
+[data-bs-theme="dark"]:where(:root) .progress-stacked {
+  border: var(--bs-border-width) solid var(--webui-control-border);
+}
+
+[data-bs-theme="dark"]:where(:root) .progress-stacked > .progress {
+  border: 0;
 }
 
 /* A pagination as high as a button; a default, so that .pagination-sm and .pagination-lg keep their size. */
-:where([data-bs-theme="dark"]) .pagination:where(:not(.pagination-sm):not(.pagination-lg)) {
+:where(:root[data-bs-theme="dark"]) .pagination:where(:not(.pagination-sm):not(.pagination-lg)) {
   --bs-pagination-padding-x: 0.625rem;
   --bs-pagination-padding-y: 0.25rem;
 }
 
 /* A badge inside a button: at nearly the button's text size, not 0.75em of it, and centered. Bootstrap lifts it by
  * 1px, which in a button with little vertical padding covers the top border. Elsewhere a badge is Bootstrap's. */
-[data-bs-theme="dark"] .btn .badge {
+[data-bs-theme="dark"]:where(:root) .btn .badge {
   --bs-badge-font-size: 0.875em;
   top: 0;
 }
 
 /* Badges and other boxes with a text-bg class take the dark fills. Bootstrap's text-bg classes are !important
  * themselves; their text colors (white, or black on warning and info) stay. */
-[data-bs-theme="dark"] .text-bg-primary {
+[data-bs-theme="dark"]:where(:root) .text-bg-primary {
   background-color: var(--webui-fill-primary) !important;
 }
 
-[data-bs-theme="dark"] .text-bg-secondary {
+[data-bs-theme="dark"]:where(:root) .text-bg-secondary {
   background-color: var(--webui-fill-secondary) !important;
 }
 
-[data-bs-theme="dark"] .text-bg-success {
+[data-bs-theme="dark"]:where(:root) .text-bg-success {
   background-color: var(--webui-fill-success) !important;
 }
 
-[data-bs-theme="dark"] .text-bg-danger {
+[data-bs-theme="dark"]:where(:root) .text-bg-danger {
   background-color: var(--webui-fill-danger) !important;
 }
 
-[data-bs-theme="dark"] .text-bg-warning {
+[data-bs-theme="dark"]:where(:root) .text-bg-warning {
   background-color: var(--webui-fill-warning) !important;
 }
 
-[data-bs-theme="dark"] .text-bg-info {
+[data-bs-theme="dark"]:where(:root) .text-bg-info {
   background-color: var(--webui-fill-info) !important;
 }
 
 /* Tables: dense rows, and column headers as small quiet captions. The row rules are borders, at 5.6:1. */
-[data-bs-theme="dark"] .table > :not(caption) > * > * {
+[data-bs-theme="dark"]:where(:root) .table > :not(caption) > * > * {
   padding: 0.3rem 0.5rem;
 }
 
-[data-bs-theme="dark"] .table-sm > :not(caption) > * > * {
+[data-bs-theme="dark"]:where(:root) .table-sm > :not(caption) > * > * {
   padding: 0.15rem 0.4rem;
 }
 
-[data-bs-theme="dark"] .table > thead th {
-  color: var(--bs-secondary-color);
+[data-bs-theme="dark"]:where(:root) .table > thead th {
   font-size: 0.8em;
   font-weight: 600;
 }
 
+/* Their muted color, unless a contextual variant (.table-light and the others, on the table, its head, the row or the
+ * cell) sets the colors: Bootstrap keeps the light backgrounds of the variants in dark mode, and their black text has
+ * to stay with them. */
+[data-bs-theme="dark"]:where(:root) .table > thead th:not(
+    .table-primary, .table-secondary, .table-success, .table-info, .table-warning, .table-danger, .table-light,
+    .table-dark, .table-primary *, .table-secondary *, .table-success *, .table-info *, .table-warning *,
+    .table-danger *, .table-light *, .table-dark *
+  ) {
+  color: var(--bs-secondary-color);
+}
+
 /* Panels: cards, list groups, accordions and alerts with less padding; a card header is a bar like the navbar. */
-[data-bs-theme="dark"] .card {
+[data-bs-theme="dark"]:where(:root) .card {
   --bs-card-cap-bg: var(--bs-tertiary-bg);
   --bs-card-cap-padding-x: 0.75rem;
   --bs-card-cap-padding-y: 0.375rem;
@@ -475,46 +513,46 @@ html[data-bs-theme="dark"] {
   --bs-card-spacer-y: 0.625rem;
 }
 
-[data-bs-theme="dark"] .list-group {
+[data-bs-theme="dark"]:where(:root) .list-group {
   --bs-list-group-item-padding-x: 0.75rem;
   --bs-list-group-item-padding-y: 0.375rem;
 }
 
-[data-bs-theme="dark"] .accordion {
+[data-bs-theme="dark"]:where(:root) .accordion {
   --bs-accordion-body-padding-x: 0.75rem;
   --bs-accordion-body-padding-y: 0.625rem;
   --bs-accordion-btn-padding-x: 0.75rem;
   --bs-accordion-btn-padding-y: 0.375rem;
 }
 
-[data-bs-theme="dark"] .alert {
+[data-bs-theme="dark"]:where(:root) .alert {
   --bs-alert-margin-bottom: 0.75rem;
   --bs-alert-padding-x: 0.75rem;
   --bs-alert-padding-y: 0.5rem;
 }
 
 /* The close button of a dismissible alert sits in the padding of the alert. */
-[data-bs-theme="dark"] .alert-dismissible .btn-close {
+[data-bs-theme="dark"]:where(:root) .alert-dismissible .btn-close {
   padding: 0.75rem;
 }
 
 /*
  * Floating layers: a dropdown menu, a modal and a toast have the border of a control and no shadow. A dropdown menu
- * is dense, its active item takes the primary fill, and its headers are muted text (Bootstrap's grey is 4.48:1 on
- * black). A toast is opaque (Bootstrap's is 85% opaque) with a header bar. These rules only set variables, so they
- * apply with or without Bootstrap's script: a toast rendered by the server with .show (Bootstrap hides a .toast
- * without it) needs nothing more.
+ * is dense, its active item takes the lighter primary fill (it has no border; 3.2:1 on black), and its headers are
+ * muted text (Bootstrap's grey is 4.48:1 on black). A toast is opaque (Bootstrap's is 85% opaque) with a header bar.
+ * These rules only set variables, so they apply with or without Bootstrap's script: a toast rendered by the server
+ * with .show (Bootstrap hides a .toast without it) needs nothing more.
  */
-[data-bs-theme="dark"] .dropdown-menu {
+[data-bs-theme="dark"]:where(:root) .dropdown-menu {
   --bs-dropdown-border-color: var(--webui-control-border);
   --bs-dropdown-box-shadow: none;
   --bs-dropdown-header-color: var(--bs-secondary-color);
   --bs-dropdown-item-padding-x: 0.75rem;
-  --bs-dropdown-link-active-bg: var(--webui-fill-primary);
+  --bs-dropdown-link-active-bg: var(--webui-fill-primary-hover);
   --bs-dropdown-padding-y: 0.25rem;
 }
 
-[data-bs-theme="dark"] .modal {
+[data-bs-theme="dark"]:where(:root) .modal {
   --bs-modal-border-color: var(--webui-control-border);
   --bs-modal-box-shadow: none;
   --bs-modal-header-padding: 0.625rem 0.75rem;
@@ -523,7 +561,7 @@ html[data-bs-theme="dark"] {
   --bs-modal-padding: 0.75rem;
 }
 
-[data-bs-theme="dark"] .toast {
+[data-bs-theme="dark"]:where(:root) .toast {
   --bs-toast-bg: var(--bs-body-bg);
   --bs-toast-border-color: var(--webui-control-border);
   --bs-toast-box-shadow: none;

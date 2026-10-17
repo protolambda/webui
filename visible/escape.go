@@ -15,7 +15,12 @@ const (
 	keycap       = '\u20E3' // combining enclosing keycap
 	nbsp         = '\u00A0' // no-break space
 	narrowNBSP   = '\u202F' // narrow no-break space
-	brailleBlank = '\u2800' // braille pattern blank
+)
+
+// Printable symbols that fonts draw as a blank (see [Rune]).
+const (
+	brailleBlank = '\u2800'     // braille pattern blank
+	nullNotehead = '\U0001D159' // musical symbol null notehead
 )
 
 // Escape returns s with every character that does not show as itself
@@ -35,11 +40,17 @@ const (
 //     U+E007F), which can carry hidden text;
 //   - other characters that fonts draw as nothing or as a blank (see
 //     [Rune]): for example the combining grapheme joiner U+034F, the Hangul
-//     fillers and the braille pattern blank;
-//   - variation selectors, except a presentation selector (U+FE0E for text,
-//     U+FE0F for emoji) right after an emoji (an Extended_Pictographic
-//     character), and U+FE0F in a keycap ('0' to '9', '#' or '*', the
-//     selector, then U+20E3);
+//     fillers, the braille pattern blank U+2800 and the musical symbol null
+//     notehead U+1D159;
+//   - variation selectors, except a presentation selector where it selects
+//     how an emoji shows, as in the emoji variation sequences of Unicode:
+//     U+FE0F (emoji) or U+FE0E (text) right after an emoji that shows as
+//     text by default, such as U+2764 or U+00A9; U+FE0E right after an
+//     emoji that shows as emoji by default but has a text form, such as
+//     U+231A; and U+FE0F in a keycap ('0' to '9', '#' or '*', the selector,
+//     then U+20E3). Anywhere else a presentation selector shows as nothing:
+//     U+FE0F after U+1F600 or U+231A, which show as emoji anyway, or a
+//     selector after U+2605, which has no emoji form;
 //   - combining marks at the start of s or after an escaped character: they
 //     would draw on the text before the value, or on the escape;
 //   - spaces other than the ASCII space, line and paragraph separators;
@@ -59,6 +70,9 @@ func Escape(s string) (string, bool) {
 // EscapeText is [Escape] for display text, such as names and titles: it
 // also keeps these invisible characters, which take part in how common text
 // shows:
+//   - a presentation selector (U+FE0E or U+FE0F) right after any emoji (an
+//     Extended_Pictographic character), also where it changes nothing, as
+//     in U+1F600 U+FE0F: some keyboards and programs add one to every emoji;
 //   - a zero-width joiner (U+200D) between two emoji, which joins them into
 //     one: the emoji before it may have its emoji presentation selector
 //     (U+FE0F) or a skin tone (U+1F3FB to U+1F3FF), as in the emoji ZWJ
@@ -92,13 +106,15 @@ func EscapeText(s string) (string, bool) {
 // fonts draw as nothing (Other_Default_Ignorable_Code_Point, such as the
 // combining grapheme joiner U+034F, the Hangul fillers U+115F, U+1160,
 // U+3164 and U+FFA0, and the Khmer vowels U+17B4 and U+17B5), not a
-// variation selector, and not the braille pattern blank U+2800.
+// variation selector, and not a symbol that fonts draw as a blank: the
+// braille pattern blank U+2800 or the musical symbol null notehead U+1D159.
 //
 // Within text, the neighbors matter too: [Escape] also replaces ASCII
 // spaces that HTML collapses, and combining marks with nothing to combine
-// with, and keeps presentation selectors after emoji.
+// with, and keeps the presentation selectors that select how an emoji
+// shows.
 func Rune(r rune) bool {
-	return unicode.IsPrint(r) && r != brailleBlank &&
+	return unicode.IsPrint(r) && r != brailleBlank && r != nullNotehead &&
 		!unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
 }
 
@@ -160,7 +176,7 @@ func unit(s string, i int, prev, lenient bool) (int, bool) {
 	case r == utf8.RuneError && size == 1:
 		return 1, false
 	case r == textSelector, r == emojiSelect:
-		return size, prev && selects(s, i, r, size)
+		return size, prev && selects(s, i, r, size, lenient)
 	case unicode.Is(unicode.M, r):
 		return size, prev && Rune(r)
 	case Rune(r):
@@ -188,18 +204,22 @@ func plainSpace(s string, i int) bool {
 }
 
 // selects reports whether the presentation selector r (of size bytes) at
-// byte i of s selects how the character before it shows: right after an
-// emoji, or as U+FE0F in a keycap (see [Escape]). The caller checks that the
-// character before it shows.
-func selects(s string, i int, r rune, size int) bool {
+// byte i of s selects how the character before it shows (see [Escape]):
+// U+FE0F after an emoji that shows as text by default (hasEmojiStyle),
+// U+FE0E after an emoji that has a text form (hasTextStyle), or U+FE0F in a
+// keycap. If lenient, a selector after any emoji will do (see
+// [EscapeText]). The caller checks that the character before it shows.
+func selects(s string, i int, r rune, size int, lenient bool) bool {
 	base, _ := runeBefore(s, i)
 	switch {
-	case isEmoji(base):
-		return true
 	case base >= '0' && base <= '9', base == '#', base == '*':
 		return r == emojiSelect && runeAt(s, i+size) == keycap
+	case lenient:
+		return isEmoji(base)
+	case r == emojiSelect:
+		return hasEmojiStyle(base)
 	}
-	return false
+	return hasTextStyle(base)
 }
 
 // joinsEmoji reports whether the zero-width joiner (of size bytes) at byte i

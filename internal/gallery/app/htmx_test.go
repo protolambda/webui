@@ -178,7 +178,7 @@ func TestHTMXSwaps(gt *testing.T) {
 		const title = "invoice\u202Efdp.exe"
 		res := c.Submit(t, page, page.Find(ct.ID("add-task")), nil, url.Values{"title": {title}}, webuitest.HTMX(), webuitest.HXTarget("task-list"))
 		frag := c.Fragment(t, res, http.StatusOK, "div")
-		row := frag.Find(ct.ID("task-list")).Find(ct.Role("rowheader", ct.Named(`invoice\u202Efdp.exe escaped`)))
+		row := frag.Find(ct.ID("task-list")).Find(ct.Role("rowheader", ct.Named(`escaped invoice\u202Efdp.exe`)))
 		t.Must(row.Count(1))
 		t.Must(row.Find(ct.Tag("code")).Matches(ct.Attr("dir", "ltr")))
 		t.Must(row.Find(ct.Class("badge")).Texts(visible.MarkerText))

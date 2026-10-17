@@ -64,12 +64,15 @@
 //
 // # Text from users
 //
-// chord escapes all text, so caller text never becomes markup. Escaping
-// does not filter direction overrides, invisible characters or look-alike
-// letters, which can make a name read as another: render names and titles
-// that other users chose with
-// [github.com/protolambda/webui/visible.Text] or
-// [github.com/protolambda/webui/visible.Code].
+// chord escapes all text, so caller text never becomes markup, but text
+// can still mislead a reader: a direction override reorders the text after
+// it, and invisible characters make two names look the same. Render names
+// and titles that other users chose with
+// [github.com/protolambda/webui/visible.Text], and identifiers with
+// [github.com/protolambda/webui/visible.Code]: they escape such characters
+// and mark the result. Look-alike letters, such as a Cyrillic letter in a
+// Latin name, are visible letters that neither escapes; telling such names
+// apart is an application policy (see the visible package).
 //
 // [Dialog], the form fields ([Field], [Textarea], [Select], [Checkbox],
 // [Radio]) and [DetailsDropdown] fail with [ErrNoName] when they would have

@@ -9,12 +9,10 @@ import (
 	"github.com/protolambda/mustbe/be"
 )
 
-// TestExtendedPictographicTable checks the shape of the embedded table and
-// what the escaping relies on: emoji are neither marks, spaces nor
-// controls, so that they show wherever they are.
-func TestExtendedPictographicTable(gt *testing.T) {
-	t := devtest.ParallelT(gt)
-	tab := extendedPictographic
+// checkTable checks the shape of an embedded table: ranges of stride 1 in
+// order, R16 below R32, and the LatinOffset. It returns the number of
+// ranges.
+func checkTable(t devtest.T, tab *unicode.RangeTable) int {
 	prev := rune(-1)
 	latin := 0
 	for _, r := range tab.R16 {
@@ -31,7 +29,16 @@ func TestExtendedPictographicTable(gt *testing.T) {
 		prev = rune(r.Hi)
 	}
 	t.Must(be.Equal(latin, tab.LatinOffset))
-	t.Must(be.Equal(78, len(tab.R16)+len(tab.R32)))
+	return len(tab.R16) + len(tab.R32)
+}
+
+// TestExtendedPictographicTable checks the shape of the embedded table and
+// what the escaping relies on: emoji are neither marks, spaces nor
+// controls, so that they show wherever they are.
+func TestExtendedPictographicTable(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	tab := extendedPictographic
+	t.Must(be.Equal(156, checkTable(t, tab)))
 
 	count := 0
 	for r := rune(0); r <= unicode.MaxRune; r++ {
@@ -41,15 +48,58 @@ func TestExtendedPictographicTable(gt *testing.T) {
 		count++
 		t.Mustf(be.False(unicode.In(r, unicode.M, unicode.Z, unicode.Cc, unicode.Cf)), "%U is a mark, space or control", r)
 	}
-	t.Must(be.Equal(3537, count)) // the size of the property in emoji-data.txt
+	t.Must(be.Equal(2848, count)) // the size of the property in emoji-data.txt of Unicode 17.0
 
-	for _, r := range []rune{'\u00A9', '\u00AE', '\u203C', '\u2122', '\u2139', '\u2764', '\u26A7', '\U0001F308',
-		'\U0001F3F3', '\U0001F3F4', '\U0001F468', '\U0001F525', '\U0001F600', '\U0001F9B0', '\U0001FAF8'} {
+	for _, r := range []rune{'\u00A9', '\u00AE', '\u203C', '\u2122', '\u2139', '\u2764', '\u26A7', '\U0001F004',
+		'\U0001F308', '\U0001F3F3', '\U0001F3F4', '\U0001F468', '\U0001F525', '\U0001F600', '\U0001F9B0',
+		'\U0001FAF8'} {
 		t.Mustf(be.True(isEmoji(r)), "isEmoji(%U)", r)
 	}
-	for _, r := range []rune{'#', '*', '0', '9', 'a', '\u20E3', '\u2190', '\uFE0F', '\U0001F1E6', '\U0001F1FF',
-		'\U0001F3FB', '\U0001F3FF', '\U0001FC00', -1} {
+	// Unicode 17.0 dropped symbols that are not emoji, such as the black
+	// star, the other mahjong tiles and the chess symbols.
+	for _, r := range []rune{'#', '*', '0', '9', 'a', '\u20E3', '\u2190', '\u2605', '\uFE0F', '\U0001F000',
+		'\U0001F1E6', '\U0001F1FF', '\U0001F3FB', '\U0001F3FF', '\U0001FA00', '\U0001FC00', -1} {
 		t.Mustf(be.False(isEmoji(r)), "isEmoji(%U)", r)
+	}
+}
+
+// TestVariationTables checks the tables of the emoji that presentation
+// selectors apply to: their shape and size, that they are disjoint emoji
+// that the unicode tables assign, and some members.
+func TestVariationTables(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal(116, checkTable(t, textDefault)))
+	t.Must(be.Equal(85, checkTable(t, emojiDefaultText)))
+	text, emoji := 0, 0
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		inText, inEmoji := unicode.Is(textDefault, r), unicode.Is(emojiDefaultText, r)
+		if inText {
+			text++
+		}
+		if inEmoji {
+			emoji++
+		}
+		if inText || inEmoji {
+			t.Mustf(be.True(isEmoji(r)), "%U is not an emoji that shows", r)
+			t.Mustf(be.False(inText && inEmoji), "%U is in both tables", r)
+		}
+		t.Mustf(be.Equal(inText, hasEmojiStyle(r)), "hasEmojiStyle(%U)", r)
+		t.Mustf(be.Equal(inText || inEmoji, hasTextStyle(r)), "hasTextStyle(%U)", r)
+	}
+	// The emoji variation sequences of Unicode 17.0 have 371 bases: these,
+	// and the 12 keycap bases.
+	t.Must(be.Equal(207, text))
+	t.Must(be.Equal(152, emoji))
+
+	for _, r := range []rune{'\u00A9', '\u00AE', '\u2122', '\u263A', '\u2764', '\U0001F170', '\U0001F6F3'} {
+		t.Mustf(be.True(hasEmojiStyle(r) && hasTextStyle(r)), "%U shows as text by default", r)
+	}
+	for _, r := range []rune{'\u231A', '\u2614', '\U0001F004', '\U0001F44D', '\U0001F6BC'} {
+		t.Mustf(be.True(!hasEmojiStyle(r) && hasTextStyle(r)), "%U shows as emoji by default, with a text form", r)
+	}
+	for _, r := range []rune{'#', '1', 'a', '\u2605', '\U0001F000', '\U0001F600', '\U0001F680', '\U0001F3FD',
+		'\U0001FC00', -1} {
+		t.Mustf(be.False(hasTextStyle(r)), "%U has no variation sequences", r)
 	}
 }
 

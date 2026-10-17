@@ -77,25 +77,38 @@ func TestEscape(gt *testing.T) {
 		{"tag\U000E0041", bs("tag~U000E0041"), true},
 		{"hi\U000E0001\U000E0068\U000E0069", bs("hi~U000E0001~U000E0068~U000E0069"), true},
 		// Printable characters that show as nothing or as a blank.
-		{"exa\u034Fmple", bs("exa~u034Fmple"), true},             // combining grapheme joiner
-		{"x\u3164\u3164y", bs("x~u3164~u3164y"), true},           // Hangul filler
-		{"x\u115F\u1160\uFFA0", bs("x~u115F~u1160~uFFA0"), true}, // Hangul choseong, jungseong and halfwidth fillers
-		{"x\u17B4", bs("x~u17B4"), true},                         // Khmer inherent vowel
-		{"blank\u2800", bs("blank~u2800"), true},                 // braille pattern blank
-		// Variation selectors, except presentation selectors after emoji and in keycaps.
+		{"exa\u034Fmple", bs("exa~u034Fmple"), true},                 // combining grapheme joiner
+		{"x\u3164\u3164y", bs("x~u3164~u3164y"), true},               // Hangul filler
+		{"x\u115F\u1160\uFFA0", bs("x~u115F~u1160~uFFA0"), true},     // Hangul choseong, jungseong and halfwidth fillers
+		{"x\u17B4", bs("x~u17B4"), true},                             // Khmer inherent vowel
+		{"blank\u2800", bs("blank~u2800"), true},                     // braille pattern blank
+		{"Ada\U0001D159Lovelace", bs("Ada~U0001D159Lovelace"), true}, // musical symbol null notehead
+		{"admin\U0001D159", bs("admin~U0001D159"), true},
+		// Variation selectors, except presentation selectors that select how
+		// an emoji shows, and U+FE0F in keycaps.
 		{"ok\uFE0F", bs("ok~uFE0F"), true},
 		{"x\U000E0100", bs("x~U000E0100"), true},
 		{"x\u180B", bs("x~u180B"), true},
 		{"\uFE0F", bs("~uFE0F"), true},
-		{"\u2764\uFE0F thanks", "\u2764\uFE0F thanks", false},
+		{"\u2764\uFE0F thanks", "\u2764\uFE0F thanks", false}, // text by default: both selectors select
 		{"\u2764\uFE0E thanks", "\u2764\uFE0E thanks", false},
 		{"\u00A9\uFE0F", "\u00A9\uFE0F", false},
+		{"\u263A\uFE0F \u263A\uFE0E", "\u263A\uFE0F \u263A\uFE0E", false},
+		{"\u231A\uFE0E", "\u231A\uFE0E", false},         // emoji by default, with a text form
+		{"\u231A\uFE0F", bs("\u231A~uFE0F"), true},      // emoji anyway
+		{"\U0001F004\uFE0E", "\U0001F004\uFE0E", false}, // the mahjong tile that is an emoji
+		{"Ada\U0001F600\uFE0F", bs("Ada\U0001F600~uFE0F"), true},
+		{"Ada\U0001F600\uFE0E", bs("Ada\U0001F600~uFE0E"), true}, // no text form
+		{"x\u2605\uFE0F", bs("x\u2605~uFE0F"), true},             // not an emoji
+		{"x\U0001F000\uFE0E", bs("x\U0001F000~uFE0E"), true},
+		{"\U0001F469\U0001F3FD\uFE0F", bs("\U0001F469\U0001F3FD~uFE0F"), true},
 		{"\u2764\uFE0F\uFE0F", bs("\u2764\uFE0F~uFE0F"), true}, // a second one shows as nothing
 		{"\xFF\uFE0F", bs("~xFF~uFE0F"), true},
 		{"\U0001FC00\uFE0F", bs("~U0001FC00~uFE0F"), true}, // reserved for emoji, not assigned
 		{"1\uFE0F\u20E3 #\uFE0F\u20E3 *\uFE0F\u20E3", "1\uFE0F\u20E3 #\uFE0F\u20E3 *\uFE0F\u20E3", false},
 		{"1\uFE0F", bs("1~uFE0F"), true},
 		{"1\uFE0E\u20E3", bs("1~uFE0E~u20E3"), true},
+		{"#\uFE0E", bs("#~uFE0E"), true},
 		// Combining marks with nothing to combine with.
 		{"\u0301start", bs("~u0301start"), true},
 		{"\u200B\u0301", bs("~u200B~u0301"), true},
@@ -124,8 +137,14 @@ func TestEscape(gt *testing.T) {
 		{"\U000F0000", bs("~U000F0000"), true},
 		{"x\uFFFF", bs("x~uFFFF"), true},
 		{"x\u0378", bs("x~u0378"), true},
-		// Once anything is escaped, backslashes are too: escapes cannot be forged.
+		// Once anything is escaped, backslashes are too: a backslash cannot
+		// forge an escape.
 		{"fake \\u202E real \u202E", bs("fake ~~u202E real ~u202E"), true},
+		// Characters that look like a backslash show as themselves (see the
+		// package documentation).
+		{"fake \u29F5u202E real \u202E", bs("fake \u29F5u202E real ~u202E"), true},
+		{"a\u20E5u202E \u202E", bs("a\u20E5u202E ~u202E"), true},
+		{"\u2216 \u29F9 \uFE68 \uFF3C", "\u2216 \u29F9 \uFE68 \uFF3C", false},
 		{`a  b \`, bs("a~x20~x20b ~~"), true},
 		{`\x20 `, bs("~~x20~x20"), true},
 		// What EscapeText keeps, Escape escapes.
@@ -141,6 +160,14 @@ func TestEscapeText(gt *testing.T) {
 	checkCases(t, "EscapeText", visible.EscapeText, true, []escapeCase{
 		{"", "", false},
 		{"Quarterly report", "Quarterly report", false},
+		// Presentation selectors after any emoji, also where they change nothing.
+		{"Ada\U0001F600\uFE0F", "Ada\U0001F600\uFE0F", false},
+		{"Ada\U0001F600\uFE0E", "Ada\U0001F600\uFE0E", false},
+		{"\u231A\uFE0F \u2764\uFE0E", "\u231A\uFE0F \u2764\uFE0E", false},
+		{"x\u2605\uFE0F", bs("x\u2605~uFE0F"), true}, // not an emoji
+		{"x\U0001F000\uFE0E", bs("x\U0001F000~uFE0E"), true},
+		{"#\uFE0F", bs("#~uFE0F"), true},
+		{"\U0001F600\uFE0F\uFE0F", bs("\U0001F600\uFE0F~uFE0F"), true},
 		// Emoji joined into one.
 		{"\U0001F469\u200D\U0001F4BB dev", "\U0001F469\u200D\U0001F4BB dev", false},                         // technologist
 		{"\U0001F469\U0001F3FD\u200D\U0001F4BB", "\U0001F469\U0001F3FD\u200D\U0001F4BB", false},             // with a skin tone
@@ -196,19 +223,22 @@ func TestEscapeText(gt *testing.T) {
 		{"line\nbreak", bs("line~nbreak"), true},
 		{"two  spaces", bs("two~x20~x20spaces"), true},
 		{"ok\uFE0F", bs("ok~uFE0F"), true},
+		{"Ada\U0001D159Lovelace", bs("Ada~U0001D159Lovelace"), true},
+		{"fake \u29F5u202E real \u202E", bs("fake \u29F5u202E real ~u202E"), true},
 	})
 }
 
 func TestRune(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, r := range []rune{'a', 'Z', '0', ' ', '\\', '~', '\u00E9', '\u0301', '\u0645', '\u4E16', '\uFFFD',
-		'\U0001F600', '\U0001F3FD', '\U0001F1F3', '\u20E3', '\u00A9'} {
+		'\U0001F600', '\U0001F3FD', '\U0001F1F3', '\u20E3', '\u00A9', '\u2605', '\u29F5', '\U0001D158',
+		'\U0001D15A'} {
 		t.Mustf(be.True(visible.Rune(r)), "Rune(%U)", r)
 	}
 	for _, r := range []rune{-1, '\x00', '\n', '\t', '\x7F', '\u0085', '\u00A0', '\u00AD', '\u034F', '\u061C',
 		'\u115F', '\u1160', '\u17B4', '\u180B', '\u180E', '\u200B', '\u200C', '\u200D', '\u200E', '\u2028',
 		'\u202E', '\u202F', '\u2060', '\u2066', '\u2800', '\u3000', '\u3164', 0xD800, '\uE000', '\uFE0E',
-		'\uFE0F', '\uFEFF', '\uFFA0', '\uFFFF', '\U000E0001', '\U000E0041', '\U000E0100', '\U0001FC00',
+		'\uFE0F', '\uFEFF', '\uFFA0', '\uFFFF', '\U000E0001', '\U000E0041', '\U000E0100', '\U0001D159', '\U0001FC00',
 		unicode.MaxRune, unicode.MaxRune + 1} {
 		t.Mustf(be.False(visible.Rune(r)), "Rune(%U)", r)
 	}
@@ -230,6 +260,10 @@ func TestRuneProperties(gt *testing.T) {
 		t.Mustf(be.True(unicode.IsGraphic(r)), "Rune(%U) is not graphic", r)
 		t.Mustf(be.False(unicode.In(r, invisible...)), "Rune(%U) is invisible", r)
 		t.Mustf(be.True(r == ' ' || !unicode.Is(unicode.White_Space, r)), "Rune(%U) is white space", r)
+	}
+	// No property marks the printable symbols that fonts draw as a blank.
+	for _, r := range []rune{'\u2800', '\U0001D159'} {
+		t.Mustf(be.False(visible.Rune(r)), "Rune(%U) is a blank", r)
 	}
 }
 

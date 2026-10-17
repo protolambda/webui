@@ -25,7 +25,7 @@ const readBufferSize = 4096
 func (rd *reader) readURLEncoded(src io.Reader) error {
 	buf := make([]byte, readBufferSize)
 	if rd.observe != nil {
-		rd.observe(buf)
+		rd.observe(buf, true)
 	}
 	defer clear(buf)
 	p := urlParser{rd: rd}

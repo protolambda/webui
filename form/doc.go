@@ -1,20 +1,33 @@
 // Package form reads HTML form submissions from request bodies into owned,
-// zeroable byte slices, bounded before anything is allocated.
+// zeroable byte slices, within bounds checked as the body is read.
 //
 // [Read] accepts the two encodings a browser uses for forms without files:
 // multipart/form-data and application/x-www-form-urlencoded (the default of
 // both plain HTML forms and htmx). It never looks at the URL query string,
-// and it refuses file parts: uploads need a streaming reader of their own.
+// and it refuses file parts (any part with a filename parameter, in any
+// form): uploads need a streaming reader of their own.
 //
 // # Bounds
 //
 // Every read is bounded by [Limits]: the whole body (through
-// [http.MaxBytesReader]), each field name and each decoded value, and the
-// number of fields. A value is read into a scratch buffer that never grows
-// past the field limit plus one byte, so an oversized field is detected
-// without allocating more than that; the zero [Limits] gives the documented
+// [http.MaxBytesReader], and before reading anything when the declared
+// Content-Length is already too large), each field name and each decoded
+// value, and the number of fields; the zero [Limits] gives the documented
 // defaults. Violations return [ErrTooLarge] or [ErrTooManyFields]; a body
 // over the body limit also matches [*http.MaxBytesError] with [errors.As].
+//
+// What each bound guarantees:
+//   - A name or value is decoded into a scratch buffer that never grows past
+//     the field limit plus one byte, so an oversized field is detected
+//     without allocating more than that.
+//   - A urlencoded body is parsed as a stream, through one 4 KiB read
+//     buffer.
+//   - The header of a multipart part may pull no more than about three
+//     times the field limit plus 4 KiB from the body before it is parsed,
+//     which bounds the memory that parsing one header takes. Parsing the
+//     headers of all parts still allocates in proportion to the body, a few
+//     times over (the standard library's multipart reader buffers and copies
+//     each header line); the body limit bounds that total.
 //
 // # Owned values
 //
@@ -38,7 +51,13 @@
 // [ErrTooManyFields], [ErrUnsupportedType] and [ErrFile]. Error messages
 // never contain field names, values or other parts of the request, so they
 // are safe to log. A failure to read the body itself (a dropped connection,
-// a read deadline) is reported as [ErrMalformed] wrapping the read error.
+// a read deadline, a malformed chunked trailer) is reported as
+// [ErrMalformed] wrapping the read error: [errors.Is] and [errors.As] reach
+// it, but its text, which may quote the request, is not part of the
+// message.
+//
+// A [Values] does not show its contents when formatted with fmt or logged
+// with log/slog: only its number of values ([Values.Format]).
 //
 // # Cross-site request forgery
 //

@@ -3,27 +3,48 @@ package form
 import (
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/textproto"
+	"strings"
+	"unicode"
 )
+
+// headerSlack is the room a multipart part header gets beyond three times
+// the field limit: the delimiter line, the header names and the syntax of
+// the Content-Disposition, and a short Content-Type line.
+const headerSlack = 4096
 
 // readMultipart parses a multipart/form-data body.
 //
 // Parts are read raw ([multipart.Reader.NextRawPart]): a
 // Content-Transfer-Encoding header, deprecated for forms by RFC 7578 and
-// never sent by browsers, is not decoded. Each part must have a
+// never sent by browsers, is not decoded. Each part must have a single
 // Content-Disposition of form-data with a non-empty name and no filename
 // parameter. The body must end with the closing delimiter: a truncated body
-// is malformed, not a shorter form.
-func (rd *reader) readMultipart(src io.Reader, boundary string) error {
+// is malformed, not a shorter form. What follows the closing delimiter is
+// read and dropped, so that it counts against the body limit.
+//
+// While it parses the header of a part, the multipart reader may pull no
+// more than [reader.headerBudget] bytes from the body (plus what its
+// 4 KiB read-ahead already holds), so that a header far larger than any
+// field it can name is refused before it is buffered and parsed. This bounds
+// the memory of each part's header; the allocations of header parsing over
+// a whole body remain proportional to the body.
+func (rd *reader) readMultipart(src *bodyReader, boundary string) error {
 	mr := multipart.NewReader(src, boundary)
+	budget := rd.headerBudget()
 	for {
+		src.limit(budget)
 		part, err := mr.NextRawPart()
+		src.unlimit()
 		if err == io.EOF {
 			// Only the bare io.EOF marks the closing delimiter; the reader
-			// wraps the io.EOF of a body that ends early.
-			return nil
+			// wraps the io.EOF of a body that ends early. The epilogue
+			// carries no fields but still counts against the body limit.
+			_, err := io.Copy(io.Discard, src)
+			return err
 		}
 		if err != nil {
 			return err
@@ -46,13 +67,30 @@ func (rd *reader) readMultipart(src io.Reader, boundary string) error {
 	}
 }
 
+// headerBudget returns the bytes the multipart reader may pull from the
+// body while it parses one part header: three times the field limit, as a
+// name at the limit takes up to three bytes per byte when percent-encoded
+// (RFC 2231), plus [headerSlack].
+func (rd *reader) headerBudget() int64 {
+	field := int64(rd.fieldMax)
+	if field > (math.MaxInt64-headerSlack)/3 {
+		return math.MaxInt64
+	}
+	return 3*field + headerSlack
+}
+
 // partName returns the field name of a part, refusing file parts and parts
 // that are not form fields.
 func partName(header textproto.MIMEHeader) (string, error) {
-	disposition := header.Get("Content-Disposition")
-	if disposition == "" {
+	dispositions := header.Values("Content-Disposition")
+	switch {
+	case len(dispositions) == 0 || dispositions[0] == "":
 		return "", fmt.Errorf("%w: part without Content-Disposition", ErrMalformed)
+	case len(dispositions) > 1:
+		// Parsers disagree on which one counts: refuse the ambiguity.
+		return "", fmt.Errorf("%w: repeated Content-Disposition", ErrMalformed)
 	}
+	disposition := dispositions[0]
 	kind, params, err := mime.ParseMediaType(disposition)
 	if err != nil {
 		return "", fmt.Errorf("%w: bad Content-Disposition", ErrMalformed)
@@ -60,16 +98,122 @@ func partName(header textproto.MIMEHeader) (string, error) {
 	if kind != "form-data" {
 		return "", fmt.Errorf("%w: part is not form-data", ErrMalformed)
 	}
+	raw := scanParams(disposition)
 	// The presence of the parameter marks a file part, even when empty: a
-	// file input without a selected file sends filename="".
-	if _, ok := params["filename"]; ok {
+	// file input without a selected file sends filename="". ParseMediaType
+	// drops the RFC 2231 forms it cannot decode (an unsupported charset, a
+	// continuation that does not start at 0), so the raw names decide too.
+	if _, ok := params["filename"]; ok || raw.filename {
 		return "", ErrFile
+	}
+	if raw.plainName && raw.extendedName {
+		// ParseMediaType lets name* override name; other parsers may not.
+		return "", fmt.Errorf("%w: name given twice", ErrMalformed)
 	}
 	name := params["name"]
 	if name == "" {
 		return "", fmt.Errorf("%w: part without a name", ErrMalformed)
 	}
 	return name, nil
+}
+
+// rawParams describes the parameter names of a header value as written,
+// before RFC 2231 decoding.
+type rawParams struct {
+	// filename reports a filename parameter in any form: filename,
+	// filename*, filename*0, filename*0*, ...
+	filename bool
+	// plainName and extendedName report a name parameter, and one in an
+	// RFC 2231 form (name*, name*0, ...).
+	plainName, extendedName bool
+}
+
+// scanParams scans the parameter names of v, a header value that
+// [mime.ParseMediaType] accepted, with the same grammar: the media type up
+// to the first ';', then parameters "; name=value" where the value is a
+// token or a quoted string, white space around the separators, and an
+// optional trailing ';'. Should v not have that shape after all, the scan
+// fails closed and reports a filename.
+func scanParams(v string) rawParams {
+	var out rawParams
+	base, _, _ := strings.Cut(v, ";")
+	rest := v[len(base):]
+	for {
+		rest = trimLeftSpace(rest)
+		if rest == "" {
+			return out
+		}
+		var ok bool
+		if rest, ok = strings.CutPrefix(rest, ";"); !ok {
+			return rawParams{filename: true}
+		}
+		rest = trimLeftSpace(rest)
+		if rest == "" {
+			return out // a trailing ';'
+		}
+		var key string
+		key, rest = cutToken(rest)
+		if key == "" {
+			return rawParams{filename: true}
+		}
+		key = strings.ToLower(key)
+		if rest, ok = strings.CutPrefix(trimLeftSpace(rest), "="); !ok {
+			return rawParams{filename: true}
+		}
+		if rest, ok = cutValue(trimLeftSpace(rest)); !ok {
+			return rawParams{filename: true}
+		}
+		switch keyBase, _, extended := strings.Cut(key, "*"); keyBase {
+		case "filename":
+			out.filename = true
+		case "name":
+			if extended {
+				out.extendedName = true
+			} else {
+				out.plainName = true
+			}
+		}
+	}
+}
+
+// trimLeftSpace trims leading white space as [mime.ParseMediaType] does.
+func trimLeftSpace(s string) string {
+	return strings.TrimLeftFunc(s, unicode.IsSpace)
+}
+
+// cutToken splits a leading token (RFC 2045) off s.
+func cutToken(s string) (token, rest string) {
+	i := 0
+	for i < len(s) && isTokenChar(s[i]) {
+		i++
+	}
+	return s[:i], s[i:]
+}
+
+// cutValue splits a leading token or quoted string off s. Within quotes a
+// backslash escapes the next byte; [mime.ParseMediaType] only treats it as
+// an escape before a special character, but either reading ends the string
+// at the same quote, since '"' and '\' are special characters.
+func cutValue(s string) (rest string, ok bool) {
+	if !strings.HasPrefix(s, `"`) {
+		token, rest := cutToken(s)
+		return rest, token != ""
+	}
+	for i := 1; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '"':
+			return s[i+1:], true
+		}
+	}
+	return "", false
+}
+
+// isTokenChar reports whether c may appear in a token (RFC 2045): a
+// printable ASCII byte other than a space or a special character.
+func isTokenChar(c byte) bool {
+	return c > ' ' && c < 0x7f && !strings.ContainsRune(`()<>@,;:\"/[]?=`, rune(c))
 }
 
 // readPart reads the content of a part into rd.scratch, failing as soon as

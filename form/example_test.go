@@ -75,6 +75,25 @@ func ExampleValues_Take() {
 	// 13 false
 }
 
+// Printing or logging a form shows only its number of values, never a name
+// or a value, whatever the verb.
+func ExampleValues_Format() {
+	r := httptest.NewRequest(http.MethodPost, "/account/password", strings.NewReader("account=ada&password=correct+horse"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	v, err := form.Read(httptest.NewRecorder(), r, form.Limits{})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	defer v.Zero()
+
+	fmt.Println(v)
+	fmt.Printf("%#v %s %x\n", v, v, v)
+	// Output:
+	// form.Values(len=2)
+	// form.Values(len=2) form.Values(len=2) form.Values(len=2)
+}
+
 // Errors classify the failure: a body over its limit becomes a 413, any
 // other failure a 400.
 func ExampleRead_limits() {

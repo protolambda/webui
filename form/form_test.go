@@ -3,8 +3,11 @@ package form_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,6 +48,25 @@ func request(t devtest.T, contentType string, body io.Reader) *http.Request {
 
 func readString(t devtest.T, contentType, body string, limits form.Limits) (*form.Values, error) {
 	return form.Read(httptest.NewRecorder(), request(t, contentType, strings.NewReader(body)), limits)
+}
+
+// unsized hides the length of body from the request, as a chunked body
+// does, so that Read streams it instead of refusing it by its declared
+// length.
+func unsized(body string) io.Reader {
+	return io.MultiReader(strings.NewReader(body))
+}
+
+// countingReader counts the bytes read from it.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
 }
 
 // dump returns every field of v as name -> values, for comparisons.
@@ -143,6 +165,19 @@ func TestReadMultipartRefusals(gt *testing.T) {
 		{"file", multipartBody(field("a", "1"), part("data", `Content-Disposition: form-data; name="f"; filename="notes.txt"`)), form.ErrFile},
 		{"empty file input", multipartBody(part("", `Content-Disposition: form-data; name="f"; filename=""`, "Content-Type: application/octet-stream")), form.ErrFile},
 		{"extended filename", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*=UTF-8''notes.txt`)), form.ErrFile},
+		// mime.ParseMediaType drops these filename forms without an error.
+		{"extended filename in another charset", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*=ISO-8859-1''notes.txt`)), form.ErrFile},
+		{"extended filename without charset", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*=''notes.txt`)), form.ErrFile},
+		{"extended filename not encoded", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*=notes.txt`)), form.ErrFile},
+		{"extended filename quoted", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*="notes.txt"`)), form.ErrFile},
+		{"extended filename bad escape", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*=UTF-8''%ZZ`)), form.ErrFile},
+		{"filename continuation not at 0", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*1="notes.txt"`)), form.ErrFile},
+		{"filename continuation upper case", multipartBody(part("x", `Content-Disposition: form-data; name="f"; FILENAME*1=notes.txt`)), form.ErrFile},
+		{"filename with junk suffix", multipartBody(part("x", `Content-Disposition: form-data; name="f"; filename*junk="notes.txt"`)), form.ErrFile},
+		{"filename after a quoted semicolon", multipartBody(part("x", `Content-Disposition: form-data; name="a;b"; filename*1=x`)), form.ErrFile},
+		{"repeated disposition", multipartBody(part("x", `Content-Disposition: form-data; name="a"`, `Content-Disposition: form-data; name="f"; filename="x"`)), form.ErrMalformed},
+		{"repeated disposition, other case", multipartBody(part("x", `Content-Disposition: form-data; name="a"`, `content-disposition: form-data; name="b"`)), form.ErrMalformed},
+		{"name and extended name", multipartBody(part("x", `Content-Disposition: form-data; name="a"; name*=UTF-8''b`)), form.ErrMalformed},
 		{"no name", multipartBody(part("x", `Content-Disposition: form-data`)), form.ErrMalformed},
 		{"empty name", multipartBody(part("x", `Content-Disposition: form-data; name=""`)), form.ErrMalformed},
 		{"not form-data", multipartBody(part("x", `Content-Disposition: attachment; name="a"`)), form.ErrMalformed},
@@ -159,6 +194,111 @@ func TestReadMultipartRefusals(gt *testing.T) {
 		t.Mustf(be.ErrorIs(err, c.want), "case %s", c.name)
 		t.Mustf(be.NilPtr(v), "case %s", c.name)
 	}
+}
+
+// Parameter names inside quoted values, and names that only look like
+// filename, are fields like any other.
+func TestReadMultipartParamNames(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	cases := []struct {
+		disposition string
+		name        string
+	}{
+		{`form-data; name="filename"`, "filename"},
+		{`form-data; name=filename`, "filename"},
+		{`form-data; name="filenames"`, "filenames"},
+		{`form-data; name="a"; filenamex=1`, "a"},
+		{`form-data; name="a; filename*1=x"`, "a; filename*1=x"},
+		{`form-data; name="a\"; filename*1=x"`, `a"; filename*1=x`},
+		{`form-data; name="a\\"; note="; filename*1=x"`, `a\`},
+		{`form-data; name*=UTF-8''caf%C3%A9`, "café"},
+		{`form-data;name="a";`, "a"},
+		{"form-data ;\tname = \"a\" ; ", "a"},
+	}
+	for _, c := range cases {
+		v, err := readString(t, multipartType, multipartBody(part("1", "Content-Disposition: "+c.disposition)), form.Limits{})
+		t.Mustf(be.NoError(err), "disposition %s", c.disposition)
+		t.Mustf(be.DeepEqual([]string{c.name}, v.Names()), "disposition %s", c.disposition)
+	}
+}
+
+// The header of a part is bounded by the field limit before it is parsed:
+// a header too large for any field it could name is refused after reading
+// about three times the field limit, not the whole header.
+func TestReadMultipartHeaderBudget(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	const fieldLimit = 1 << 10
+	limits := form.Limits{Field: fieldLimit}
+	// The budget is 3*field + 4 KiB; the reader may hold 4 KiB more ahead.
+	const maxRead = 3*fieldLimit + 4096 + 4096
+	huge := strings.Repeat("x", 100<<10)
+	refused := []struct{ name, body string }{
+		{"long parameter", multipartBody(part("1", `Content-Disposition: form-data; name="a"; x="`+huge+`"`))},
+		{"long name", multipartBody(part("1", `Content-Disposition: form-data; name="`+huge+`"`))},
+		{"long header line", multipartBody(part("1", `Content-Disposition: form-data; name="a"`, "X-Note: "+huge))},
+		{"many header lines", multipartBody(part("1", `Content-Disposition: form-data; name="a"`, strings.Repeat("X-Note: 1\r\n", 10<<10)+"X-Note: 1"))},
+		{"long preamble", strings.Repeat("preamble\r\n", 10<<10) + multipartBody(field("a", "1"))},
+		{"long second header", multipartBody(field("a", "1"), part("1", `Content-Disposition: form-data; name="b"; x="`+huge+`"`))},
+	}
+	for _, c := range refused {
+		body := &countingReader{r: unsized(c.body)}
+		v, err := form.Read(httptest.NewRecorder(), request(t, multipartType, body), limits)
+		t.Mustf(be.ErrorIs(err, form.ErrTooLarge), "%s", c.name)
+		_, isBody := errors.AsType[*http.MaxBytesError](err)
+		t.Mustf(be.False(isBody), "%s: not the body limit", c.name)
+		t.Mustf(be.LessOrEq(body.n, maxRead), "%s: bytes read", c.name)
+		t.Must(be.NilPtr(v))
+	}
+
+	// A name at the field limit fits, also when every byte of it is
+	// percent-encoded, and so does a value at the limit after it.
+	at := strings.Repeat("n", fieldLimit)
+	accepted := []struct{ name, disposition string }{
+		{"quoted", `form-data; name="` + at + `"`},
+		{"percent-encoded", `form-data; name*=UTF-8''` + strings.Repeat("%6E", fieldLimit)},
+	}
+	for _, c := range accepted {
+		body := multipartBody(field("a", strings.Repeat("v", fieldLimit)), part("1", "Content-Disposition: "+c.disposition, "Content-Type: text/plain; charset=utf-8"))
+		v, err := readString(t, multipartType, body, limits)
+		t.Mustf(be.NoError(err), "%s", c.name)
+		t.Mustf(be.Equal("1", v.String(at)), "%s", c.name)
+	}
+}
+
+// Bytes after the closing delimiter count against the body limit, and the
+// body is read to its end.
+func TestReadMultipartEpilogue(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	form1 := multipartBody(field("a", "1"))
+	limits := form.Limits{Body: int64(len(form1)) + 10}
+
+	src := strings.NewReader(form1 + "\r\nignored")
+	v, err := form.Read(httptest.NewRecorder(), request(t, multipartType, src), limits)
+	t.Must(be.NoError(err))
+	t.Must(be.Equal("1", v.String("a")))
+	t.Must(be.Equal(0, src.Len()))
+
+	for _, epilogue := range []string{strings.Repeat("e", 11), strings.Repeat("e", 10_000)} {
+		v, err := form.Read(httptest.NewRecorder(), request(t, multipartType, unsized(form1+epilogue)), limits)
+		t.Mustf(be.ErrorIs(err, form.ErrTooLarge), "epilogue of %d bytes", len(epilogue))
+		_, isBody := errors.AsType[*http.MaxBytesError](err)
+		t.Must(be.True(isBody))
+		t.Must(be.NilPtr(v))
+	}
+
+	// The read that crosses the limit may return the closing delimiter
+	// with it: the limit still decides.
+	v, err = form.Read(httptest.NewRecorder(), request(t, multipartType, unsized(form1+"ee")), form.Limits{Body: int64(len(form1))})
+	t.Must(be.ErrorIs(err, form.ErrTooLarge))
+	t.Must(be.NilPtr(v))
+
+	// So does a failure to read the rest of the body.
+	cause := errors.New("connection reset")
+	body := io.MultiReader(strings.NewReader(form1), failingReader{cause})
+	v, err = form.Read(httptest.NewRecorder(), request(t, multipartType, body), form.Limits{})
+	t.Must(be.ErrorIs(err, form.ErrMalformed))
+	t.Must(be.ErrorIs(err, cause))
+	t.Must(be.NilPtr(v))
 }
 
 func TestReadMultipartBoundary(gt *testing.T) {
@@ -225,13 +365,39 @@ func TestReadBodyLimit(gt *testing.T) {
 		t.Mustf(be.NoError(err), "%s at the limit", e.name)
 		t.Mustf(be.Equal(1, v.Len()), "%s at the limit", e.name)
 
-		v, err = readString(t, e.contentType, e.body, form.Limits{Body: size - 1})
-		t.Mustf(be.ErrorIs(err, form.ErrTooLarge), "%s over the limit", e.name)
+		// Once refused by its declared length, once while streaming.
+		for _, body := range []io.Reader{strings.NewReader(e.body), unsized(e.body)} {
+			v, err = form.Read(httptest.NewRecorder(), request(t, e.contentType, body), form.Limits{Body: size - 1})
+			t.Mustf(be.ErrorIs(err, form.ErrTooLarge), "%s over the limit", e.name)
+			tooBig, ok := errors.AsType[*http.MaxBytesError](err)
+			t.Mustf(be.True(ok), "%s: the MaxBytesError is wrapped", e.name)
+			t.Must(be.Equal(size-1, tooBig.Limit))
+			t.Must(be.Equal("form: form too large: body over "+fmt.Sprint(size-1)+" bytes: http: request body too large", err.Error()))
+			t.Must(be.NilPtr(v))
+		}
+	}
+}
+
+// A body that declares a length over the limit is refused unread.
+func TestReadDeclaredLength(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, ct := range []string{form.URLEncoded, multipartType} {
+		body := &countingReader{r: strings.NewReader("a=1")}
+		r := request(t, ct, body)
+		r.ContentLength = 101
+		v, err := form.Read(httptest.NewRecorder(), r, form.Limits{Body: 100})
+		t.Mustf(be.ErrorIs(err, form.ErrTooLarge), "content type %q", ct)
 		tooBig, ok := errors.AsType[*http.MaxBytesError](err)
-		t.Mustf(be.True(ok), "%s: the MaxBytesError is wrapped", e.name)
-		t.Must(be.Equal(size-1, tooBig.Limit))
+		t.Must(be.True(ok))
+		t.Must(be.Equal(int64(100), tooBig.Limit))
+		t.Must(be.Equal(0, body.n))
 		t.Must(be.NilPtr(v))
 	}
+	// The media type is checked first.
+	r := request(t, "text/plain", strings.NewReader("a=1"))
+	r.ContentLength = 101
+	_, err := form.Read(httptest.NewRecorder(), r, form.Limits{Body: 100})
+	t.Must(be.ErrorIs(err, form.ErrUnsupportedType))
 }
 
 func TestReadFieldLimit(gt *testing.T) {
@@ -329,6 +495,49 @@ func TestReadBodyError(gt *testing.T) {
 	}
 }
 
+// The text of a read error may quote the request (net/http quotes a
+// malformed chunked trailer line): it stays out of the message.
+func TestReadBodyErrorDoesNotQuoteCause(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	const marker = "s3cr3tmarker"
+	cause := errors.New(`malformed MIME header: missing colon: "` + marker + `"`)
+	for _, ct := range []string{form.URLEncoded, multipartType} {
+		body := io.MultiReader(strings.NewReader("a=1&"), failingReader{cause})
+		_, err := form.Read(httptest.NewRecorder(), request(t, ct, body), form.Limits{})
+		t.Mustf(be.ErrorIs(err, form.ErrMalformed), "content type %q", ct)
+		t.Mustf(be.ErrorIs(err, cause), "content type %q", ct)
+		t.Must(be.Equal("form: malformed form: read body failed", err.Error()))
+	}
+}
+
+// A real server reports a malformed chunked trailer with the line quoted.
+func TestReadChunkedTrailerError(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	const marker = "s3cr3tmarker"
+	errs := make(chan error, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, err := form.Read(w, r, form.Limits{})
+		v.Zero()
+		errs <- err
+	}))
+	defer srv.Close()
+	for _, c := range []struct{ contentType, body string }{
+		{form.URLEncoded, "a=1"},
+		{multipartType, multipartBody(field("a", "1"))},
+	} {
+		req := "POST / HTTP/1.1\r\nHost: x\r\nContent-Type: " + c.contentType + "\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
+			fmt.Sprintf("%x\r\n%s\r\n0\r\n", len(c.body), c.body) + marker + " without a colon\r\n\r\n"
+		conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
+		t.Must(be.NoError(err))
+		_, err = io.WriteString(conn, req)
+		t.Must(be.NoError(err))
+		err = <-errs
+		_ = conn.Close()
+		t.Mustf(be.ErrorIs(err, form.ErrMalformed), "content type %q", c.contentType)
+		t.Mustf(be.False(strings.Contains(err.Error(), marker)), "content type %q", c.contentType)
+	}
+}
+
 func TestReadNilWriterAndBody(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	r := request(t, form.URLEncoded, strings.NewReader("a=12345"))
@@ -361,6 +570,49 @@ func TestReadErrorsDoNotQuoteInput(gt *testing.T) {
 		t.Must(be.Error(err))
 		t.Mustf(be.False(strings.Contains(err.Error(), marker)), "error %q", err)
 	}
+}
+
+// Formatting or logging a form shows neither names nor values.
+func TestValuesFormatRedacts(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	v, err := readString(t, form.URLEncoded, "account=ada&password=hunter2", form.Limits{})
+	t.Must(be.NoError(err))
+	defer v.Zero()
+	leaks := func(s string) bool {
+		for _, secret := range []string{"hunter2", "68756e74657232", "68 75 6e", "104 117 110", "password", "ada"} {
+			if strings.Contains(s, secret) {
+				return true
+			}
+		}
+		return false
+	}
+	type wrapper struct {
+		Form  *form.Values
+		Value form.Values
+	}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "% x", "%d", "%10.3v"} {
+		for _, arg := range []any{v, *v, []*form.Values{v}, wrapper{v, *v}, fmt.Errorf("wrapped: %w", errors.New("x"))} {
+			got := fmt.Sprintf(verb, arg)
+			// Do not print got on failure: it would be the leak.
+			t.Mustf(be.False(leaks(got)), "verb %s on %T", verb, arg)
+		}
+	}
+	t.Must(be.Equal("form.Values(len=2)", fmt.Sprint(v)))
+	t.Must(be.Equal("form.Values(len=2)", fmt.Sprintf("%#v", *v)))
+	t.Must(be.Equal("{form.Values(len=2) form.Values(len=2)}", fmt.Sprint(wrapper{v, *v})))
+	var nilValues *form.Values
+	t.Must(be.Equal("<nil>", fmt.Sprint(nilValues)))
+
+	var buf bytes.Buffer
+	for _, h := range []slog.Handler{slog.NewTextHandler(&buf, nil), slog.NewJSONHandler(&buf, nil)} {
+		slog.New(h).Info("form", "values", v, "plain", *v, "none", nilValues)
+	}
+	t.Must(be.False(leaks(buf.String())))
+	// Text formats every value; JSON uses LogValue on *Values, and encodes a
+	// plain Values, which has no exported fields, as {}.
+	t.Must(be.Equal(3, strings.Count(buf.String(), "form.Values(len=2)")))
+	t.Must(be.True(strings.Contains(buf.String(), `"plain":{}`)))
+	t.Must(be.Equal(2, strings.Count(buf.String(), "form.Values(len=0)")))
 }
 
 func TestValuesAccessors(gt *testing.T) {

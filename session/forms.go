@@ -47,6 +47,8 @@ func PostForm(action, token string, attrs ...attr.Node) elem.Scope {
 //   - [Forms.PageToken] gives the token for the forms of a whole page,
 //   - [Forms.FragmentToken] the token for the forms of a fragment that
 //     updates a page (an htmx swap, a poll), which must match the page's,
+//   - [Forms.Token] the page's token without setting anything, for the
+//     updates of an event stream,
 //   - [Forms.Read] reads a submitted form within Limits and checks its
 //     token, and [Forms.Check] checks a token read some other way.
 //
@@ -88,6 +90,14 @@ type Forms[T any] struct {
 // Behind [Store.Middleware], Session finds exactly what FromContext finds,
 // so a handler that acts for the session from FromContext acts for the
 // session whose token [Forms.Read] checked.
+//
+// After [Store.New] or [Store.Rotate] in the same request, r still holds
+// the session the request came with, which has now ended, or none: Session
+// finds no session, and the tokens of Forms are pre-authentication ones
+// (PageToken may also set a pre-authentication cookie), which the
+// browser's new session cookie refuses. Answer such a request with a
+// redirect (the usual way after a login), or attach the returned session
+// before rendering: r = r.WithContext(WithSession(r.Context(), s)).
 func (f Forms[T]) Session(r *http.Request) (*Session[T], bool) {
 	if s, attached := r.Context().Value(contextKey[T]{}).(*Session[T]); attached {
 		if s == nil || s.Ended() {
@@ -110,7 +120,8 @@ func (f Forms[T]) Session(r *http.Request) (*Session[T], bool) {
 //
 // Do not call it for a fragment that updates part of a page: a renewed
 // cookie would refuse the page's other forms. Fragments use
-// [Forms.FragmentToken].
+// [Forms.FragmentToken], and event streams [Forms.Token]. After
+// [Store.New] or [Store.Rotate] in the same request, see [Forms.Session].
 //
 // For a visitor without a session it returns "" when PreAuth is nil: forms
 // rendered with the empty token are refused by every check. It fails only
@@ -126,12 +137,12 @@ func (f Forms[T]) PageToken(w http.ResponseWriter, r *http.Request) (string, err
 }
 
 // FragmentToken returns the CSRF token for the forms of a fragment that
-// updates a page of r (an htmx swap, a poll, a live region), which must
-// match the token of the page's other forms. For a visitor with a session
-// that is the session's token ([Forms.Session]). For a visitor without one
-// it is the token of the pre-authentication cookie that the page's forms
-// were rendered with ([PreAuth.Token]), which FragmentToken does not renew
-// under them: past half of its lifetime, [PreAuth.Issue] would replace it.
+// updates a page of r (an htmx swap, a poll), which must match the token
+// of the page's other forms. For a visitor with a session that is the
+// session's token ([Forms.Session]). For a visitor without one it is the
+// token of the pre-authentication cookie that the page's forms were
+// rendered with ([PreAuth.Token]), which FragmentToken does not renew under
+// them: past half of its lifetime, [PreAuth.Issue] would replace it.
 //
 // The fallback: when r carries no valid pre-authentication cookie (none, a
 // forged one, or one that expired, with which the page's forms fail too),
@@ -139,6 +150,12 @@ func (f Forms[T]) PageToken(w http.ResponseWriter, r *http.Request) (string, err
 // reports renewed. The browser's new cookie then refuses the tokens of the
 // page's forms, so the fragment must also replace each of them with one
 // that carries the new token (out of band swaps), or ask for a reload.
+//
+// The fallback sets the cookie in w's header, so call FragmentToken before
+// writing the response: a cookie set once the header is written is lost,
+// and renewed still reports true. That rules it out for the updates of an
+// event stream (a live region), which use [Forms.Token]. After
+// [Store.New] or [Store.Rotate] in the same request, see [Forms.Session].
 //
 // renewed is false whenever w was not touched: with a session, with a
 // valid cookie, without PreAuth (the token is then "", as for
@@ -157,12 +174,46 @@ func (f Forms[T]) FragmentToken(w http.ResponseWriter, r *http.Request) (token s
 	return f.PreAuth.IssueRenewed(w, r)
 }
 
+// Token returns the CSRF token of the forms already on r's page, and true,
+// without setting anything: the token of r's session ([Forms.Session]), or
+// for a visitor without one the token of r's pre-authentication cookie
+// ([PreAuth.Token]). It returns "" and false when there is no such token:
+// no session and no valid cookie (none, a forged one, or one that expired,
+// with which the page's forms fail too), no session and a nil PreAuth, or
+// a session that ended meanwhile.
+//
+// Token is for the updates of an event stream (a live region of package
+// sse), and for any other response that has started. Such a response
+// cannot set a cookie, which rules out [Forms.FragmentToken]. A stream's
+// request also keeps the cookies the stream opened with for the stream's
+// whole life, so once its pre-authentication cookie expires (a stream may
+// outlive the TTL of [PreAuth]), Token reports false on every later
+// update. Render each update's forms with the token while Token reports
+// true; otherwise end the stream with an end event whose fragment asks for
+// a reload (the Update of an sse Loop calls the stream's End). A stream
+// Lifetime of at most half the pre-authentication TTL makes that rare, as
+// a page's cookie is less than half its TTL old when the page renders. A
+// signed-in visitor's stream ends with the session instead (the Done of
+// the Loop set to [Session.Done]).
+func (f Forms[T]) Token(r *http.Request) (string, bool) {
+	if s, ok := f.Session(r); ok {
+		token := s.CSRF()
+		return token, token != ""
+	}
+	if f.PreAuth == nil {
+		return "", false
+	}
+	return f.PreAuth.Token(r)
+}
+
 // Check checks a submitted CSRF token against r: with the token of r's
 // session ([Forms.Session], [Session.CheckCSRF]) when the visitor has one,
 // and otherwise with r's pre-authentication cookie ([PreAuth.Verify]). It
 // returns nil or an error wrapping [ErrCSRF], which is also the answer for
 // a visitor without a session when PreAuth is nil. Use it for forms read
-// some other way than [Forms.Read], such as a streamed upload.
+// some other way than [Forms.Read], such as a streamed upload, or a form
+// that is answered again with its values when its token fails (see
+// [Forms.Read]).
 func (f Forms[T]) Check(r *http.Request, token string) error {
 	if s, ok := f.Session(r); ok {
 		return s.CheckCSRF(token)
@@ -184,6 +235,19 @@ func (f Forms[T]) Check(r *http.Request, token string) error {
 // wrapping [ErrCSRF], after zeroing every value it read. Return the error
 // unchanged to the application's error policy: the Errors policy of package
 // web answers form errors with 400, 413 or 415 and ErrCSRF with 403.
+//
+// Because Read zeroes the form when its token fails, its handler cannot
+// answer with the form again. Forms that should come back with what was
+// typed when their token fails, such as a sign-up or a long form for
+// anonymous visitors (a pre-authentication form can expire half a TTL
+// after it was rendered, see [PreAuth]), are read with [form.Read] and
+// checked with [Forms.Check]. On ErrCSRF the handler acts on nothing and
+// renders the form again with a fresh token from [Forms.PageToken], the
+// typed values except secrets such as a password, and a 4xx status such
+// as 403. That is safe only behind a same-origin policy such as
+// mw.SameOrigin, which refuses cross-site posts: without one, another site
+// could post values of its choosing and have them shown back in a form
+// with a valid token.
 //
 // Read uses the first CSRF field of the form. A login handler that must
 // accept its form from a visitor who meanwhile signed in from another tab

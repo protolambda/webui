@@ -211,9 +211,9 @@ func (st *Store[T]) CookieName() string {
 // New creates a session with the value data, ends the session that r's
 // cookie names (if any, with the reason [EndRotated] unless it had expired:
 // the session ID rotates, which defeats session fixation), and sets the new
-// session's cookie on w. Call it at login, before writing the response body. r may
-// be nil when there is no previous session to end. For a change of
-// privileges within a session, see [Store.Rotate].
+// session's cookie on w. Call it at login, before writing the response
+// body. r may be nil when there is no previous session to end. For a
+// change of privileges within a session, see [Store.Rotate].
 //
 // When the store is full, New first drops expired sessions, then ends the
 // least recently used ones ([EndEvicted]) of any account; see
@@ -227,6 +227,14 @@ func (st *Store[T]) CookieName() string {
 // contents of its pointers, slices and maps, which a hook that clears
 // secrets then clears for the new session too. Carry a value over with
 // [Store.Rotate] instead.
+//
+// r and its context still hold the previous session, which has now ended,
+// or none: for the rest of the request, [FromContext], [Forms] and
+// [Store.Lookup] find no session, and Forms hands out
+// pre-authentication tokens (see [Forms.Session]) that the browser's new
+// session cookie refuses. Answer with a redirect (web.Redirect, the usual
+// way after a login), or attach the returned session before rendering:
+// r = r.WithContext(WithSession(r.Context(), s)).
 func (st *Store[T]) New(w http.ResponseWriter, r *http.Request, data T) (*Session[T], error) {
 	token, k, csrf, err := st.newTokens()
 	if err != nil {
@@ -294,6 +302,13 @@ func (st *Store[T]) New(w http.ResponseWriter, r *http.Request, data T) (*Sessio
 // the old one, so rotation does not extend the absolute lifetime. A
 // [Store.EndFunc] running at the same time checks the new session in place
 // of the old one.
+//
+// r and its context still hold the old session, which has now ended: for
+// the rest of the request, [FromContext], [Forms] and [Store.Lookup] find
+// no session, and Forms hands out pre-authentication tokens (see
+// [Forms.Session]) that the browser's new session cookie refuses. Answer
+// with a redirect, or attach the returned session before rendering:
+// r = r.WithContext(WithSession(r.Context(), s)).
 //
 // Rotate returns [ErrEnded] if r names no live session (an expired one
 // ends, as at [Store.Lookup]), and fails like [Store.New] if the source of

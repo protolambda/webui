@@ -155,8 +155,11 @@ Every POST form carries a CSRF token: `session.PostForm` renders the form with t
 token comes from `session.Forms`: the session's token for a signed-in visitor, or a stateless pre-authentication
 token (`session.PreAuth`, a signed cookie and a form token) for anyone else. `Forms.Read` reads the form within
 bounds and checks the token before the handler sees any value; return its error to the error policy, which answers
-with 400, 403, 413 or 415. A fragment that updates part of a page takes its token from `Forms.FragmentToken`, so that
-the page's other forms stay valid.
+with 400, 403, 413 or 415. A form that should come back with what was typed when its token expired is the exception:
+read it with `form.Read`, check it with `Forms.Check`, and render it again with a fresh token (behind
+`mw.SameOrigin`), as the login below does. A fragment that updates part of a page takes its token from
+`Forms.FragmentToken`, so that the page's other forms stay valid; an event stream, which cannot set a cookie once it
+started, takes it from `Forms.Token`.
 
 A login checks its form with `PreAuth.Verify`, starts the session with `Store.New` (a new session ID), and clears
 the pre-authentication cookie. Pages behind `errs.RequireAuth` send visitors without a session to the login page,

@@ -250,10 +250,18 @@ func ExampleStore_Rotate() {
 	fmt.Println(old.Ended(), old.EndReason(), newCookie.Value != oldCookie.Value)
 	_, ok := store.Lookup(r)
 	fmt.Println("old cookie works:", ok)
+
+	// r still holds the old session, which has ended: a handler that
+	// answers with a page rather than a redirect attaches the new one, so
+	// that the page (and its forms, through Forms) is for the new session.
+	r = r.WithContext(session.WithSession(r.Context(), s))
+	current, _ := session.FromContext[Account](r.Context())
+	fmt.Println("page for the new session:", current == s)
 	// Output:
 	// ada [1 2 3] true
 	// true rotated true
 	// old cookie works: false
+	// page for the new session: true
 }
 
 // Ending the earlier sessions of an account before its login keeps one

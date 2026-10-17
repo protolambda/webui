@@ -98,7 +98,10 @@ type PreAuthOptions struct {
 // [PreAuth.Token], which sets nothing. When a fragment finds no valid
 // cookie, the page's forms have expired too: answer with a prompt to
 // reload, or issue with [PreAuth.IssueRenewed] and, if it set a new cookie,
-// send fresh copies of the page's forms along with the fragment.
+// send fresh copies of the page's forms along with the fragment. Issuing
+// needs a response whose header is not written yet, as for an htmx swap or
+// a poll. An event stream cannot set a cookie once its first event is out:
+// it ends with a prompt to reload instead (see [Forms.Token]).
 //
 // A form expires with its cookie, which Issue reuses until half of its
 // lifetime: a form can expire as soon as half the TTL after it was
@@ -184,12 +187,13 @@ func (p *PreAuth) CookieName() string {
 // the old one are refused (the visitor reloads them). r may be nil. Issue
 // fails only if the source of randomness fails, without touching w.
 //
-// Call Issue when rendering a whole page, and not for a fragment that
-// updates part of a page (an htmx swap, a poll, a live region): past half
-// of the cookie's lifetime, the fragment's new cookie would replace the
-// one the page's other forms were rendered with, and those forms would
-// fail. Fragments read the page's token with [PreAuth.Token] instead; a
-// fragment that must issue uses [PreAuth.IssueRenewed] to learn whether
+// Call Issue when rendering a whole page, before writing the response, and
+// not for a fragment that updates part of a page (an htmx swap, a poll, a
+// live region): past half of the cookie's lifetime, the fragment's new
+// cookie would replace the one the page's other forms were rendered with,
+// and those forms would fail. Fragments read the page's token with
+// [PreAuth.Token] instead; a fragment that must issue (an htmx swap or a
+// poll, not an event stream) uses [PreAuth.IssueRenewed] to learn whether
 // the cookie changed (see [PreAuth]).
 func (p *PreAuth) Issue(w http.ResponseWriter, r *http.Request) (string, error) {
 	token, _, err := p.IssueRenewed(w, r)
@@ -204,6 +208,10 @@ func (p *PreAuth) Issue(w http.ResponseWriter, r *http.Request) (string, error) 
 // new token (with out-of-band swaps, say), or the page must be reloaded.
 // When renewed is false, nothing was set and the page's forms stay valid.
 // On error, renewed is false and w is untouched.
+//
+// Call it before writing the response: a cookie set once the header is
+// written is lost, yet renewed still reports true. An event stream, whose
+// header is written with its first event, cannot renew (see [Forms.Token]).
 func (p *PreAuth) IssueRenewed(w http.ResponseWriter, r *http.Request) (token string, renewed bool, err error) {
 	now := p.now()
 	if body, issued, perr := p.parse(p.cookie.value(r), now); perr == nil && now.Sub(issued) < p.ttl/2 {
@@ -227,7 +235,8 @@ func (p *PreAuth) IssueRenewed(w http.ResponseWriter, r *http.Request) (token st
 // page they update: both carry the token of the browser's current cookie,
 // and expire with it. It returns "" and false when r is nil or carries no
 // valid cookie (none, a forged one, or one that expired); the page's forms
-// fail then too, and the fragment asks for a reload or renews them with
+// fail then too, and the fragment asks for a reload or, if its response has
+// not started (unlike an event stream's), renews them with
 // [PreAuth.IssueRenewed].
 func (p *PreAuth) Token(r *http.Request) (string, bool) {
 	body, _, err := p.parse(p.cookie.value(r), p.now())

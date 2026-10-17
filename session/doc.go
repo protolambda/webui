@@ -116,13 +116,19 @@
 //
 // [Forms] puts these rules together for applications with both kinds of
 // visitors: [Forms.PageToken] and [Forms.FragmentToken] give the token for
-// a page or a fragment (the session's, or the pre-authentication one), and
-// [Forms.Read] reads a submitted form within bounds ([form.Read]) and checks
-// its token against the request's session or pre-authentication cookie.
-// [PostForm] renders a POST form with the token as its first field. Return
-// the errors of Read unchanged to the application's error policy: the
-// Errors policy of package web answers form errors with 400, 413 or 415,
-// and [ErrCSRF] with 403, without saying more. Read forms with package
+// a page or a fragment (the session's, or the pre-authentication one),
+// [Forms.Token] gives the page's token to the updates of an event stream,
+// which cannot set cookies, and [Forms.Read] reads a submitted form within
+// bounds ([form.Read]) and checks its token against the request's session
+// or pre-authentication cookie. [PostForm] renders a POST form with the
+// token as its first field. Return the errors of Read unchanged to the
+// application's error policy: the Errors policy of package web answers form
+// errors with 400, 413 or 415, and [ErrCSRF] with 403, without saying more.
+// Forms that are answered again with what was typed when their token
+// expired are the exception: read them with [form.Read] and check them with
+// [Forms.Check] (see [Forms.Read] and [PreAuth]). After [Store.New] or
+// [Store.Rotate], redirect, or attach the new session to the request
+// before rendering (see [Forms.Session]). Read forms with package
 // form rather than [http.Request.ParseForm] or [http.Request.PostFormValue],
 // which accept far larger bodies (up to 10 MB of urlencoded text, more for
 // multipart) unless a body limit middleware runs first.

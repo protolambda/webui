@@ -215,6 +215,15 @@ func TestFormsAnonymous(gt *testing.T) {
 	t.Must(be.NoError(err))
 	v.Zero()
 
+	// A forged cookie counts as none: the fragment falls back to a new one.
+	forgedCookie := &http.Cookie{Name: p.CookieName(), Value: strings.Repeat("A", 96)}
+	rec = httptest.NewRecorder()
+	fragment, renewed, err = forms.FragmentToken(rec, attached(st, get(t, "/signup/check", forgedCookie)))
+	t.Must(be.NoError(err))
+	t.Must(be.True(renewed))
+	t.Must(be.Len(setCookies(rec), 1))
+	t.Must(be.NoError(p.Verify(submit(t, nil, setCookies(rec)[0]), fragment)))
+
 	// A session's token from a visitor without the session is refused.
 	s, _ := login(t, st, nil, account{ID: 2})
 	_, err = forms.Read(httptest.NewRecorder(), attached(st, submit(t, url.Values{session.CSRFField: {s.CSRF()}}, renewedCookie)))
@@ -299,6 +308,42 @@ func TestFormsSession(gt *testing.T) {
 	t.Must(be.False(ok))
 	_, err = withStore.Read(httptest.NewRecorder(), withSession(submit(t, url.Values{session.CSRFField: {s.CSRF()}}, cookie), gone))
 	t.Must(be.ErrorIs(err, session.ErrCSRF))
+
+	// Without the middleware, the cookie's session also supplies and checks
+	// the tokens of every method, and a pre-authentication pair does not
+	// stand in for its token.
+	p := newPreAuth(t, session.PreAuthOptions{})
+	full := session.Forms[account]{Store: st, PreAuth: p}
+	r = get(t, "/notes", cookie)
+	rec := httptest.NewRecorder()
+	token, err := full.PageToken(rec, r)
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(s.CSRF(), token))
+	t.Must(be.Len(setCookies(rec), 0))
+	rec = httptest.NewRecorder()
+	token, renewed, err := full.FragmentToken(rec, r)
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(s.CSRF(), token))
+	t.Must(be.False(renewed))
+	t.Must(be.Len(setCookies(rec), 0))
+	token, ok = full.Token(r)
+	t.Must(be.True(ok))
+	t.Must(be.Equal(s.CSRF(), token))
+	t.Must(be.NoError(full.Check(r, s.CSRF())))
+	t.Must(be.ErrorIs(full.Check(r, "forged"), session.ErrCSRF))
+	v, err = full.Read(httptest.NewRecorder(), submit(t, url.Values{session.CSRFField: {s.CSRF()}, "note": {"x"}}, cookie))
+	t.Must(be.NoError(err))
+	t.Must(be.Equal("x", v.String("note")))
+	v.Zero()
+	_, err = full.Read(httptest.NewRecorder(), submit(t, url.Values{session.CSRFField: {"forged"}}, cookie))
+	t.Must(be.ErrorIs(err, session.ErrCSRF))
+	preToken, preCookie := issue(t, p, nil)
+	_, err = full.Read(httptest.NewRecorder(), submit(t, url.Values{session.CSRFField: {preToken}}, cookie, preCookie))
+	t.Must(be.ErrorIs(err, session.ErrCSRF))
+	// The same pair is accepted from a visitor without the session.
+	v, err = full.Read(httptest.NewRecorder(), submit(t, url.Values{session.CSRFField: {preToken}}, preCookie))
+	t.Must(be.NoError(err))
+	v.Zero()
 
 	// Behind the middleware, Session finds what FromContext finds.
 	r = attached(st, get(t, "/", cookie))
@@ -417,4 +462,152 @@ func TestFormsConcurrentUse(gt *testing.T) {
 	for err := range errs {
 		t.Must(be.NoError(err))
 	}
+}
+
+func TestFormsToken(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	st := newStore(t, session.Options[account]{Now: clk.Now})
+	p := newPreAuth(t, session.PreAuthOptions{Now: clk.Now})
+	forms := session.Forms[account]{Store: st, PreAuth: p}
+
+	// A visitor with a session gets the session's token.
+	s, cookie := login(t, st, nil, account{ID: 1})
+	token, ok := forms.Token(attached(st, get(t, "/events", cookie)))
+	t.Must(be.True(ok))
+	t.Must(be.Equal(s.CSRF(), token))
+
+	// A visitor without one gets the token of the page's cookie, past half
+	// of its lifetime too, until it expires; Token never issues one.
+	pageToken, preCookie := issue(t, p, nil)
+	r := attached(st, get(t, "/events", preCookie))
+	token, ok = forms.Token(r)
+	t.Must(be.True(ok))
+	t.Must(be.Equal(pageToken, token))
+	clk.Advance(session.DefaultPreAuthTTL/2 + time.Minute)
+	token, ok = forms.Token(r)
+	t.Must(be.True(ok))
+	t.Must(be.Equal(pageToken, token))
+	clk.Advance(session.DefaultPreAuthTTL / 2)
+	token, ok = forms.Token(r)
+	t.Must(be.False(ok))
+	t.Must(be.Equal("", token))
+
+	// No cookie, a forged one, or no PreAuth: no token.
+	forged := &http.Cookie{Name: p.CookieName(), Value: strings.Repeat("A", 96)}
+	for _, r := range []*http.Request{get(t, "/events"), get(t, "/events", forged)} {
+		token, ok = forms.Token(attached(st, r))
+		t.Must(be.False(ok))
+		t.Must(be.Equal("", token))
+	}
+	fresh, freshCookie := issue(t, p, nil)
+	token, ok = forms.Token(get(t, "/events", freshCookie))
+	t.Must(be.True(ok))
+	t.Must(be.Equal(fresh, token))
+	token, ok = session.Forms[account]{Store: st}.Token(get(t, "/events", freshCookie))
+	t.Must(be.False(ok))
+	t.Must(be.Equal("", token))
+
+	// A session that ended under the stream yields no session token; the
+	// request's pre-authentication cookie, if valid, counts as for every
+	// other method of Forms.
+	gone := session.NewDetached(account{ID: 3}, "gone-csrf")
+	r = withSession(get(t, "/events"), gone)
+	token, ok = forms.Token(r)
+	t.Must(be.True(ok))
+	t.Must(be.Equal("gone-csrf", token))
+	gone.End()
+	token, ok = forms.Token(r)
+	t.Must(be.False(ok))
+	t.Must(be.Equal("", token))
+
+	// A live session with an empty token has no token to hand out.
+	token, ok = forms.Token(withSession(get(t, "/events"), session.NewDetached(account{ID: 4}, "")))
+	t.Must(be.False(ok))
+	t.Must(be.Equal("", token))
+}
+
+// rotateAndRender serves a re-authentication post behind st's middleware:
+// the handler reads the form, rotates the session and renders a page,
+// attaching the new session to the request first when attach is set. It
+// returns the new session, the token of the page and the response.
+func rotateAndRender(t devtest.T, st *session.Store[account], forms session.Forms[account],
+	csrf string, cookie *http.Cookie, attach bool,
+) (*session.Session[account], string, *httptest.ResponseRecorder) {
+	var (
+		next  *session.Session[account]
+		token string
+	)
+	rec := httptest.NewRecorder()
+	st.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, err := forms.Read(w, r)
+		t.Must(be.NoError(err))
+		v.Zero()
+		next, err = st.Rotate(w, r)
+		t.Must(be.NoError(err))
+		if attach {
+			r = r.WithContext(session.WithSession(r.Context(), next))
+		}
+		token, err = forms.PageToken(w, r)
+		t.Must(be.NoError(err))
+	})).ServeHTTP(rec, submit(t, url.Values{session.CSRFField: {csrf}}, cookie))
+	return next, token, rec
+}
+
+// cookieNames returns the names of the cookies set on rec.
+func cookieNames(rec *httptest.ResponseRecorder) []string {
+	var names []string
+	for _, c := range setCookies(rec) {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+func TestFormsAfterRotateOrNew(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{})
+	p := newPreAuth(t, session.PreAuthOptions{})
+	forms := session.Forms[account]{Store: st, PreAuth: p}
+
+	// Attached before rendering, the new session supplies the page's token,
+	// no pre-authentication cookie is set, and the page's forms go through.
+	s, cookie := login(t, st, nil, account{ID: 1})
+	next, token, rec := rotateAndRender(t, st, forms, s.CSRF(), cookie, true)
+	t.Must(be.Equal(next.CSRF(), token))
+	t.Must(be.DeepEqual([]string{st.CookieName()}, cookieNames(rec)))
+	newCookie := setCookies(rec)[0]
+	v, err := forms.Read(httptest.NewRecorder(), attached(st, submit(t, url.Values{session.CSRFField: {token}}, newCookie)))
+	t.Must(be.NoError(err))
+	v.Zero()
+
+	// Without it, the request finds no session: the page gets a
+	// pre-authentication token and cookie, which the new session refuses.
+	s, cookie = login(t, st, nil, account{ID: 2})
+	next, token, rec = rotateAndRender(t, st, forms, s.CSRF(), cookie, false)
+	t.Must(be.NotEqual(next.CSRF(), token))
+	t.Must(be.DeepEqual([]string{st.CookieName(), p.CookieName()}, cookieNames(rec)))
+	_, err = forms.Read(httptest.NewRecorder(), attached(st, submit(t, url.Values{session.CSRFField: {token}}, setCookies(rec)...)))
+	t.Must(be.ErrorIs(err, session.ErrCSRF))
+
+	// The same holds for a login that renders a page after Store.New.
+	preToken, preCookie := issue(t, p, nil)
+	rec = httptest.NewRecorder()
+	var started *session.Session[account]
+	st.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, err := forms.Read(w, r)
+		t.Must(be.NoError(err))
+		v.Zero()
+		started, err = st.New(w, r, account{ID: 3})
+		t.Must(be.NoError(err))
+		p.ClearCookie(w)
+		unattached, err := forms.PageToken(httptest.NewRecorder(), r)
+		t.Must(be.NoError(err))
+		t.Must(be.Equal(preToken, unattached))
+		r = r.WithContext(session.WithSession(r.Context(), started))
+		token, err = forms.PageToken(w, r)
+		t.Must(be.NoError(err))
+	})).ServeHTTP(rec, submit(t, url.Values{session.CSRFField: {preToken}}, preCookie))
+	t.Must(be.Equal(started.CSRF(), token))
+	t.Must(be.DeepEqual([]string{st.CookieName(), p.CookieName()}, cookieNames(rec)))
+	t.Must(be.Equal(-1, setCookies(rec)[1].MaxAge))
 }

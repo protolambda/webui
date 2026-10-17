@@ -58,12 +58,20 @@
 // mounted on the same routes need distinct value types (see [FromContext]).
 // Handler tests can skip the cookie with [NewDetached] and [WithSession].
 //
+// Mount the middleware innermost, right around the router: after the
+// middleware that refuses requests (the host check, the same-origin policy
+// and the body limit of package mw), and before the router, so that every
+// handler finds the session (see [Store.Middleware]). Without it, or
+// [WithSession] in tests, FromContext finds nothing, and a guard built on
+// it, such as the authed function of web.Errors.RequireAuth, takes every
+// request for a signed-out one.
+//
 // A logout handler takes its session from the context, checks the form's
-// CSRF token against it, and calls [Store.EndSession], which ends the
-// session and clears the cookie (see its example). That works the same
-// with a detached session in a test. [Store.End] ends the session that the
-// request's cookie names instead, and finds nothing when the session came
-// from the context alone.
+// CSRF token against it ([Forms.Read], or [Session.CheckCSRF]), and calls
+// [Store.EndSession], which ends the session and clears the cookie (see
+// its example). That works the same with a detached session in a test.
+// [Store.End] ends the session that the request's cookie names instead,
+// and finds nothing when the session came from the context alone.
 //
 // # Cookies
 //
@@ -106,9 +114,22 @@
 // page's token with [PreAuth.Token], because a renewed cookie refuses the
 // forms already on the page.
 //
+// [Forms] puts these rules together for applications with both kinds of
+// visitors: [Forms.PageToken] and [Forms.FragmentToken] give the token for
+// a page or a fragment (the session's, or the pre-authentication one), and
+// [Forms.Read] reads a submitted form within bounds ([form.Read]) and checks
+// its token against the request's session or pre-authentication cookie.
+// [PostForm] renders a POST form with the token as its first field. Return
+// the errors of Read unchanged to the application's error policy: the
+// Errors policy of package web answers form errors with 400, 413 or 415,
+// and [ErrCSRF] with 403, without saying more. Read forms with package
+// form rather than [http.Request.ParseForm] or [http.Request.PostFormValue],
+// which accept far larger bodies (up to 10 MB of urlencoded text, more for
+// multipart) unless a body limit middleware runs first.
+//
 // # Concurrency
 //
-// [Store], [Session] and [PreAuth] are safe for concurrent use. A session's
+// [Store], [Session], [PreAuth] and [Forms] are safe for concurrent use. A session's
 // value is guarded by the session: [Session.Data] returns a copy, and
 // [Session.Update] runs a function with exclusive access to it. The
 // callbacks [Options.OnEnd], [Options.OnEndReason] and those given to

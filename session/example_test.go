@@ -12,6 +12,7 @@ import (
 
 	"github.com/protolambda/chord/core"
 
+	"github.com/protolambda/webui/form"
 	"github.com/protolambda/webui/session"
 )
 
@@ -21,7 +22,8 @@ type User struct {
 }
 
 // A login creates a session and sets its cookie; the middleware attaches
-// the session to later requests; the logout ends it and clears the cookie.
+// the session to later requests; the logout checks the form's CSRF token,
+// ends the session and clears the cookie.
 func ExampleStore() {
 	store, err := session.NewStore(session.Options[User]{
 		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
@@ -32,7 +34,8 @@ func ExampleStore() {
 
 	// POST /login, after the credentials checked out.
 	rec := httptest.NewRecorder()
-	if _, err := store.New(rec, httptest.NewRequest(http.MethodPost, "/login", nil), User{Name: "ada"}); err != nil {
+	s, err := store.New(rec, httptest.NewRequest(http.MethodPost, "/login", nil), User{Name: "ada"})
+	if err != nil {
 		panic(err)
 	}
 	cookie := rec.Result().Cookies()[0]
@@ -54,11 +57,27 @@ func ExampleStore() {
 	app.ServeHTTP(httptest.NewRecorder(), r)
 	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/tasks", nil))
 
-	// POST /logout.
-	r = httptest.NewRequest(http.MethodPost, "/logout", nil)
+	// POST /logout, from a form with the session's CSRF token.
+	forms := session.Forms[User]{Store: store}
+	logout := store.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s, ok := session.FromContext[User](r.Context())
+		if !ok {
+			store.ClearCookie(w) // nothing to end
+			return
+		}
+		f, err := forms.Read(w, r) // checks the token against s
+		if err != nil {
+			http.Error(w, "invalid form", http.StatusForbidden)
+			return
+		}
+		f.Zero()
+		store.EndSession(w, s)
+	}))
+	r = httptest.NewRequest(http.MethodPost, "/logout", strings.NewReader(session.CSRFField+"="+s.CSRF()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.AddCookie(cookie)
 	rec = httptest.NewRecorder()
-	store.End(rec, r)
+	logout.ServeHTTP(rec, r)
 	fmt.Println(rec.Header().Get("Set-Cookie"))
 	app.ServeHTTP(httptest.NewRecorder(), r)
 	// Output:
@@ -105,23 +124,26 @@ func ExampleCheckCSRF() {
 // Handler tests skip the login: a detached session attached to the
 // request context stands in for the middleware's lookup.
 func ExampleNewDetached() {
+	var forms session.Forms[User] // in the application: with its Store and PreAuth
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s, ok := session.FromContext[User](r.Context())
 		if !ok {
 			http.Error(w, "sign in first", http.StatusUnauthorized)
 			return
 		}
-		if err := s.CheckCSRF(r.PostFormValue(session.CSRFField)); err != nil {
+		f, err := forms.Read(w, r)
+		if err != nil {
 			http.Error(w, "invalid form", http.StatusForbidden)
 			return
 		}
+		defer f.Zero()
 		user, _ := s.Data()
-		fmt.Fprintf(w, "saved for %s", user.Name)
+		fmt.Fprintf(w, "saved %q for %s", f.String("note"), user.Name)
 	})
 
 	s := session.NewDetached(User{Name: "ada"}, "test-csrf")
 	for _, token := range []string{"test-csrf", "wrong"} {
-		r := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(session.CSRFField+"="+token))
+		r := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(session.CSRFField+"="+token+"&note=milk"))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		r = r.WithContext(session.WithSession(r.Context(), s))
 		rec := httptest.NewRecorder()
@@ -129,7 +151,7 @@ func ExampleNewDetached() {
 		fmt.Println(rec.Code, strings.TrimSpace(rec.Body.String()))
 	}
 	// Output:
-	// 200 saved for ada
+	// 200 saved "milk" for ada
 	// 403 invalid form
 }
 
@@ -297,11 +319,17 @@ func ExamplePreAuth_login() {
 	r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(session.CSRFField+"="+token))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.AddCookie(preauthCookie)
-	if err := preauth.Verify(r, r.PostFormValue(session.CSRFField)); err != nil {
+	rec = httptest.NewRecorder()
+	f, err := form.Read(rec, r, form.Limits{})
+	if err != nil {
+		fmt.Println("invalid form:", err)
+		return
+	}
+	defer f.Zero()
+	if err := preauth.Verify(r, f.String(session.CSRFField)); err != nil {
 		fmt.Println("forged:", err)
 		return
 	}
-	rec = httptest.NewRecorder()
 	s, err := store.New(rec, r, User{Name: "ada"})
 	if err != nil {
 		panic(err)
@@ -317,6 +345,64 @@ func ExamplePreAuth_login() {
 	// __Host-session 0
 	// __Host-preauth -1
 	// 43 <nil> true
+}
+
+// A login form that expired is answered with the form again, with a fresh
+// token, instead of an error page: the visitor keeps the typed name and
+// the page to return to. The handler signs no one in, so this is safe
+// behind mw.SameOrigin, which refuses cross-site posts.
+func ExamplePreAuth_expired() {
+	now := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	preauth, err := session.NewPreAuth(session.PreAuthOptions{
+		Now:  func() time.Time { return now },
+		Rand: rand.NewChaCha8([32]byte{1}), // deterministic for the example; omit in applications
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// GET /login?next=/notes renders the form.
+	rec := httptest.NewRecorder()
+	token, err := preauth.Issue(rec, httptest.NewRequest(http.MethodGet, "/login?next=/notes", nil))
+	if err != nil {
+		panic(err)
+	}
+	cookie := rec.Result().Cookies()[0]
+
+	// The visitor submits it after the TTL.
+	now = now.Add(session.DefaultPreAuthTTL + time.Minute)
+	body := url.Values{session.CSRFField: {token}, "name": {"ada"}, "password": {"correct horse"}, "next": {"/notes"}}
+	r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	f, err := form.Read(rec, r, form.Limits{})
+	if err != nil {
+		fmt.Println("invalid form:", err)
+		return
+	}
+	defer f.Zero()
+	if verr := preauth.Verify(r, f.String(session.CSRFField)); verr != nil {
+		// Render the login page again (with status 403): a fresh token,
+		// the typed name and next, a message, and an empty password field.
+		fresh, err := preauth.Issue(rec, r)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("expired:", errors.Is(verr, session.ErrCSRF))
+		fmt.Println("form again with name", f.String("name"), "and next", f.String("next"))
+
+		// The fresh form verifies with the cookie set along with it.
+		again := httptest.NewRequest(http.MethodPost, "/login", nil)
+		again.AddCookie(rec.Result().Cookies()[0])
+		fmt.Println("fresh form:", preauth.Verify(again, fresh))
+		return
+	}
+	fmt.Println("signed in")
+	// Output:
+	// expired: true
+	// form again with name ada and next /notes
+	// fresh form: <nil>
 }
 
 // OnEndReason logs why sessions end; evictions reveal a store too small for
@@ -362,6 +448,7 @@ func ExampleStore_EndSession() {
 	if err != nil {
 		panic(err)
 	}
+	forms := session.Forms[User]{Store: store}
 	logout := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s, ok := session.FromContext[User](r.Context())
 		if !ok {
@@ -369,10 +456,12 @@ func ExampleStore_EndSession() {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
-		if s.CheckCSRF(r.PostFormValue(session.CSRFField)) != nil {
+		f, err := forms.Read(w, r) // the form's CSRF token against s
+		if err != nil {
 			http.Error(w, "invalid form", http.StatusForbidden)
 			return
 		}
+		f.Zero()
 		store.EndSession(w, s)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})

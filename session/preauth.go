@@ -100,6 +100,18 @@ type PreAuthOptions struct {
 // reload, or issue with [PreAuth.IssueRenewed] and, if it set a new cookie,
 // send fresh copies of the page's forms along with the fragment.
 //
+// A form expires with its cookie, which Issue reuses until half of its
+// lifetime: a form can expire as soon as half the TTL after it was
+// rendered. Answer a login or sign-up post that fails Verify with the
+// form again rather than an error page: render it with a fresh token from
+// Issue, a message such as "The form expired. Log in again.", the typed
+// name and the page to return to (never the password), with a 4xx status
+// such as 403, which webui's htmx configuration swaps too. That is safe
+// behind mw.SameOrigin, which refuses cross-site posts, since the handler
+// signs no one in and acts on nothing (see the expired example). An error
+// page instead loses what was typed, and a reload of it posts the expired
+// form again.
+//
 // The key is drawn at construction and kept in memory only: a restart
 // invalidates outstanding forms, and processes behind one load balancer do
 // not accept each other's forms.

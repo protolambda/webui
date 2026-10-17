@@ -411,6 +411,21 @@ func (st *Store[T]) Lookup(r *http.Request) (*Session[T], bool) {
 // sets or clears cookies, and never creates sessions. The context slot is
 // that of T, shared by every Store[T]: see [FromContext] before mounting
 // the middlewares of two stores of the same T on one route.
+//
+// Mount it as the innermost middleware, right around the router: after the
+// layers that refuse requests (the host check, the same-origin policy and
+// the body limit of package mw), so that a refused request costs no lookup
+// and does not count as use of a session, and before the router, so that
+// every handler finds the session:
+//
+//	handler := mw.Chain(mux,
+//		mw.LogRequests(mw.RequestLog{Routes: mux}),
+//		// ... deadlines, security headers ...
+//		mw.HostCheck(site),
+//		mw.SameOrigin(mw.OriginPolicy{}),
+//		mw.MaxBody(1<<20),
+//		store.Middleware,
+//	)
 func (st *Store[T]) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s, ok := st.Lookup(r); ok {

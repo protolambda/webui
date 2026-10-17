@@ -29,7 +29,7 @@ func liveEnd(message, href, link string) elem.Node {
 }
 
 // A stream handler refuses with a 200 stream that carries one end event:
-// an EventSource cannot follow a redirect to a login page.
+// a redirect to a login page would only make the page retry.
 func Example() {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if sse.HandleHEAD(w, r) {
@@ -130,10 +130,10 @@ func ExampleStream_End() {
 }
 
 // A loop sends the state at the start and after changes, and ends with an
-// end event when the session ends. Here the session has ended already.
+// end event when the session ends. Here the session ends after the first
+// update, as if the user logged out in another tab.
 func ExampleLoop() {
 	sessionDone := make(chan struct{})
-	close(sessionDone)
 	tasks := []string{"Write the docs"}
 
 	rec := httptest.NewRecorder()
@@ -144,7 +144,9 @@ func ExampleLoop() {
 			for _, task := range tasks {
 				items = append(items, list.LI()(text.Text(task)))
 			}
-			return s.Send(ctx, "tasks", list.UL()(items...))
+			err := s.Send(ctx, "tasks", list.UL()(items...))
+			close(sessionDone) // stands in for a logout
+			return err
 		},
 		End: func(reason sse.Reason) elem.Node {
 			if reason == sse.ReasonDone {
@@ -152,8 +154,9 @@ func ExampleLoop() {
 			}
 			return liveEnd("Live updates paused.", "/tasks", "Reload")
 		},
-		Done: sessionDone,
-		// Changes: a notifier's channel; Stop: closed when the server stops.
+		Done: sessionDone, // no update starts after it closed
+		// Changes: a notifier's channel, made with make(chan struct{}, 1);
+		// Stop: closed when the server stops.
 	}.Run(context.Background(), sse.New(rec))
 	fmt.Println(err)
 	fmt.Print(rec.Body.String())
@@ -164,6 +167,19 @@ func ExampleLoop() {
 	//
 	// event: end
 	// data: <p role="status">Your session ended. <a href="/login">Log in again</a></p>
+}
+
+// Validate checks a whole loop: its functions and its timing.
+func ExampleLoop_Validate() {
+	fmt.Println(sse.Loop{}.Validate(sse.DefaultWriteWindow))
+	loop := sse.Loop{
+		Update: func(ctx context.Context, s *sse.Stream) error { return s.SendText("count", "1") },
+		End:    func(sse.Reason) elem.Node { return nil },
+	}
+	fmt.Println(loop.Validate(sse.DefaultWriteWindow))
+	// Output:
+	// sse: invalid configuration: Loop needs Update and End
+	// <nil>
 }
 
 // Validate configured timing at startup.

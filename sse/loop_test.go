@@ -3,6 +3,8 @@ package sse_test
 import (
 	"context"
 	"errors"
+	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -61,6 +63,22 @@ func (r *loopRun) returned() (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+// gated makes the first update of l wait until the returned gate closes,
+// so that the channels a test readies meanwhile are all ready together
+// when the loop selects next.
+func gated(l sse.Loop) (sse.Loop, chan struct{}) {
+	gate := make(chan struct{})
+	update, first := l.Update, true
+	l.Update = func(ctx context.Context, s *sse.Stream) error {
+		if first { // only the goroutine of Run reads and writes it
+			first = false
+			<-gate
+		}
+		return update(ctx, s)
+	}
+	return l, gate
 }
 
 // data returns the data of the events so far.
@@ -141,6 +159,25 @@ func TestLoopKeepAlive(gt *testing.T) {
 		t.Must(be.Equal(start.Add(30*time.Second+30*time.Second), deadlines[4]))
 		ok, _ := r.returned()
 		t.Must(be.False(ok))
+	})
+}
+
+// A huge write window keeps the default keep-alive interval: deriving it
+// from the window must not overflow.
+func TestLoopHugeWriteWindow(gt *testing.T) {
+	gt.Parallel()
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		l, _ := counting(sse.Timing{})
+		r := startLoop(gt, l, sse.WithWriteWindow(math.MaxInt64))
+		ok, err := r.returned()
+		t.Must(be.False(ok))
+		t.Must(be.NoError(err))
+		time.Sleep(sse.DefaultKeepAlive)
+		synctest.Wait()
+		p := mustParse(t, r.w.Body())
+		t.Must(be.DeepEqual([]string{"keep-alive"}, p.Comments))
+		t.Must(be.Len(p.Events, 1))
 	})
 }
 
@@ -230,33 +267,158 @@ func TestLoopChangesClosedEnds(gt *testing.T) {
 }
 
 // When the server stops, the stream ends without an end event, so the
-// page reconnects: also when the session or the feed ends at the same
-// time.
+// page reconnects. The loop is idle here, so Stop is the only ready case;
+// TestLoopStopWinsTogether covers Stop ready together with others.
 func TestLoopStopReconnects(gt *testing.T) {
 	gt.Parallel()
-	for _, also := range []string{"", "done", "changes", "both"} {
-		for range 10 { // select picks ready cases at random
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		stop := make(chan struct{})
+		l, _ := counting(sse.Timing{})
+		l.Stop = stop
+		r := startLoop(gt, l)
+		close(stop)
+		ok, err := r.returned()
+		t.Must(be.True(ok))
+		t.Must(be.NoError(err))
+		t.Must(be.DeepEqual([]string{"count=1"}, r.data(t)))
+		t.Must(be.False(r.s.Ended()))
+	})
+}
+
+// Stop wins also when another case is ready at the same select: the
+// channels close while the first update runs, so the loop finds them all
+// ready together when it selects next.
+func TestLoopStopWinsTogether(gt *testing.T) {
+	gt.Parallel()
+	for _, also := range []string{"done", "closed", "change", "lifetime"} {
+		for range 20 { // select picks one of the ready cases at random
 			synctest.Test(gt, func(gt *testing.T) {
 				t := mustbe.WrapT(gt)
-				stop, done, changes := make(chan struct{}), make(chan struct{}), make(chan struct{})
-				l, _ := counting(sse.Timing{})
+				stop, done, changes := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
+				l, _ := counting(sse.Timing{Lifetime: time.Minute})
 				l.Stop, l.Done, l.Changes = stop, done, changes
-				r := startLoop(gt, l)
+				l, gate := gated(l)
+				r := startLoop(gt, l) // blocks in the first update
 				close(stop)
-				if also == "done" || also == "both" {
+				switch also {
+				case "done":
 					close(done)
-				}
-				if also == "changes" || also == "both" {
+				case "closed":
 					close(changes)
+				case "change":
+					changes <- struct{}{}
+					time.Sleep(2 * time.Second) // past the interval: no coalescing
+				case "lifetime":
+					time.Sleep(time.Minute) // also past a keep-alive tick
 				}
+				close(gate)
 				ok, err := r.returned()
-				t.Must(be.True(ok))
+				t.Must(be.Annotate(be.True(ok), "case %s", also))
 				t.Must(be.NoError(err))
-				t.Must(be.DeepEqual([]string{"count=1"}, r.data(t)))
+				t.Must(be.Annotate(be.DeepEqual([]string{"count=1"}, r.data(t)), "case %s", also))
 				t.Must(be.False(r.s.Ended()))
 			})
 		}
 	}
+}
+
+// Done takes precedence over updates: no update starts after it closed.
+func TestLoopDoneWinsOverUpdates(gt *testing.T) {
+	gt.Parallel()
+	// Done closed before Run: only the end event, no state.
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		done := make(chan struct{})
+		close(done)
+		l, n := counting(sse.Timing{})
+		l.Done = done
+		r := startLoop(gt, l)
+		ok, err := r.returned()
+		t.Must(be.True(ok))
+		t.Must(be.NoError(err))
+		t.Must(be.Equal(int64(0), n.Load()))
+		t.Must(be.DeepEqual([]string{"end=ended: done"}, r.data(t)))
+	})
+	// Done closed together with a pending change, while an update runs.
+	for range 20 { // select picks one of the ready cases at random
+		synctest.Test(gt, func(gt *testing.T) {
+			t := mustbe.WrapT(gt)
+			changes, done := make(chan struct{}, 1), make(chan struct{})
+			l, n := counting(sse.Timing{Interval: time.Second})
+			l.Changes, l.Done = changes, done
+			l, gate := gated(l)
+			r := startLoop(gt, l) // blocks in the first update
+			changes <- struct{}{}
+			time.Sleep(2 * time.Second) // past the interval: no coalescing
+			close(done)
+			close(gate)
+			ok, err := r.returned()
+			t.Must(be.True(ok))
+			t.Must(be.NoError(err))
+			t.Must(be.Equal(int64(1), n.Load()))
+			t.Must(be.DeepEqual([]string{"count=1", "end=ended: done"}, r.data(t)))
+		})
+	}
+	// Stop still wins over Done before Run.
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		stop, done := make(chan struct{}), make(chan struct{})
+		close(stop)
+		close(done)
+		l, n := counting(sse.Timing{})
+		l.Stop, l.Done = stop, done
+		r := startLoop(gt, l)
+		ok, err := r.returned()
+		t.Must(be.True(ok))
+		t.Must(be.NoError(err))
+		t.Must(be.Equal(int64(0), n.Load()))
+		t.Must(be.Equal("", r.w.Body()))
+	})
+}
+
+// A failed update while the server stops is worth logging, but sends no
+// end event, so the page reconnects after the restart.
+func TestLoopUpdateFailureWhileStopping(gt *testing.T) {
+	gt.Parallel()
+	errStore := errors.New("store unavailable")
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		stop := make(chan struct{})
+		l, _ := counting(sse.Timing{})
+		l.Stop = stop
+		l.Update = func(ctx context.Context, s *sse.Stream) error {
+			close(stop)
+			return errStore
+		}
+		r := startLoop(gt, l)
+		ok, err := r.returned()
+		t.Must(be.True(ok))
+		t.Must(be.ErrorIs(err, errStore))
+		t.Must(be.Equal("", r.w.Body()))
+		t.Must(be.False(r.s.Ended()))
+	})
+}
+
+// An update cut short by the request context is a normal end: the client
+// left, so nothing is logged and nothing more is written.
+func TestLoopUpdateFailureAfterClientLeft(gt *testing.T) {
+	gt.Parallel()
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		l, _ := counting(sse.Timing{})
+		l.Update = func(ctx context.Context, s *sse.Stream) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		r := startLoop(gt, l)
+		r.cancel()
+		ok, err := r.returned()
+		t.Must(be.True(ok))
+		t.Must(be.NoError(err))
+		t.Must(be.Equal("", r.w.Body()))
+		t.Must(be.False(r.s.Ended()))
+	})
 }
 
 func TestLoopUpdateFailureEnds(gt *testing.T) {
@@ -430,6 +592,15 @@ func TestLoopStartConditions(gt *testing.T) {
 		w.deadlineErr = errors.New("closed")
 		t.Must(be.NoError(l.Run(gt.Context(), sse.New(w))))
 
+		// A writer that cannot flush is a configuration bug: worth
+		// logging, and nothing is written, so the handler can answer.
+		p := &plainWriter{}
+		err := l.Run(gt.Context(), sse.New(p))
+		t.Must(be.ErrorIs(err, http.ErrNotSupported))
+		t.Must(be.False(errors.Is(err, sse.ErrWrite)))
+		t.Must(be.Equal(0, p.status))
+		t.Must(be.Equal("", p.body.String()))
+
 		t.Must(be.Equal(int64(0), n.Load()))
 	})
 }
@@ -460,7 +631,11 @@ func TestLoopConfig(gt *testing.T) {
 			err := l.Run(gt.Context(), sse.New(w, sse.WithWriteWindow(c.window)))
 			t.Must(be.Annotate(be.ErrorIs(err, sse.ErrConfig), "case %s", name))
 			t.Must(be.Annotate(be.Empty(w.Ops()), "case %s", name))
+			// Validate checks the whole loop, as Run does.
+			t.Must(be.Annotate(be.ErrorIs(l.Validate(c.window), sse.ErrConfig), "case %s", name))
 		}
+		t.Must(be.NoError(valid.Validate(0)))
+		t.Must(be.NoError(valid.Validate(5 * time.Second)))
 	})
 }
 
@@ -476,6 +651,13 @@ func TestTimingValidate(gt *testing.T) {
 	t.Must(be.ErrorIs(sse.Timing{KeepAlive: 9 * time.Second}.Validate(9*time.Second), sse.ErrConfig))
 	t.Must(be.ErrorIs(sse.Timing{Interval: -time.Second}.Validate(0), sse.ErrConfig))
 	t.Must(be.ErrorIs(sse.Timing{}.Validate(time.Nanosecond), sse.ErrConfig))
+	// Deriving the keep-alive interval from a huge window does not
+	// overflow.
+	for _, window := range []time.Duration{math.MaxInt64, math.MaxInt64/2 + 1, 200 * 365 * 24 * time.Hour} {
+		t.Must(be.NoError(sse.Timing{}.Validate(window)))
+	}
+	t.Must(be.NoError(sse.Timing{}.Validate(2 * time.Nanosecond))) // derived: 1ns
+	t.Must(be.NoError(sse.Timing{}.Validate(sse.DefaultKeepAlive * 3 / 2)))
 }
 
 func TestReasonString(gt *testing.T) {

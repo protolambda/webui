@@ -24,9 +24,13 @@
 //
 // # Ending a stream
 //
-// The htmx SSE extension reconnects, with backoff and without end, whenever a
-// connection fails or closes. Only an event named by the sse-close attribute
-// stops it. Two ways to finish a stream follow from that:
+// A live region reconnects without end. When a stream closes, the browser's
+// EventSource reconnects after its retry delay (a few seconds, or what
+// [Retry] set). When a connection fails (a status other than 200, or a
+// response that is not an event stream), the htmx SSE extension opens a new
+// one with backoff, up to about a minute apart. Only an event named by the
+// sse-close attribute stops it. Two ways to finish a stream follow from
+// that:
 //
 //   - [Stream.End] sends the [EventEnd] event. [Region] names it in both
 //     sse-swap and sse-close, so its fragment (a reason and a link onwards)
@@ -39,11 +43,11 @@
 //
 // # Refusing a stream
 //
-// An EventSource cannot follow a redirect and does not show error pages: a
-// redirect to a login page or a 403 response only makes the extension retry
-// forever. Register stream routes outside redirecting authentication guards,
-// check authorization in the handler, and refuse with a 200 stream that
-// carries one end event saying why:
+// An EventSource follows redirects but does not show error pages: a login
+// page or a 403 response is not an event stream, so the connection fails and
+// the extension retries forever. Register stream routes outside redirecting
+// authentication guards, check authorization in the handler, and refuse
+// with a 200 stream that carries one end event saying why:
 //
 //	func (a *App) LiveTasks(w http.ResponseWriter, r *http.Request) error {
 //		if sse.HandleHEAD(w, r) {
@@ -58,7 +62,8 @@
 //	}
 //
 // Check authorization before reading or rendering anything private, and
-// again when it may change: pass the session's Done channel to [Loop.Done].
+// again when it may change: pass the session's Done channel to [Loop.Done],
+// which takes precedence over updates.
 // Stream requests are passive; they should not extend a session's idle
 // timeout.
 //
@@ -66,12 +71,21 @@
 //
 // Every write first sets the connection's write deadline to now plus the
 // write window (30 seconds by default) through [http.ResponseController],
-// before the response header is written. Middleware that wraps the
-// ResponseWriter must implement Unwrap() http.ResponseWriter, so the
-// controller reaches the connection, and must pass flushes through
-// (compressing or buffering middleware must skip text/event-stream
-// responses). Writers that support neither deadlines nor flushing (test
-// recorders) are tolerated: [http.ErrNotSupported] is ignored.
+// before the response header is written, and flushes after the event.
+// Middleware that wraps the ResponseWriter must implement Unwrap()
+// http.ResponseWriter, so the controller reaches the connection, and must
+// pass flushes through (compressing or buffering middleware must skip
+// text/event-stream responses).
+//
+// A writer that cannot flush would hold every event back, so the stream
+// refuses it: the first write fails, before anything is written, with an
+// error wrapping [http.ErrNotSupported] (not [ErrWrite], so it gets logged).
+// A writer without deadlines is tolerated, since recorders and CGI have
+// none, but the deadlines are then lost silently: behind a wrapper that
+// flushes but lacks Unwrap, a stalled client is not cut off by the stream,
+// and a per-response deadline set by middleware or the server's
+// WriteTimeout cuts the stream when it passes, after which the page
+// reconnects.
 //
 // On HTTP/2 a write deadline is a timer on the stream, which resets the
 // stream when it passes even if the handler is only waiting. A stream must

@@ -45,6 +45,10 @@ var (
 	// deadline, writing, or flushing returned an error. The client left or
 	// stalled; the stream cannot be used any more. Handlers normally treat
 	// it as the end of the stream rather than as a failure to log.
+	//
+	// A response writer that cannot flush at all is not a connection
+	// failure: that error wraps [http.ErrNotSupported] instead, so it is
+	// logged (see [Stream]).
 	ErrWrite = errors.New("sse: write failed")
 )
 
@@ -74,6 +78,19 @@ func WithWriteWindow(d time.Duration) Option {
 // Every write sets a write deadline of now plus the write window, writes one
 // whole event, and flushes. A failed write makes the stream unusable: every
 // later write returns the same error, which wraps [ErrWrite].
+//
+// An event stream that is not flushed never reaches the browser, so the
+// ResponseWriter must support flushing through [http.ResponseController]
+// (a FlushError or Flush method, possibly behind Unwrap methods). When it
+// does not, typically because middleware wraps the writer without passing
+// flushes through, the first write fails before anything is written, with
+// an error wrapping [http.ErrNotSupported] and not [ErrWrite]: it is a
+// configuration bug worth logging, and the handler can still answer with an
+// error status. Later writes return the same error. A writer that reports
+// [http.ErrNotSupported] only when it is flushed fails the same way, after
+// the header. Writers without write deadlines, such as
+// [net/http/httptest.ResponseRecorder] and CGI, are tolerated: the deadline
+// is then skipped silently.
 //
 // The stream keeps its buffers for reuse and clears them after every event,
 // so rendered fragments do not stay in its memory. This is best effort: the
@@ -127,7 +144,8 @@ func (s *Stream) Start() error {
 // Nothing is written when the event name or a field is invalid (wrapping
 // [ErrEventName] or [ErrField]) or when node fails to render (wrapping the
 // render error). ctx is the render context. Send returns [ErrEnded] after
-// [Stream.End], and an error wrapping [ErrWrite] when the connection fails.
+// [Stream.End], and an error wrapping [ErrWrite] when the connection fails
+// (see [Stream] for writers that cannot flush).
 func (s *Stream) Send(ctx context.Context, event string, node elem.Node, fields ...Field) error {
 	if err := s.check(event, fields); err != nil {
 		return err
@@ -297,6 +315,9 @@ func (s *Stream) write(b []byte) error {
 	if s.err != nil {
 		return s.err
 	}
+	if !s.started && !canFlush(s.w) {
+		return s.fail(errNoFlush(http.ErrNotSupported))
+	}
 	// The deadline comes first, before the header: middleware that sets a
 	// default deadline when the response starts sees that the stream took
 	// over.
@@ -313,10 +334,39 @@ func (s *Stream) write(b []byte) error {
 			return s.fail(fmt.Errorf("%w: %w", ErrWrite, err))
 		}
 	}
-	if err := s.rc.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+	if err := s.rc.Flush(); err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			return s.fail(errNoFlush(err))
+		}
 		return s.fail(fmt.Errorf("%w: flush: %w", ErrWrite, err))
 	}
 	return nil
+}
+
+// errNoFlush is the error of a writer that cannot flush. It does not wrap
+// ErrWrite: the client did not leave, the server is misconfigured.
+func errNoFlush(err error) error {
+	return fmt.Errorf("sse: response writer cannot flush: %w", err)
+}
+
+// maxUnwrap bounds the walk through wrapped writers, in case of a cycle.
+const maxUnwrap = 32
+
+// canFlush reports whether [http.ResponseController.Flush] finds a flush
+// method on w: it takes the same walk through Unwrap methods. It looks at
+// types only, so it writes nothing.
+func canFlush(w http.ResponseWriter) bool {
+	for range maxUnwrap {
+		switch t := w.(type) {
+		case interface{ FlushError() error }, http.Flusher:
+			return true
+		case interface{ Unwrap() http.ResponseWriter }:
+			w = t.Unwrap()
+		default:
+			return false
+		}
+	}
+	return false // a cycle would make the controller loop forever
 }
 
 // fail records a write failure: a partly written event would corrupt any

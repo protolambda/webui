@@ -302,23 +302,111 @@ func TestWithWriteWindow(gt *testing.T) {
 	})
 }
 
-// Recorders and writers without deadline or flush support work: the
-// stream ignores http.ErrNotSupported.
-func TestUnsupportedDeadlineAndFlush(gt *testing.T) {
+// Writers without write deadlines work: the stream skips the deadline.
+func TestUnsupportedDeadline(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	p := &plainWriter{}
-	s := sse.New(p)
-	t.Must(be.NoError(s.SendText("a", "1")))
-	t.Must(be.NoError(s.Comment("")))
-	t.Must(be.Equal("event: a\ndata: 1\n\n:\n\n", p.body.String()))
-	t.Must(be.Equal(http.StatusOK, p.status))
-
 	w := newFakeWriter()
 	w.deadlineErr = http.ErrNotSupported
-	w.flushErr = http.ErrNotSupported
-	s = sse.New(w)
+	s := sse.New(w)
 	t.Must(be.NoError(s.SendText("a", "1")))
-	t.Must(be.Equal("event: a\ndata: 1\n\n", w.Body()))
+	t.Must(be.NoError(s.Comment("")))
+	t.Must(be.Equal("event: a\ndata: 1\n\n:\n\n", w.Body()))
+	t.Must(be.DeepEqual([]string{"deadline", "header", "write", "flush", "deadline", "write", "flush"}, w.Ops()))
+
+	// A recorder flushes, but has no deadlines.
+	rec := httptest.NewRecorder()
+	s = sse.New(rec)
+	t.Must(be.NoError(s.SendText("a", "1")))
+	t.Must(be.True(rec.Flushed))
+}
+
+// embedWriter is the classic wrapper that loses the optional interfaces:
+// it embeds the interface, and has neither Flush nor Unwrap.
+type embedWriter struct{ http.ResponseWriter }
+
+// unwrapWriter is a wrapper that the controller can see through.
+type unwrapWriter struct{ http.ResponseWriter }
+
+func (u unwrapWriter) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+// cycleWriter unwraps to itself.
+type cycleWriter struct{ http.ResponseWriter }
+
+func (c *cycleWriter) Unwrap() http.ResponseWriter { return c }
+
+// A writer that cannot flush would hold every event back: the stream fails
+// before it writes anything, with an error that is not a client failure.
+func TestUnflushableWriterFails(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	cases := map[string]func(w *fakeWriter) http.ResponseWriter{
+		"plain":           func(*fakeWriter) http.ResponseWriter { return &plainWriter{} },
+		"embedding":       func(w *fakeWriter) http.ResponseWriter { return embedWriter{w} },
+		"unwrap to plain": func(*fakeWriter) http.ResponseWriter { return unwrapWriter{&plainWriter{}} },
+		"unwrap to nil":   func(*fakeWriter) http.ResponseWriter { return unwrapWriter{nil} },
+		"unwrap cycle":    func(w *fakeWriter) http.ResponseWriter { return &cycleWriter{w} },
+	}
+	for name, wrap := range cases {
+		inner := newFakeWriter()
+		s := sse.New(wrap(inner))
+		err := s.SendText("a", "1")
+		t.Must(be.Annotate(be.ErrorIs(err, http.ErrNotSupported), "case %s", name))
+		t.Must(be.Annotate(be.False(errors.Is(err, sse.ErrWrite)), "case %s", name))
+		t.Must(be.Equal("sse: response writer cannot flush: feature not supported", err.Error()))
+		t.Must(be.False(s.Started()))
+		// The error is sticky, and nothing reached the writer: the handler
+		// can still answer with an error status.
+		t.Must(be.ErrorIs(s.Start(), http.ErrNotSupported))
+		t.Must(be.ErrorIs(s.Comment(""), http.ErrNotSupported))
+		t.Must(be.ErrorIs(s.End(t.Context(), elem.Text("bye")), http.ErrNotSupported))
+		t.Must(be.Annotate(be.Empty(inner.Ops()), "case %s", name))
+	}
+
+	// Through Unwrap, the controller reaches the flusher.
+	w := newFakeWriter()
+	s := sse.New(unwrapWriter{unwrapWriter{w}})
+	t.Must(be.NoError(s.SendText("a", "1")))
+	t.Must(be.DeepEqual([]string{"deadline", "header", "write", "flush"}, w.Ops()))
+}
+
+// A writer whose flush reports http.ErrNotSupported fails the same way,
+// after the header.
+func TestFlushNotSupportedIsSticky(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	w := newFakeWriter()
+	w.flushErr = http.ErrNotSupported
+	s := sse.New(w)
+	err := s.SendText("a", "1")
+	t.Must(be.ErrorIs(err, http.ErrNotSupported))
+	t.Must(be.False(errors.Is(err, sse.ErrWrite)))
+	t.Must(be.True(s.Started()))
+	ops := len(w.Ops())
+	w.flushErr = nil
+	t.Must(be.ErrorIs(s.SendText("a", "2"), http.ErrNotSupported))
+	t.Must(be.ErrorIs(s.Comment(""), http.ErrNotSupported))
+	t.Must(be.Equal(ops, len(w.Ops())))
+}
+
+// Behind a real server, a wrapper without Flush or Unwrap would deliver
+// nothing until the handler returns. The stream reports it before it
+// starts, so the handler answers with an error.
+func TestUnflushableWrapperOverHTTP(gt *testing.T) {
+	gt.Parallel()
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		sendErr := make(chan error, 1)
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			s := sse.New(embedWriter{w})
+			err := s.SendText("a", "1")
+			sendErr <- err
+			if err != nil && !s.Started() {
+				http.Error(w, "stream unavailable", http.StatusInternalServerError)
+			}
+		})
+		body, err := serveOnce(gt, handler, time.Minute)
+		t.Must(be.NoError(err))
+		t.Must(be.ErrorIs(<-sendErr, http.ErrNotSupported))
+		t.Must(be.Equal("stream unavailable\n", body))
+	})
 }
 
 func TestWriteFailuresAreSticky(gt *testing.T) {

@@ -28,7 +28,7 @@ const keepAliveText = "keep-alive"
 
 // Timing bounds a [Loop]. The zero value selects the defaults. Applications
 // usually hold one Timing in their configuration, check it once with
-// [Timing.Validate], and embed it in every Loop.
+// [Timing.Validate], and set it as the Timing of every Loop.
 type Timing struct {
 	// Interval is the shortest time between two updates: changes that
 	// arrive sooner after an update are coalesced into one update at the
@@ -72,7 +72,12 @@ func (t Timing) resolve(writeWindow time.Duration) (Timing, error) {
 		t.Lifetime = DefaultLifetime
 	}
 	if t.KeepAlive == 0 {
-		t.KeepAlive = min(DefaultKeepAlive, writeWindow*2/3)
+		t.KeepAlive = DefaultKeepAlive
+		if writeWindow < DefaultKeepAlive*3/2 {
+			// Two thirds of the window are shorter than the default. Only
+			// short windows get here, so the product cannot overflow.
+			t.KeepAlive = writeWindow * 2 / 3
+		}
 	}
 	if t.KeepAlive <= 0 || t.KeepAlive >= writeWindow {
 		return t, fmt.Errorf("%w: keep-alive interval %v is not shorter than the write window %v", ErrConfig, t.KeepAlive, writeWindow)
@@ -126,8 +131,20 @@ func (r Reason) String() string {
 //     ends its sessions and feeds too), and when ctx ends (the client
 //     left; nobody is listening).
 //
-// Updates re-render whole fragments, so a notifier that drops signals
-// while a stream is busy loses nothing. Nil channels never fire.
+// Done takes precedence over updates: once it has closed, no update
+// starts, including the first one, also when a change is ready at the same
+// time; only the end event follows. An update that is already running when
+// Done closes finishes first, so an Update that must not render after a
+// revocation checks for it itself.
+//
+// Updates re-render whole fragments, so signals need not be counted: a
+// notifier that sends without blocking on a channel with a buffer of one
+// loses nothing, because a send that finds the buffer full leaves a signal
+// pending already. On an unbuffered channel such a send is lost while Run
+// is busy in Update or a keep-alive write. Nil channels never fire.
+//
+// Loop embeds Timing for its fields; [Loop.Validate] checks the whole
+// loop, not only the timing.
 type Loop struct {
 	// Timing bounds the loop; the zero value selects the defaults.
 	Timing
@@ -144,14 +161,16 @@ type Loop struct {
 	// return nil for an empty fragment. Required.
 	End func(reason Reason) elem.Node
 
-	// Changes signals that the state changed. A notifier usually sends
-	// without blocking on a channel with a buffer of one, so a burst of
-	// changes leaves one signal. Closing it ends the stream with
-	// ReasonClosed.
+	// Changes signals that the state changed. A notifier that sends
+	// without blocking must use a channel with a buffer of at least one,
+	// such as make(chan struct{}, 1): a change while Run is busy then
+	// leaves one pending signal, and a burst becomes one update. Closing it
+	// ends the stream with ReasonClosed.
 	Changes <-chan struct{}
 
 	// Done closes when the stream must end for good, typically the
-	// session's Done channel: the stream ends with ReasonDone.
+	// session's Done channel: the stream ends with ReasonDone, and no
+	// update starts after it closed.
 	Done <-chan struct{}
 
 	// Stop closes when the server stops, for example from a function
@@ -162,14 +181,34 @@ type Loop struct {
 	Stop <-chan struct{}
 }
 
+// Validate returns an error wrapping [ErrConfig] when Update or End is
+// missing, or when the Timing is invalid for writeWindow (see
+// [Timing.Validate]; a writeWindow of zero or less means
+// [DefaultWriteWindow]). [Loop.Run] makes the same check before it writes
+// anything, with the write window of its stream.
+func (l Loop) Validate(writeWindow time.Duration) error {
+	_, err := l.check(writeWindow)
+	return err
+}
+
+// check validates the loop and returns its resolved timing.
+func (l Loop) check(writeWindow time.Duration) (Timing, error) {
+	if l.Update == nil || l.End == nil {
+		return Timing{}, fmt.Errorf("%w: Loop needs Update and End", ErrConfig)
+	}
+	return l.Timing.resolve(writeWindow)
+}
+
 // Run streams to s until the stream ends, the client leaves (ctx ends) or
 // the server stops. ctx is usually the request context; it is also the
 // render context of the updates and the end fragment.
 //
-// Run validates the loop before it writes anything: a missing Update or
-// End, or an invalid Timing for the write window of s, returns an error
-// wrapping [ErrConfig] with the response untouched. A stream that already
-// ended returns [ErrEnded].
+// Run validates the loop before it writes anything (see [Loop.Validate]):
+// an invalid loop returns an error wrapping [ErrConfig] with the response
+// untouched. A stream that already ended returns [ErrEnded]. A response
+// writer that cannot flush returns an error wrapping
+// [http.ErrNotSupported], also with nothing written, so the handler can
+// still answer with an error (see [Stream]).
 //
 // Otherwise Run returns nil, except for failures worth logging: an update
 // that failed (joined with any failure to render the end fragment), and an
@@ -177,10 +216,7 @@ type Loop struct {
 // (errors wrapping [ErrWrite], or ctx ending) is a normal end. The response
 // has started by then, so the handler must not write an error page.
 func (l Loop) Run(ctx context.Context, s *Stream) error {
-	if l.Update == nil || l.End == nil {
-		return fmt.Errorf("%w: Loop needs Update and End", ErrConfig)
-	}
-	t, err := l.Timing.resolve(s.WriteWindow())
+	t, err := l.check(s.WriteWindow())
 	if err != nil {
 		return err
 	}
@@ -191,7 +227,7 @@ func (l Loop) Run(ctx context.Context, s *Stream) error {
 		return nil
 	}
 	if err := s.Start(); err != nil {
-		return nil // the client cannot be reached
+		return worthLogging(ctx, err) // nil when the client cannot be reached
 	}
 	if closed(l.Stop) {
 		return nil
@@ -226,7 +262,7 @@ func (l Loop) Run(ctx context.Context, s *Stream) error {
 				return nil
 			}
 			if err := s.Comment(keepAliveText); err != nil {
-				return nil // the client left or stalled
+				return worthLogging(ctx, err) // nil when the client left or stalled
 			}
 			continue
 		case <-l.Done:
@@ -250,8 +286,13 @@ func (l Loop) Run(ctx context.Context, s *Stream) error {
 }
 
 // update runs Update, and reports whether the loop is over, with the error
-// Run returns.
+// Run returns. Every update starts here, so this is where Done takes
+// precedence: over the first update, and over a change or a due update
+// that was ready together with Done.
 func (l Loop) update(ctx context.Context, s *Stream) (bool, error) {
+	if closed(l.Done) {
+		return true, l.end(ctx, s, ReasonDone) // end keeps Stop first
+	}
 	err := l.Update(ctx, s)
 	switch {
 	case s.Ended():

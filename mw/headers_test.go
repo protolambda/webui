@@ -155,6 +155,73 @@ func TestHSTSString(gt *testing.T) {
 	}
 }
 
+func TestHSTSFor(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	public := mw.MustParseSite("https://app.example.com")
+	other := mw.MustParseSite("https://admin.example.com:8443")
+	year := mw.HSTS{MaxAge: mw.DefaultHSTSMaxAge}
+	cases := []struct {
+		name  string
+		sites []mw.Site
+		want  mw.HSTS
+	}{
+		{"https site", []mw.Site{public}, year},
+		{"https sites", []mw.Site{public, other}, year},
+		{"https IP address", []mw.Site{mw.MustParseSite("https://192.0.2.10")}, year},
+		{"no sites", nil, mw.HSTS{}},
+		{"zero site", []mw.Site{{}}, mw.HSTS{}},
+		{"https and zero site", []mw.Site{public, {}}, mw.HSTS{}},
+		{"http loopback", []mw.Site{mw.MustParseSite("http://127.0.0.1:8080")}, mw.HSTS{}},
+		{"https localhost", []mw.Site{mw.MustParseSite("https://localhost:8443")}, mw.HSTS{}},
+		{"https loopback name", []mw.Site{mw.MustParseSite("https://app.localhost")}, mw.HSTS{}},
+		{"https IPv6 loopback", []mw.Site{mw.MustParseSite("https://[::1]")}, mw.HSTS{}},
+		{"mixed", []mw.Site{public, mw.MustParseSite("http://localhost:8080")}, mw.HSTS{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			got := mw.HSTSFor(c.sites...)
+			t.Must(be.Equal(c.want, got))
+			t.Must(be.NoError(mw.Headers{HSTS: got}.Validate()))
+		})
+	}
+	t.Must(be.Equal("max-age=31536000", year.String()))
+	t.Must(be.Equal(365*24*time.Hour, mw.DefaultHSTSMaxAge))
+	// The result may be extended into a preload policy.
+	preload := year
+	preload.IncludeSubDomains, preload.Preload = true, true
+	t.Must(be.NoError(mw.Headers{HSTS: preload}.Validate()))
+}
+
+// HostCheck refusals never carry the HSTS of the configured sites: the
+// policy would pin a name that a client chose.
+func TestHostCheckRefusalDropsHSTS(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	site := mw.MustParseSite("https://app.example.com")
+	h := mw.Chain(http.NotFoundHandler(),
+		mw.SecurityHeaders(mw.Headers{HSTS: mw.HSTSFor(site)}),
+		mw.HostCheck(site),
+	)
+	for host, want := range map[string]string{
+		"app.example.com":     "max-age=31536000",
+		"localhost:8443":      "",
+		"other.example.com":   "",
+		"app.example.com:444": "",
+	} {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		t.Must(be.Equal(want, rec.Header().Get("Strict-Transport-Security")))
+		if want == "" {
+			t.Must(be.Equal(http.StatusBadRequest, rec.Code))
+			t.Must(be.Len(rec.Header().Values("Strict-Transport-Security"), 0))
+			// The other security headers stay.
+			t.Must(be.Equal(strictPolicy, rec.Header().Get("Content-Security-Policy")))
+			t.Must(be.Equal("no-store", rec.Header().Get("Cache-Control")))
+		}
+	}
+}
+
 func TestHeadersValidate(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	year := 365 * 24 * time.Hour

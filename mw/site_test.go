@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -274,6 +275,29 @@ func TestHostCheck(gt *testing.T) {
 		t.Must(be.Equal(1, calls))
 		t.Must(be.Equal(c.site, seen))
 	}
+}
+
+// A refusal is a fixed plain-text answer that quotes nothing of the request,
+// logged at debug level without the Host.
+func TestHostCheckRefusal(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	logger, sink := newCapture(slog.LevelDebug)
+	h := mw.HostCheck(mw.MustParseSite("https://app.example.com"))(http.NotFoundHandler())
+	req := httptest.NewRequest(http.MethodPost, "https://app.example.com/notes?q=secret", strings.NewReader("x=1"))
+	req = req.WithContext(mw.WithLogger(req.Context(), logger))
+	req.Host = "<b>evil.example</b>"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	t.Must(be.Equal(http.StatusBadRequest, rec.Code))
+	t.Must(be.Equal("invalid host\n", rec.Body.String()))
+	t.Must(be.Equal("text/plain; charset=utf-8", rec.Header().Get("Content-Type")))
+	t.Must(be.Equal("nosniff", rec.Header().Get("X-Content-Type-Options")))
+
+	records := sink.Records()
+	t.Must(be.Len(records, 1))
+	t.Must(be.Equal(slog.LevelDebug, records[0].Level))
+	t.Must(be.Equal("refused a request for an unknown host", records[0].Message))
+	t.Must(be.DeepEqual(map[string]string{}, attrs(records[0])))
 }
 
 func TestHostCheckPanicsOnMisuse(gt *testing.T) {

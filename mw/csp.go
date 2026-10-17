@@ -122,13 +122,19 @@ var strictCSP = CSP{directives: []cspDirective{
 //	font-src 'self'; connect-src 'self'; form-action 'self';
 //	frame-ancestors 'none'; base-uri 'none'
 //
-// Everything is denied unless named: scripts, styles and fonts load from the
-// page's own origin only, without inline code, inline styles or eval; images
-// also from data: URLs, which Bootstrap's CSS uses for its form controls and
-// close buttons; fetches, htmx requests and event streams go to the own origin
-// only; forms post only to the own origin; the page cannot be framed, and a
-// <base> element cannot redirect relative URLs. Objects, frames, media,
-// manifests and workers of other origins fall back to default-src 'none'.
+// Everything is denied unless named or covered by a named directive through
+// CSP's fallbacks: scripts, styles and fonts load from the page's own origin
+// only, without inline code, inline styles or eval; images also from data:
+// URLs, which Bootstrap's CSS uses for its form controls and close buttons;
+// fetches, htmx requests and event streams go to the own origin only; forms
+// post only to the own origin; the page cannot be framed, and a <base>
+// element cannot redirect relative URLs.
+//
+// Objects, frames, media and manifests fall back to default-src 'none': they
+// load from no origin, not even the page's own. Workers, service workers
+// included, fall back to script-src (the policy has no worker-src or
+// child-src), so like scripts they load from the own origin only, not from
+// blob: or data: URLs; set worker-src to narrow or widen that.
 func StrictCSP() CSP { return strictCSP }
 
 // ParseCSP parses a serialized policy, such as the value of a
@@ -209,9 +215,17 @@ func (p CSP) Add(d Directive, values ...string) CSP {
 	return p.set(name, checked)
 }
 
-// Without returns the policy without directive d. A fetch directive that is
-// removed falls back to default-src in browsers. A zero receiver starts from
-// [StrictCSP].
+// Without returns the policy without directive d. A zero receiver starts
+// from [StrictCSP].
+//
+// Browsers then apply d's fallback of CSP Level 3: script-src-elem and
+// script-src-attr fall back to script-src, style-src-elem and style-src-attr
+// to style-src, frame-src to child-src, worker-src to child-src and then
+// script-src, and every fetch directive in the end to default-src. The other
+// directives have no fallback: without form-action, forms may post
+// anywhere; without base-uri, a <base> element may redirect relative URLs;
+// without frame-ancestors, only X-Frame-Options, which [SecurityHeaders] and
+// [SetCSP] then set to DENY, keeps other pages from framing this one.
 func (p CSP) Without(d Directive) CSP {
 	p = p.orStrict()
 	name := Directive(asciiLower(string(d)))

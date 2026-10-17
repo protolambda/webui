@@ -58,17 +58,22 @@ type Headers struct {
 	// scripts, styles).
 	CrossOriginResourcePolicy string
 
-	// HSTS configures Strict-Transport-Security. The zero value sends none.
+	// HSTS configures Strict-Transport-Security. The zero value sends none,
+	// so an https deployment sets it: [HSTSFor] derives the usual policy from
+	// the configured sites, unless a TLS-terminating proxy in front of the
+	// application sends the header already.
 	HSTS HSTS
 }
 
 // HSTS configures the Strict-Transport-Security header, which makes browsers
 // use https for the host (and optionally its subdomains) for MaxAge.
 //
-// It is set from configuration only, never inferred from a request: behind a
-// TLS-terminating proxy a request says http, and a test or a plain-http
-// loopback site must not pin a host to https by accident. Send it only for
-// sites served over https.
+// It is set from configuration only ([HSTSFor] derives it from the configured
+// sites), never inferred from a request: behind a TLS-terminating proxy a
+// request says http, and a test or a plain-http loopback site must not pin a
+// host to https by accident. Send it only for sites served over https.
+// Browsers ignore the header on plain-http responses, apply it to the host
+// name on every port, and keep it for MaxAge also after the header is gone.
 type HSTS struct {
 	// MaxAge is how long browsers remember the policy. Zero sends no header;
 	// otherwise it must be at least one second, and is sent in whole seconds.
@@ -82,8 +87,44 @@ type HSTS struct {
 	Preload bool
 }
 
+// DefaultHSTSMaxAge is the MaxAge that [HSTSFor] sets: a year, the usual
+// value for a site that works over https, and the minimum of the browsers'
+// preload lists.
+const DefaultHSTSMaxAge = 365 * 24 * time.Hour
+
 // hstsPreloadMinAge is the minimum max-age of the browsers' preload lists.
-const hstsPreloadMinAge = 365 * 24 * time.Hour
+const hstsPreloadMinAge = DefaultHSTSMaxAge
+
+// HSTSFor returns the Strict-Transport-Security policy of an application
+// served at sites, the sites that [HostCheck] gets: a MaxAge of
+// [DefaultHSTSMaxAge] when every site is https and none is a loopback host,
+// else the zero HSTS, which sends no header.
+//
+//	site := mw.MustParseSite("https://app.example.com")
+//	mw.SecurityHeaders(mw.Headers{HSTS: mw.HSTSFor(site)})
+//
+// The policy follows the configuration, never a request. Loopback sites get
+// none, also over https: a browser that remembered https for localhost would
+// refuse the plain-http servers that other programs run there. A mix of
+// sites, such as an https site and a plain-http loopback one, gets none
+// either, since one header serves them all; set HSTS explicitly for it
+// (browsers ignore the header on plain-http responses). No sites, or a zero
+// Site, get none.
+//
+// IncludeSubDomains and Preload stay off: set them on the result when every
+// subdomain is served over https too. Leave HSTS zero when a TLS-terminating
+// proxy in front of the application sends the header already.
+func HSTSFor(sites ...Site) HSTS {
+	if len(sites) == 0 {
+		return HSTS{}
+	}
+	for _, s := range sites {
+		if !s.HTTPS() || s.Loopback() {
+			return HSTS{}
+		}
+	}
+	return HSTS{MaxAge: DefaultHSTSMaxAge}
+}
 
 // String returns the header value, or "" for the zero HSTS.
 func (h HSTS) String() string {
@@ -127,6 +168,8 @@ func (h Headers) Validate() error {
 	return nil
 }
 
+const hstsHeader = "Strict-Transport-Security"
+
 // headerField is a header with its canonical key.
 type headerField struct{ key, value string }
 
@@ -151,7 +194,7 @@ func (h Headers) fields() []headerField {
 		headerField{"Cache-Control", or(h.CacheControl, "no-store")},
 	)
 	if v := h.HSTS.String(); v != "" {
-		out = append(out, headerField{"Strict-Transport-Security", v})
+		out = append(out, headerField{hstsHeader, v})
 	}
 	return out
 }
@@ -170,7 +213,8 @@ func (h Headers) fields() []headerField {
 //     same-origin;
 //   - Permissions-Policy: [DefaultPermissionsPolicy];
 //   - Cache-Control: no-store;
-//   - Strict-Transport-Security: only when cfg.HSTS is set.
+//   - Strict-Transport-Security: only when cfg.HSTS is set (see [HSTSFor]);
+//     [HostCheck] removes it from its refusals.
 //
 // Handlers may replace or delete any of them before they write the response,
 // for example a Cache-Control for immutable assets, or a per-page policy with

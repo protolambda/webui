@@ -181,6 +181,7 @@ func TestSameOrigin(gt *testing.T) {
 	t.Must(be.Equal(http.StatusForbidden, rec.Code))
 	t.Must(be.Equal("cross-origin request refused\n", rec.Body.String()))
 	t.Must(be.Equal("text/plain; charset=utf-8", rec.Header().Get("Content-Type")))
+	t.Must(be.Equal("nosniff", rec.Header().Get("X-Content-Type-Options")))
 	t.Must(be.Equal(0, saved))
 	records := sink.Records()
 	t.Must(be.Len(records, 1))

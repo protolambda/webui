@@ -67,8 +67,21 @@ type OriginPolicy struct {
 	// Headerless decides about requests without any origin header. The zero
 	// value accepts them on loopback sites only; unknown values refuse them.
 	Headerless Headerless
-	// Deny answers refused requests. Nil means 403 Forbidden with a short
-	// plain-text message.
+	// Deny answers refused requests. Nil means 403 Forbidden with the fixed
+	// plain-text body "cross-origin request refused" (text/plain;
+	// charset=utf-8, with X-Content-Type-Options: nosniff), which quotes
+	// nothing of the request.
+	//
+	// webui's htmx configuration swaps 4xx bodies into the target of the
+	// request, so a refused htmx request would show that text in place of
+	// the target's content. An application with a web.Errors policy passes
+	// a Deny handler that writes ErrCrossOrigin through it, which answers
+	// htmx requests with an alert in the page's alerts region and other
+	// requests with an error page:
+	//
+	//	mw.SameOrigin(mw.OriginPolicy{Deny: errs.Answer(mw.ErrCrossOrigin)})
+	//
+	// (see [github.com/protolambda/webui/web.Errors.Answer]).
 	Deny http.Handler
 }
 
@@ -162,7 +175,7 @@ func refererOrigin(ref string) (string, bool) {
 // the origin layer of CSRF protection. The site comes from the request
 // context, so SameOrigin must run inside [HostCheck]; without a site, every
 // such request is refused. Refusals are logged at debug level to [Logger]
-// with their reason.
+// with their reason, and answered by [OriginPolicy.Deny].
 //
 // GET and HEAD pass, so they must never change state. OPTIONS is checked like
 // any other method (no CORS preflight passes).

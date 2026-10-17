@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
@@ -25,6 +24,25 @@ func TestStrictCSP(gt *testing.T) {
 	t.Must(be.False(mw.StrictCSP().IsZero()))
 	t.Must(be.True(mw.CSP{}.IsZero()))
 	t.Must(be.Equal("", mw.CSP{}.String()))
+}
+
+// StrictCSP's documentation says that workers fall back to script-src, which
+// holds while the policy names neither worker-src nor child-src.
+func TestStrictCSPWorkerFallback(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	p := mw.StrictCSP()
+	for _, d := range []mw.Directive{mw.WorkerSrc, mw.ChildSrc} {
+		_, ok := p.Values(d)
+		t.Must(be.False(ok))
+	}
+	script, _ := p.Values(mw.ScriptSrc)
+	t.Must(be.DeepEqual([]string{mw.SourceSelf}, script))
+	for _, d := range []mw.Directive{mw.ObjectSrc, mw.FrameSrc, mw.MediaSrc, mw.ManifestSrc} {
+		_, ok := p.Values(d)
+		t.Must(be.False(ok))
+	}
+	def, _ := p.Values(mw.DefaultSrc)
+	t.Must(be.DeepEqual([]string{mw.SourceNone}, def))
 }
 
 func TestCSPWith(gt *testing.T) {
@@ -383,9 +401,15 @@ func manySources(size int) string {
 // as much per byte at the input bound as at a sixteenth of it. A quadratic
 // duplicate check costs 16 times more per byte at the bound (256 times as
 // much in total); the check allows 6.
+//
+// The costs come from testing.Benchmark rather than from timing single calls:
+// it repeats each parse for about a second (-test.benchtime) with the testing
+// package's high-resolution clock, so a busy machine slows both sizes alike,
+// and coarse system clocks (as on Windows) do not round the small parse to
+// zero. It takes a few seconds, and is skipped under -short.
 func TestParseCSPCostIsLinear(gt *testing.T) {
 	if testing.Short() {
-		gt.Skip("measures time")
+		gt.Skip("measures time for a few seconds")
 	}
 	t := devtest.SerialT(gt)
 	inputs := map[string]func(size int) string{
@@ -395,18 +419,18 @@ func TestParseCSPCostIsLinear(gt *testing.T) {
 	for name, input := range inputs {
 		t.Run(name, func(t devtest.T) {
 			small, large := input(maxCSP/16), input(maxCSP)
-			cost := func(s string) time.Duration {
-				best := time.Duration(1<<63 - 1)
-				for range 5 {
-					start := time.Now()
-					_, err := mw.ParseCSP(s)
-					best = min(best, time.Since(start))
-					t.Must(be.NoError(err))
-				}
-				return best
+			nsPerByte := func(s string) float64 {
+				_, err := mw.ParseCSP(s)
+				t.Must(be.NoError(err))
+				r := testing.Benchmark(func(b *testing.B) {
+					for b.Loop() {
+						_, _ = mw.ParseCSP(s)
+					}
+				})
+				t.Must(be.Greater(r.N, 0))
+				return float64(r.T.Nanoseconds()) / float64(r.N) / float64(len(s))
 			}
-			smallCost, largeCost := cost(small), cost(large)
-			ratio := float64(largeCost) / float64(max(smallCost, time.Microsecond)) / (float64(len(large)) / float64(len(small)))
+			ratio := nsPerByte(large) / nsPerByte(small)
 			t.Mustf(be.True(ratio < 6), "per-byte cost at %d bytes is %.1f times that at %d bytes", len(large), ratio, len(small))
 		})
 	}

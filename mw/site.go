@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -263,6 +264,16 @@ func SiteFrom(ctx context.Context) (Site, bool) {
 // header. Without the check, the browser would treat the attacker's page as
 // same-origin with the responses, and every origin comparison would pass.
 //
+// A refusal is the fixed plain-text body "invalid host" (text/plain;
+// charset=utf-8, with X-Content-Type-Options: nosniff). It quotes nothing of
+// the request and runs no application code, since a rebinding page may read
+// it. It has no Strict-Transport-Security header, also when an outer
+// [SecurityHeaders] set one: that policy is for the configured sites, not
+// for a name that a client chose. Refusals are logged at debug level to
+// [Logger], without the Host. Unlike [SameOrigin], HostCheck needs no
+// answer for htmx requests: a page loads only under a configured host, so
+// its own requests are not refused here.
+//
 // HostCheck panics if there are no sites or one is the zero Site.
 func HostCheck(sites ...Site) Middleware {
 	if len(sites) == 0 {
@@ -282,6 +293,9 @@ func HostCheck(sites ...Site) Middleware {
 					return
 				}
 			}
+			ctx := r.Context()
+			Logger(ctx).LogAttrs(ctx, slog.LevelDebug, "refused a request for an unknown host")
+			w.Header().Del(hstsHeader)
 			http.Error(w, "invalid host", http.StatusBadRequest)
 		})
 	}

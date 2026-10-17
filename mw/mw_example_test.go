@@ -28,7 +28,7 @@ func ExampleChain() {
 		mw.LogRequests(mw.RequestLog{Routes: mux, Logger: slog.New(slog.DiscardHandler)}),
 		mw.BodyDeadline(mw.DefaultBodyTimeout),
 		mw.WriteDeadline(mw.DefaultWriteTimeout),
-		mw.SecurityHeaders(mw.Headers{}),
+		mw.SecurityHeaders(mw.Headers{HSTS: mw.HSTSFor(site)}),
 		mw.HostCheck(site),
 		mw.SameOrigin(mw.OriginPolicy{}),
 		mw.MaxBody(1<<20),
@@ -99,13 +99,22 @@ func ExampleCSP_Add() {
 		fmt.Println(err)
 		return
 	}
-	policy := mw.StrictCSP().
-		Add(mw.FormAction, src).
-		With(mw.ImgSrc, mw.SourceSelf).
-		Without(mw.FontSrc)
-	fmt.Println(policy)
+	fmt.Println(mw.StrictCSP().Add(mw.FormAction, src))
 	// Output:
-	// default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self' https://partner.example.com; frame-ancestors 'none'; base-uri 'none'
+	// default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self' https://partner.example.com; frame-ancestors 'none'; base-uri 'none'
+}
+
+// A response that does not use webui's theme, such as a plain report page
+// without icons or form controls, can narrow the strict policy: no data:
+// images, and no font-src, which then falls back to default-src 'none'.
+// Webui pages need both, for the images of Bootstrap's form controls and for
+// the Bootstrap Icons font.
+func ExampleCSP_Without() {
+	fmt.Println(mw.StrictCSP().
+		With(mw.ImgSrc, mw.SourceSelf).
+		Without(mw.FontSrc))
+	// Output:
+	// default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'
 }
 
 func ExampleHostSource() {
@@ -164,6 +173,32 @@ func ExampleSecurityHeaders() {
 	// Cross-Origin-Resource-Policy: same-origin
 	// Cache-Control: no-store
 	// Strict-Transport-Security: max-age=31536000
+}
+
+// An https site gets Strict-Transport-Security from its configuration; a
+// plain-http loopback site, as in development, gets none, and so does a
+// refusal for a host that is not the site's.
+func ExampleHSTSFor() {
+	for _, raw := range []string{"https://app.example.com", "http://127.0.0.1:8080"} {
+		site := mw.MustParseSite(raw)
+		h := mw.Chain(http.NotFoundHandler(),
+			mw.SecurityHeaders(mw.Headers{HSTS: mw.HSTSFor(site)}),
+			mw.HostCheck(site),
+		)
+		for _, target := range []string{raw + "/", "https://other.example.com/"} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			fmt.Printf("%s %s %d %q\n", site, target, rec.Code, rec.Header().Get("Strict-Transport-Security"))
+		}
+	}
+	mixed := mw.HSTSFor(mw.MustParseSite("https://app.example.com"), mw.MustParseSite("http://localhost:8080"))
+	fmt.Printf("mixed sites: %q\n", mixed)
+	// Output:
+	// https://app.example.com https://app.example.com/ 404 "max-age=31536000"
+	// https://app.example.com https://other.example.com/ 400 ""
+	// http://127.0.0.1:8080 http://127.0.0.1:8080/ 404 ""
+	// http://127.0.0.1:8080 https://other.example.com/ 400 ""
+	// mixed sites: ""
 }
 
 func ExampleSetCSP() {

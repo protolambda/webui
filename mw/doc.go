@@ -11,11 +11,12 @@
 //
 // A typical stack, outermost first:
 //
+//	site := mw.MustParseSite("https://app.example.com")
 //	handler := mw.Chain(mux,
 //		mw.LogRequests(mw.RequestLog{Routes: mux}),
 //		mw.BodyDeadline(mw.DefaultBodyTimeout),
 //		mw.WriteDeadline(mw.DefaultWriteTimeout),
-//		mw.SecurityHeaders(mw.Headers{}),
+//		mw.SecurityHeaders(mw.Headers{HSTS: mw.HSTSFor(site)}),
 //		mw.HostCheck(site),
 //		mw.SameOrigin(mw.OriginPolicy{}),
 //		mw.MaxBody(1<<20),
@@ -26,6 +27,30 @@
 // its connection. The security headers are set before any rejection is
 // written, so error responses carry them. [HostCheck] must run before
 // [SameOrigin], which compares requests with the site that HostCheck matched.
+// Application middleware that reads cookies into the request context, such
+// as the session store's Middleware (package session), goes last, after
+// MaxBody and right around the mux: requests that these checks refuse then
+// never count as the use of a session, and every handler and per-route
+// guard sees the session. An error policy's Recover and Intercept (package
+// web) go first, right inside LogRequests.
+//
+// Strict-Transport-Security is the one header that the zero [Headers] does
+// not send: [HSTSFor] turns it on for https sites (and leaves it off for
+// loopback ones), unless a TLS-terminating proxy sends it already.
+//
+// # Refusals
+//
+// [HostCheck] and [SameOrigin] answer refused requests with a fixed
+// plain-text body that quotes nothing of the request, served as text/plain
+// with nosniff, and log them at debug level with a fixed reason. The
+// package depends on no rendering, so that is its default. An application
+// with webui's error policy (package web) answers SameOrigin refusals with
+// it instead, through [OriginPolicy.Deny] and
+// [github.com/protolambda/webui/web.Errors.Answer]: htmx requests then get
+// an alert rather than text swapped into their target. The policy's
+// [github.com/protolambda/webui/web.Errors.Intercept] does the same for
+// the plain-text refusals of HostCheck, and for the plain-text errors of
+// any other code, that reach an htmx request.
 //
 // # Origins come from configuration
 //

@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -159,7 +162,8 @@ func TestNewErrors(gt *testing.T) {
 	}
 	t.Run("missing file", func(t devtest.T) {
 		_, err := asset.New(asset.Options{Prefix: "/a/", FS: testFS(), Files: []asset.File{{Name: "gone.css"}}})
-		t.Must(be.Error(err))
+		t.Must(be.ErrorIs(err, asset.ErrInvalid))
+		t.Must(be.ErrorIs(err, fs.ErrNotExist))
 		t.Must(be.ErrorContains(err, "gone.css"))
 	})
 	t.Run("must panics", func(t devtest.T) {
@@ -169,12 +173,26 @@ func TestNewErrors(gt *testing.T) {
 
 func TestPinnedIntegrityAlgorithms(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	sum256 := func(data []byte) string {
-		h := sha512.Sum512(data)
-		return "sha512-" + base64.StdEncoding.EncodeToString(h[:])
+	cases := []struct {
+		alg string
+		sum func([]byte) []byte
+	}{
+		{"sha256", func(b []byte) []byte { s := sha256.Sum256(b); return s[:] }},
+		{"sha384", func(b []byte) []byte { s := sha512.Sum384(b); return s[:] }},
+		{"sha512", func(b []byte) []byte { s := sha512.Sum512(b); return s[:] }},
 	}
-	_, err := asset.New(asset.Options{Prefix: "/a/", FS: testFS(), Files: []asset.File{{Name: "app.js", Integrity: sum256(appJS)}}})
-	t.Must(be.NoError(err))
+	for _, c := range cases {
+		t.Run(c.alg, func(t devtest.T) {
+			// app.js pinned with the digest of content, in the case's algorithm.
+			pinned := func(content []byte) error {
+				pin := c.alg + "-" + base64.StdEncoding.EncodeToString(c.sum(content))
+				_, err := asset.New(asset.Options{Prefix: "/a/", FS: testFS(), Files: []asset.File{{Name: "app.js", Integrity: pin}}})
+				return err
+			}
+			t.Must(be.NoError(pinned(appJS)))
+			t.Must(be.ErrorIs(pinned(appCSS), asset.ErrIntegrity))
+		})
+	}
 }
 
 func TestExplicitContentType(gt *testing.T) {
@@ -230,6 +248,30 @@ func TestServe(gt *testing.T) {
 		}
 		rec := get(t, s, http.MethodGet, s.URL("app.js"), http.Header{"If-None-Match": {`"other"`}})
 		t.Must(be.Equal(http.StatusOK, rec.Code))
+	})
+	t.Run("precondition failed", func(t devtest.T) {
+		// The empty 412 must not look like a cacheable copy of the file.
+		for _, accept := range []string{"", "gzip"} {
+			rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"If-Match": {`"other"`}, "Accept-Encoding": {accept}})
+			t.Must(be.Equal(http.StatusPreconditionFailed, rec.Code))
+			t.Must(be.Equal("no-store", rec.Header().Get("Cache-Control")))
+			t.Must(be.Equal("", rec.Header().Get("ETag")))
+			t.Must(be.Equal("", rec.Header().Get("Content-Encoding")))
+			t.Must(be.Equal("", rec.Header().Get("Content-Length")))
+			t.Must(be.Equal(0, rec.Body.Len()))
+		}
+		for _, im := range []string{"*", get(t, s, http.MethodGet, s.URL("app.css"), nil).Header().Get("ETag")} {
+			rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"If-Match": {im}})
+			t.Must(be.Equal(http.StatusOK, rec.Code))
+			t.Must(be.Equal("public, max-age=31536000, immutable", rec.Header().Get("Cache-Control")))
+		}
+	})
+	t.Run("range not satisfiable", func(t devtest.T) {
+		rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Range": {"bytes=100000-"}, "Accept-Encoding": {"gzip"}})
+		t.Must(be.Equal(http.StatusRequestedRangeNotSatisfiable, rec.Code))
+		t.Must(be.Equal("no-store", rec.Header().Get("Cache-Control")))
+		t.Must(be.Equal("", rec.Header().Get("ETag")))
+		t.Must(be.Equal("", rec.Header().Get("Content-Encoding")))
 	})
 	t.Run("not found", func(t devtest.T) {
 		for _, target := range []string{
@@ -291,6 +333,95 @@ func TestGzip(gt *testing.T) {
 	t.Must(be.Equal("", rec.Header().Get("Vary")))
 }
 
+func TestGzipRepresentation(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	s := testSet(t)
+	gz := http.Header{"Accept-Encoding": {"gzip"}}
+	full := get(t, s, http.MethodGet, s.URL("app.css"), gz)
+	t.Must(be.Equal(http.StatusOK, full.Code))
+	t.Must(be.Equal("gzip", full.Header().Get("Content-Encoding")))
+	body := full.Body.Bytes()
+	gzETag := full.Header().Get("ETag")
+	plainETag := get(t, s, http.MethodGet, s.URL("app.css"), nil).Header().Get("ETag")
+
+	t.Run("content length", func(t devtest.T) {
+		// The gzip bytes are precomputed, so their length is known.
+		t.Must(be.Equal(strconv.Itoa(len(body)), full.Header().Get("Content-Length")))
+		head := get(t, s, http.MethodHead, s.URL("app.css"), gz)
+		t.Must(be.Equal(http.StatusOK, head.Code))
+		t.Must(be.Equal("gzip", head.Header().Get("Content-Encoding")))
+		t.Must(be.Equal(strconv.Itoa(len(body)), head.Header().Get("Content-Length")))
+		t.Must(be.Equal(0, head.Body.Len()))
+	})
+	t.Run("not modified", func(t devtest.T) {
+		rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Accept-Encoding": {"gzip"}, "If-None-Match": {gzETag}})
+		t.Must(be.Equal(http.StatusNotModified, rec.Code))
+		t.Must(be.Equal("Accept-Encoding", rec.Header().Get("Vary")))
+		t.Must(be.Equal("", rec.Header().Get("Content-Encoding")))
+		t.Must(be.Equal("public, max-age=31536000, immutable", rec.Header().Get("Cache-Control")))
+		t.Must(be.Equal(0, rec.Body.Len()))
+		// The tag of the other representation does not match.
+		rec = get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Accept-Encoding": {"gzip"}, "If-None-Match": {plainETag}})
+		t.Must(be.Equal(http.StatusOK, rec.Code))
+		t.Must(be.Equal("gzip", rec.Header().Get("Content-Encoding")))
+	})
+	t.Run("range", func(t devtest.T) {
+		rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Accept-Encoding": {"gzip"}, "Range": {"bytes=0-9"}})
+		t.Must(be.Equal(http.StatusPartialContent, rec.Code))
+		t.Must(be.Equal("gzip", rec.Header().Get("Content-Encoding")))
+		t.Must(be.Equal("bytes 0-9/"+strconv.Itoa(len(body)), rec.Header().Get("Content-Range")))
+		t.Must(be.Equal("10", rec.Header().Get("Content-Length")))
+		t.Must(be.DeepEqual(body[:10], rec.Body.Bytes()))
+
+		rec = get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Accept-Encoding": {"gzip"}, "Range": {"bytes=0-9"}, "If-Range": {gzETag}})
+		t.Must(be.Equal(http.StatusPartialContent, rec.Code))
+		// A range validated by the other representation's tag gets the whole file.
+		rec = get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Accept-Encoding": {"gzip"}, "Range": {"bytes=0-9"}, "If-Range": {plainETag}})
+		t.Must(be.Equal(http.StatusOK, rec.Code))
+		t.Must(be.DeepEqual(body, rec.Body.Bytes()))
+	})
+}
+
+// TestGzipOverHTTP checks the framing of gzip responses on a real
+// connection: a length instead of chunks, and a readable bodiless 412.
+func TestGzipOverHTTP(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	big := []byte(strings.Repeat("main { padding: 1rem; margin: 0 auto; }\n", 2000))
+	s, err := asset.New(asset.Options{Prefix: "/a/", FS: fstest.MapFS{"big.css": {Data: big}}, Files: []asset.File{{Name: "big.css"}}})
+	t.Must(be.NoError(err))
+	srv := httptest.NewServer(s)
+	t.Cleanup(srv.Close)
+	// Without transparent decompression, to see the encoded response.
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	t.Cleanup(client.CloseIdleConnections)
+	do := func(method string, header http.Header) (*http.Response, []byte) {
+		req, err := http.NewRequestWithContext(t.Context(), method, srv.URL+s.URL("big.css"), nil)
+		t.Must(be.NoError(err))
+		req.Header = header
+		res, err := client.Do(req)
+		t.Must(be.NoError(err))
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		t.Must(be.NoError(err))
+		return res, body
+	}
+
+	res, body := do(http.MethodGet, http.Header{"Accept-Encoding": {"gzip"}})
+	t.Must(be.Equal(http.StatusOK, res.StatusCode))
+	t.Must(be.Equal("gzip", res.Header.Get("Content-Encoding")))
+	t.Must(be.Equal(0, len(res.TransferEncoding)))
+	t.Must(be.Equal(int64(len(body)), res.ContentLength))
+	t.Must(be.True(len(body) < len(big)))
+
+	res, _ = do(http.MethodHead, http.Header{"Accept-Encoding": {"gzip"}})
+	t.Must(be.Equal(int64(len(body)), res.ContentLength))
+
+	res, empty := do(http.MethodGet, http.Header{"Accept-Encoding": {"gzip"}, "If-Match": {`"other"`}})
+	t.Must(be.Equal(http.StatusPreconditionFailed, res.StatusCode))
+	t.Must(be.Equal("", res.Header.Get("Content-Encoding")))
+	t.Must(be.Equal(0, len(empty)))
+}
+
 func TestTags(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	s := testSet(t)
@@ -318,6 +449,103 @@ func TestTags(gt *testing.T) {
 		render(t, s.Preload("fonts/app.woff2"))))
 }
 
+func TestPreload(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	logo := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+	fsys := testFS()
+	fsys["logo.svg"] = &fstest.MapFile{Data: logo}
+	fsys["main.mjs"] = &fstest.MapFile{Data: []byte("export const x = 1;\n")}
+	s, err := asset.New(asset.Options{Prefix: "/a/", FS: fsys, Files: []asset.File{
+		{Name: "app.css"}, {Name: "app.js"}, {Name: "fonts/app.woff2"}, {Name: "logo.svg"}, {Name: "main.mjs", Kind: asset.KindModule},
+	}})
+	t.Must(be.NoError(err))
+	v := s.Version()
+	cases := []struct{ name, want string }{
+		{"app.css", `<link rel="preload" href="/a/` + v + `/app.css" as="style" type="text/css" integrity="` + sri(appCSS) + `" crossorigin="anonymous"/>`},
+		{"app.js", `<link rel="preload" href="/a/` + v + `/app.js" as="script" type="text/javascript" integrity="` + sri(appJS) + `" crossorigin="anonymous"/>`},
+		{"fonts/app.woff2", `<link rel="preload" href="/a/` + v + `/fonts/app.woff2" as="font" type="font/woff2" integrity="` + sri(fontBin) + `" crossorigin="anonymous"/>`},
+		// CSS url() and <img> fetch images in no-cors mode without integrity;
+		// a crossorigin preload would never be used.
+		{"logo.svg", `<link rel="preload" href="/a/` + v + `/logo.svg" as="image" type="image/svg+xml"/>`},
+		{"main.mjs", `<link rel="modulepreload" href="/a/` + v + `/main.mjs" integrity="` + s.Integrity("main.mjs") + `" crossorigin="anonymous"/>`},
+	}
+	for _, c := range cases {
+		t.Must(be.Equal(c.want, render(t, s.Preload(c.name))))
+	}
+}
+
+func TestModules(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	mod := []byte("import { x } from \"./lib.mjs\";\nconsole.log(x);\n")
+	fsys := testFS()
+	fsys["main.mjs"] = &fstest.MapFile{Data: mod}
+	fsys["lib.mjs"] = &fstest.MapFile{Data: []byte("export const x = 1;\n")}
+	s, err := asset.New(asset.Options{Prefix: "/a/", FS: fsys, Files: []asset.File{
+		{Name: "lib.mjs"},
+		{Name: "app.js"},
+		{Name: "main.mjs", Kind: asset.KindModule},
+	}})
+	t.Must(be.NoError(err))
+	v := s.Version()
+
+	// .mjs is not a classic script: without a kind it is only served.
+	lib, _ := s.Lookup("lib.mjs")
+	t.Must(be.Equal(asset.KindOther, lib.Kind))
+	t.Must(be.Equal("text/javascript; charset=utf-8", lib.ContentType))
+	rec := get(t, s, http.MethodGet, s.URL("lib.mjs"), nil)
+	t.Must(be.Equal(http.StatusOK, rec.Code))
+	t.Must(be.Equal("text/javascript; charset=utf-8", rec.Header().Get("Content-Type")))
+
+	// Modules and classic scripts render in declaration order.
+	module := `<script type="module" src="/a/` + v + `/main.mjs" integrity="` + sri(mod) + `" crossorigin="anonymous"></script>`
+	t.Must(be.Equal(
+		`<script src="/a/`+v+`/app.js" defer integrity="`+sri(appJS)+`" crossorigin="anonymous"></script>`+module,
+		render(t, s.Scripts())))
+	t.Must(be.Equal(module, render(t, s.Script("main.mjs"))))
+	var out strings.Builder
+	t.Must(be.ErrorIs(core.Render(t.Context(), s.Script("lib.mjs"), &out), asset.ErrInvalid))
+
+	_, err = asset.New(asset.Options{Prefix: "/a/", FS: fsys, Files: []asset.File{{Name: "app.css", Kind: asset.KindModule}}})
+	t.Must(be.ErrorIs(err, asset.ErrInvalid))
+}
+
+func TestUnlisted(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	worker := []byte("self.onmessage = () => {};\n")
+	extra := []byte("aside { margin: 0; }\n")
+	fsys := testFS()
+	fsys["worker.js"] = &fstest.MapFile{Data: worker}
+	fsys["extra.css"] = &fstest.MapFile{Data: extra}
+	s, err := asset.New(asset.Options{Prefix: "/a/", FS: fsys, Files: []asset.File{
+		{Name: "app.js"},
+		{Name: "worker.js", Unlisted: true},
+		{Name: "extra.css", Unlisted: true},
+	}})
+	t.Must(be.NoError(err))
+	v := s.Version()
+
+	page := ct.View(elem.Bundle{s.Stylesheets(), s.Scripts()})
+	t.Must(page.Find(ct.Tag("link")).None())
+	t.Must(page.Find(ct.Tag("script")).AttrValues("src", "/a/"+v+"/app.js"))
+
+	// Still served, and rendered on request.
+	info, ok := s.Lookup("worker.js")
+	t.Must(be.True(ok))
+	t.Must(be.True(info.Unlisted))
+	t.Must(be.Equal(asset.KindScript, info.Kind))
+	t.Must(be.Equal(
+		`<script src="/a/`+v+`/worker.js" defer integrity="`+sri(worker)+`" crossorigin="anonymous"></script>`,
+		render(t, s.Script("worker.js"))))
+	t.Must(be.Equal(
+		`<link rel="stylesheet" href="/a/`+v+`/extra.css" integrity="`+sri(extra)+`" crossorigin="anonymous"/>`,
+		render(t, s.Stylesheet("extra.css"))))
+	rec := get(t, s, http.MethodGet, s.URL("worker.js"), nil)
+	t.Must(be.Equal(http.StatusOK, rec.Code))
+	t.Must(be.DeepEqual(worker, rec.Body.Bytes()))
+	app, _ := s.Lookup("app.js")
+	t.Must(be.False(app.Unlisted))
+}
+
 func TestTagsMatchServedBytes(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	s := testSet(t)
@@ -342,8 +570,8 @@ func TestTagsMatchServedBytes(gt *testing.T) {
 func TestKindString(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	var got []string
-	for _, k := range []asset.Kind{asset.KindOther, asset.KindStylesheet, asset.KindScript, asset.KindFont, asset.KindImage, asset.Kind(42)} {
+	for _, k := range []asset.Kind{asset.KindOther, asset.KindStylesheet, asset.KindScript, asset.KindFont, asset.KindImage, asset.KindModule, asset.Kind(42)} {
 		got = append(got, k.String())
 	}
-	t.Must(be.True(slices.Equal([]string{"other", "stylesheet", "script", "font", "image", "kind(42)"}, got)))
+	t.Must(be.True(slices.Equal([]string{"other", "stylesheet", "script", "font", "image", "module", "kind(42)"}, got)))
 }

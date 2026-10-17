@@ -155,8 +155,8 @@ func TestConfigDefaultSwapStyle(gt *testing.T) {
 func TestConfigExtra(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	cfg := hx2.Config{Extra: map[string]any{
-		"timeout":           5000,
-		"inlineScriptNonce": "n0nce",
+		"timeout":        5000,
+		"scrollBehavior": "smooth",
 		"attributesToSettle": []string{
 			"class",
 		},
@@ -166,9 +166,32 @@ func TestConfigExtra(gt *testing.T) {
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(`{"allowEval":false,"allowScriptTags":false,"attributesToSettle":["class"],`+
 		`"historyCacheSize":0,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,`+
-		`"inlineScriptNonce":"n0nce","refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},`+
+		`"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},`+
 		`{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true},{"code":"...","swap":false}],`+
-		`"selfRequestsOnly":true,"timeout":5000,"zzz":null}`, data))
+		`"scrollBehavior":"smooth","selfRequestsOnly":true,"timeout":5000,"zzz":null}`, data))
+}
+
+// htmx compiles each rule code as a JavaScript regular expression on every
+// response, and an invalid one breaks every swap of the page: JSON accepts
+// only three positions of digits, '.' and digit classes.
+func TestConfigResponseCode(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	rules := func(code string) hx2.Config {
+		return hx2.Config{ResponseHandling: append([]hx2.ResponseRule{{Code: code, Swap: true}}, hx2.DefaultResponseHandling()...)}
+	}
+	for _, code := range []string{"204", "[23]..", "[45]..", "...", "422", "[0-4]0[1-3]", "[0-9][0-9][0-9]", "[1-1]..", "[0-24-6].."} {
+		data, err := rules(code).JSON()
+		t.Must(be.Annotate(be.NoError(err), "code %q", code))
+		t.Must(be.Substring(data, `{"code":"`+code+`","swap":true}`))
+	}
+	for _, code := range []string{
+		"", "[45", "[45].", "20", "2000", "[45]...", "[5-0]..", "[]..", "[4-]..", "[-4]..", "[4-",
+		`2\d\d`, "200|201", "(?!204)...", "[^4]..", "4x.", " 404", "404 ", `[4\]5]..`, "٤٠٤", "4[0-9-5].",
+	} {
+		data, err := rules(code).JSON()
+		t.Must(be.Annotate(be.ErrorIs(err, hx2.ErrInvalidConfig), "code %q", code))
+		t.Must(be.Equal("", data))
+	}
 }
 
 // The same Config always gives the same text, whatever the map order.

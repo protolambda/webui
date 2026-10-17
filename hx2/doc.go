@@ -23,7 +23,8 @@
 //     [Validate], [Ext]: everything else.
 //
 // The JSON helpers [ValsJSON] and [HeadersJSON] encode their values with
-// encoding/json, and fail the render on values that htmx cannot read,
+// encoding/json, and fail the render on values that htmx cannot read
+// (including member names such as "constructor", which htmx drops),
 // instead of inviting JSON built by string formatting.
 //
 // # Configuration
@@ -34,7 +35,9 @@
 // htmx that needs a weaker Content-Security-Policy (inline indicator styles,
 // eval) or keeps page content in the browser (the history cache), and makes
 // htmx swap 4xx and 5xx responses, so that server-rendered error fragments
-// show without script.
+// show without script. htmx treats a swapped error like a success, so a
+// handler that retargets an error fragment also opts out of the history
+// update and of an inherited hx-select: see [DefaultResponseHandling].
 //
 // # Scripting attributes
 //
@@ -44,7 +47,9 @@
 // protect a JavaScript context, so never build them from untrusted input.
 // htmx evaluates them only with [Config.AllowEval], and the browser only
 // with a Content-Security-Policy that allows 'unsafe-eval'; webui's defaults
-// allow neither. The helpers stay available for applications that opt in.
+// allow neither. Without them, hx-on and "js:" values do nothing, but htmx
+// drops an event filter and triggers on every matching event (see
+// [Trigger]). The helpers stay available for applications that opt in.
 //
 // # Extensions
 //

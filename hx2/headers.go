@@ -24,7 +24,12 @@ const (
 	HeaderHistoryRestoreRequest = "HX-History-Restore-Request"
 	// HeaderPrompt is sent with the user's response to hx-prompt.
 	HeaderPrompt = "HX-Prompt"
-	// HeaderRequest is sent with every htmx request: "true".
+	// HeaderRequest is sent as "true" with the requests that htmx makes for
+	// its attributes and htmx.ajax. History restore requests carry it only
+	// with [Config.HistoryRestoreAsHXRequest] (off by default; they always
+	// carry HX-History-Restore-Request), requests of an element with
+	// hx-request {"noHeaders": true} carry no htmx headers, and the
+	// connections of the SSE and WebSocket extensions never carry it.
 	HeaderRequest = "HX-Request"
 	// HeaderTarget is sent with the id of the target element, if it has one.
 	HeaderTarget = "HX-Target"
@@ -82,7 +87,11 @@ var ErrInvalidHeader = errors.New("invalid htmx header")
 // sent, so other clients can send UTF-8; a Latin-1 value whose bytes happen
 // to form UTF-8, such as "Ã©", reads as that UTF-8 ("é").
 type RequestHeaders struct {
-	// Request is set for every request that htmx makes (HX-Request).
+	// Request is set when the request carries HX-Request: true, as htmx
+	// requests do, except history restore requests without
+	// [Config.HistoryRestoreAsHXRequest] (see HistoryRestoreRequest),
+	// requests with hx-request {"noHeaders": true}, and SSE and WebSocket
+	// connections (see [HeaderRequest]).
 	Request bool
 	// Boosted is set for requests of an element with hx-boost (HX-Boosted).
 	Boosted bool
@@ -177,8 +186,9 @@ func SetRefresh(h http.Header) {
 }
 
 // SetPushURL sets HX-Push-Url: htmx pushes url into the browser history.
-// The value "false" prevents the history update that the request would
-// otherwise make.
+// The value "false" prevents the history update, push or replace, that the
+// request would otherwise make; send it with an error fragment (see
+// [DefaultResponseHandling]).
 func SetPushURL(h http.Header, url string) {
 	h.Set(HeaderPushURL, url)
 }
@@ -203,15 +213,19 @@ func SetRetarget(h http.Header, selector string) {
 }
 
 // SetReselect sets HX-Reselect: the CSS selector of the part of the response
-// that is swapped in, overriding hx-select of the triggering element.
+// that is swapped in, overriding the hx-select that the triggering element
+// has or inherits. The value "unset" turns that hx-select off, so the whole
+// response is swapped in; send it with a fragment that is retargeted
+// elsewhere, such as an error alert (see [DefaultResponseHandling]).
 func SetReselect(h http.Header, selector string) {
 	h.Set(HeaderReselect, selector)
 }
 
 // Location is the value of the HX-Location response header: htmx requests
 // Path with an ajax GET, as htmx.ajax does, swaps the response in, and pushes
-// Path into the browser history. The client-side event and handler options
-// of htmx.ajax cannot be sent in a header and are not supported.
+// Path into the browser history (see Push and Replace). The client-side
+// event and handler options of htmx.ajax cannot be sent in a header and are
+// not supported.
 type Location struct {
 	// Path is the URL to load. It is required.
 	Path string `json:"path"`
@@ -223,26 +237,66 @@ type Location struct {
 	Swap string `json:"swap,omitempty"`
 	// Select is the CSS selector of the part of the response to swap in.
 	Select string `json:"select,omitempty"`
-	// Values are submitted with the request.
+	// Values are submitted with the request. A name that is a property of
+	// JavaScript's Object.prototype, such as "constructor" or
+	// "hasOwnProperty", is refused, as for [ValsJSON].
 	Values map[string]any `json:"values,omitempty"`
-	// Headers are sent with the request.
+	// Headers are sent with the request. Each name must be a valid HTTP
+	// header name (a non-empty token) and not a property of JavaScript's
+	// Object.prototype, as for [HeadersJSON]. Browsers silently drop
+	// forbidden request headers such as Cookie.
 	Headers map[string]string `json:"headers,omitempty"`
 	// Push is the URL to push into the history instead of Path, or "false"
 	// to push nothing. Only recent htmx 2 releases read it; others push Path.
 	Push string `json:"push,omitempty"`
 	// Replace is the URL that replaces the current one in the history,
-	// instead of pushing one. Only recent htmx 2 releases read it.
+	// instead of pushing Path. htmx pushes unless push is "false", so
+	// SetLocation sends push "false" along with it, and it cannot be
+	// combined with another Push. The value "false" changes nothing. Only
+	// recent htmx 2 releases read it; others push Path.
 	Replace string `json:"replace,omitempty"`
 }
 
 // SetLocation sets HX-Location. A location with only a Path is sent as the
 // plain path; otherwise it is sent as a JSON object, with non-ASCII
 // characters escaped so that the browser reads them intact. It fails with
-// [ErrInvalidHeader] when Path is empty, and when Values cannot be encoded
-// as JSON; h is then unchanged.
+// [ErrInvalidHeader] when Path is empty, when a name in Headers is not a
+// valid HTTP header name, when a name in Values or Headers is a property of
+// JavaScript's Object.prototype, when Replace is combined with a Push other
+// than "false", and when Values cannot be encoded as JSON; h is then
+// unchanged.
 func SetLocation(h http.Header, loc Location) error {
 	if loc.Path == "" {
 		return fmt.Errorf("%w: %s without a path", ErrInvalidHeader, HeaderLocation)
+	}
+	for name := range loc.Headers {
+		if !headerName(name) {
+			return fmt.Errorf("%w: %s header name %q is not a header name", ErrInvalidHeader, HeaderLocation, name)
+		}
+		// htmx merges the headers into a plain object, like hx-headers.
+		if prototypeName(name) {
+			return fmt.Errorf("%w: %s header name %q is a JavaScript Object.prototype name",
+				ErrInvalidHeader, HeaderLocation, name)
+		}
+	}
+	for name := range loc.Values {
+		// htmx copies the values with hasOwnProperty checks, which a member
+		// of that name breaks; refuse the whole set, as ValsJSON does.
+		if prototypeName(name) {
+			return fmt.Errorf("%w: %s value name %q is a JavaScript Object.prototype name",
+				ErrInvalidHeader, HeaderLocation, name)
+		}
+	}
+	if loc.Replace != "" && loc.Replace != "false" {
+		switch loc.Push {
+		case "":
+			// htmx defaults push to "true" for HX-Location, and a push wins
+			// over a replace. loc is a copy: the caller's value is unchanged.
+			loc.Push = "false"
+		case "false":
+		default:
+			return fmt.Errorf("%w: %s with both push and replace", ErrInvalidHeader, HeaderLocation)
+		}
 	}
 	pathOnly := loc.Source == "" && loc.Target == "" && loc.Swap == "" && loc.Select == "" &&
 		len(loc.Values) == 0 && len(loc.Headers) == 0 && loc.Push == "" && loc.Replace == ""

@@ -27,8 +27,10 @@ var ErrInvalidConfig = errors.New("invalid htmx config")
 //     false), which a strict style-src would block; style .htmx-indicator in a
 //     same-origin stylesheet instead;
 //   - never compiles JavaScript from the page (allowEval false): hx-on
-//     attributes, "js:" and "javascript:" values of hx-vals and hx-headers,
-//     and hx-trigger event filters in square brackets do nothing;
+//     attributes and "js:" and "javascript:" values of hx-vals and
+//     hx-headers do nothing, and htmx drops hx-trigger event filters in
+//     square brackets, so Trigger("click[ctrlKey]") triggers on every click
+//     (see [Trigger]);
 //   - does not run <script> elements of swapped content (allowScriptTags
 //     false);
 //   - keeps no snapshots of page HTML in sessionStorage (historyCacheSize 0),
@@ -42,29 +44,49 @@ var ErrInvalidConfig = errors.New("invalid htmx config")
 //   - only requests URLs of the page's own origin (selfRequestsOnly true);
 //   - swaps the responses of [DefaultResponseHandling]: 2xx responses except
 //     204, and also 4xx and 5xx responses, so a server-rendered error fragment
-//     shows without client-side script.
+//     shows without client-side script. A swapped error is handled like a
+//     success, history updates and an inherited hx-select included, so a
+//     handler that sends such a fragment also sends HX-Push-Url: false and
+//     HX-Reselect: unset (see [DefaultResponseHandling]).
 //
 // Each of these keys is written explicitly, so the page does not depend on
-// the defaults of a particular htmx release. The keys were checked against
-// htmx 2.0.10.
+// the defaults of a particular htmx release. The keys and their meanings
+// were checked against htmx 2.0.10, the release that webui's theme ships; a
+// test of this package checks the keys against that script, and fails when
+// the theme moves to another release.
 //
 // A Config is a plain value; it is safe for concurrent use as long as no
 // goroutine modifies its ResponseHandling or Extra while another reads it.
 type Config struct {
 	// IndicatorStyles lets htmx inject its inline <style> for request
 	// indicators (includeIndicatorStyles). That needs a style-src that allows
-	// inline styles, or a nonce set through Extra ("inlineStyleNonce").
+	// inline styles, or a nonce set through Extra ("inlineStyleNonce"). A
+	// nonce protects only when it is fresh for each response, so it needs a
+	// Config per response, not one shared value; it is also readable in the
+	// content of the htmx-config meta element, which browsers do not hide
+	// the way they hide nonce attributes.
 	IndicatorStyles bool
 
 	// AllowEval lets htmx evaluate JavaScript from the page (allowEval): hx-on
 	// attributes (see [On]), "js:" values of hx-vals and hx-headers, and
 	// hx-trigger event filters. The browser runs these only with a script-src
-	// that allows 'unsafe-eval'. Never combine it with untrusted content in
-	// those attributes.
+	// that allows 'unsafe-eval'. Without both, htmx drops the event filter of
+	// an hx-trigger and triggers on every matching event (see [Trigger]).
+	// Never combine it with untrusted content in those attributes.
 	AllowEval bool
 
 	// AllowScriptTags lets htmx run <script> elements of swapped content
-	// (allowScriptTags), subject to the script-src of the page.
+	// (allowScriptTags). htmx re-creates each such script in the page, so the
+	// script-src of the page applies: scripts from allowed sources run, and
+	// inline scripts run only when script-src allows them.
+	//
+	// Setting "inlineScriptNonce" through Extra makes htmx give every swapped
+	// script the page's nonce, so script-src no longer filters the scripts of
+	// fragments: any <script> that reaches swapped content, for example
+	// through an HTML injection bug in user content, runs. Use it only when no
+	// fragment can contain user-derived HTML; the nonce must also be fresh for
+	// each response, not a fixed value in a shared Config, and it is readable
+	// in the htmx-config meta element.
 	AllowScriptTags bool
 
 	// HistoryCacheSize is the number of pages that htmx keeps as HTML
@@ -93,7 +115,9 @@ type Config struct {
 
 	// NoErrorSwap makes htmx ignore the bodies of 4xx and 5xx responses, as
 	// htmx does by default: the "[45].." rule of [DefaultResponseHandling]
-	// does not swap. It cannot be combined with ResponseHandling.
+	// does not swap. Without it, a swapped error updates the browser history
+	// and applies the inherited hx-select like a success does, as described
+	// at DefaultResponseHandling. It cannot be combined with ResponseHandling.
 	NoErrorSwap bool
 
 	// ResponseHandling, when not empty, replaces [DefaultResponseHandling]
@@ -110,21 +134,30 @@ type Config struct {
 	DefaultSwapStyle string
 
 	// Extra holds additional htmx config keys, e.g. "timeout" or
-	// "inlineScriptNonce", written in sorted key order with the keys above.
+	// "attributesToSettle", written in sorted key order with the keys above.
 	// Values are encoded with encoding/json. Keys are not checked against the
 	// htmx config, so a misspelled key is silently ignored by htmx. A key that
 	// a field of Config controls, such as "allowEval", is an error: use the
-	// field instead.
+	// field instead. Some keys weaken the Content-Security-Policy, such as
+	// "inlineScriptNonce" (see AllowScriptTags) and "inlineStyleNonce" (see
+	// IndicatorStyles).
 	Extra map[string]any
 }
 
 // ResponseRule is an htmx response handling rule: it decides what htmx does
 // with a response whose status matches Code. See [Config.ResponseHandling].
 type ResponseRule struct {
-	// Code is a JavaScript regular expression that htmx tests against the
-	// status code as three decimal digits, e.g. "404", "[45]..", or "..."
-	// for any status. It is not anchored: "20" matches 200 and also 420, so
-	// write one character class or digit per position. It is required.
+	// Code selects the statuses that the rule applies to: exactly three
+	// positions, each a decimal digit, '.' for any digit, or a bracket class
+	// of digits and ascending digit ranges, e.g. "404", "[45]..",
+	// "[0-4]0[1-3]", or "..." for any status. It is required.
+	//
+	// htmx compiles Code as a JavaScript regular expression for every
+	// response, and tests it, unanchored, against the status as three
+	// digits; an invalid expression breaks the response handling of the
+	// whole page. So [Config.JSON] fails with [ErrInvalidConfig] for any
+	// other form, alternation and negated classes included: write one rule
+	// per alternative instead.
 	Code string `json:"code"`
 	// Swap is whether htmx swaps the response in.
 	Swap bool `json:"swap"`
@@ -156,9 +189,24 @@ type ResponseRule struct {
 // htmx's own default differs only in not swapping 4xx and 5xx responses (see
 // [Config.NoErrorSwap]); the last rule spells out what htmx does without a
 // matching rule. Swapping errors lets a handler answer a failed htmx request
-// with a fragment that shows the error, keeping the real status code; such a
-// handler usually retargets it with [SetRetarget] and [SetReswap]. A 204
+// with a fragment that shows the error, keeping the real status code. A 204
 // response swaps nothing, which suits polling that found no change.
+//
+// htmx handles a swapped error response like a successful one, whatever its
+// status. It updates the browser history for boosted elements, elements
+// with hx-push-url or hx-replace-url, and HX-Location requests, so the
+// failed URL would end up in the location bar and in the history, where a
+// reload or a forward step loads the full error page. And it swaps only the
+// part that the hx-select of the triggering element, or of an ancestor,
+// selects, which a fragment retargeted elsewhere usually does not contain:
+// the target is then emptied and the error never shows. A handler that
+// retargets an error fragment, for example into an alerts region,
+// therefore sets four headers:
+//
+//	hx2.SetRetarget(h, "#alerts")
+//	hx2.SetReswap(h, hx2.SwapInnerHTML)
+//	hx2.SetReselect(h, "unset") // swap the whole fragment, whatever hx-select
+//	hx2.SetPushURL(h, "false")  // no history update, push or replace
 //
 // Each call returns a new slice, which the caller may modify, for example to
 // add a rule in front.
@@ -188,9 +236,10 @@ const (
 // in sorted order, so that the same Config always gives the same text.
 // It fails with [ErrInvalidConfig] when HistoryCacheSize is negative,
 // DefaultSwapStyle is not one of the swap styles it lists, NoErrorSwap is
-// combined with ResponseHandling, a response rule has no Code, or an Extra
-// key is empty, controlled by a Config field, or has a value that
-// encoding/json cannot encode.
+// combined with ResponseHandling, a response rule has a Code not of the
+// form that [ResponseRule.Code] describes, or an Extra key is empty,
+// controlled by a Config field, or has a value that encoding/json cannot
+// encode.
 func (c Config) JSON() (string, error) {
 	if c.HistoryCacheSize < 0 {
 		return "", fmt.Errorf("%w: negative history cache size %d", ErrInvalidConfig, c.HistoryCacheSize)
@@ -207,6 +256,10 @@ func (c Config) JSON() (string, error) {
 	for i, r := range rules {
 		if r.Code == "" {
 			return "", fmt.Errorf("%w: response rule %d without a code", ErrInvalidConfig, i)
+		}
+		if !responseCode(r.Code) {
+			return "", fmt.Errorf("%w: response rule %d: code %q is not three digits, '.' or digit classes",
+				ErrInvalidConfig, i, r.Code)
 		}
 	}
 	values := map[string]any{
@@ -274,3 +327,46 @@ func defaultSwapStyle(s string) bool {
 	}
 	return false
 }
+
+// responseCode reports whether code has the form that [ResponseRule.Code]
+// describes: exactly three positions, each a decimal digit, '.', or a
+// non-empty bracket class of digits and ascending digit ranges such as [45]
+// or [0-4]. Such a code is a valid JavaScript regular expression that
+// matches only whole three-digit statuses.
+func responseCode(code string) bool {
+	positions := 0
+	for i := 0; i < len(code); positions++ {
+		if positions == 3 {
+			return false
+		}
+		switch c := code[i]; {
+		case c == '.' || isDigit(c):
+			i++
+		case c == '[':
+			i++
+			start := i
+			for i < len(code) && code[i] != ']' {
+				lo := code[i]
+				if !isDigit(lo) {
+					return false
+				}
+				i++
+				if i+1 < len(code) && code[i] == '-' && code[i+1] != ']' {
+					if hi := code[i+1]; !isDigit(hi) || hi < lo {
+						return false
+					}
+					i += 2
+				}
+			}
+			if i == start || i == len(code) {
+				return false
+			}
+			i++ // the closing ']'
+		default:
+			return false
+		}
+	}
+	return positions == 3
+}
+
+func isDigit(c byte) bool { return '0' <= c && c <= '9' }

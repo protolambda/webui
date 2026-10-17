@@ -151,3 +151,14 @@ func ExampleHeadersJSON() {
 	))
 	// Output: <form hx-post="/notes" hx-headers="{&#34;X-Note-Version&#34;:&#34;12&#34;}"></form>
 }
+
+// encoding/json writes a nil slice as null, which htmx sends as the text
+// "null": tag such a field omitempty to leave it out.
+func ExampleValsJSON_nil() {
+	type filter struct {
+		Tags  []string `json:"tags"`
+		Kinds []string `json:"kinds,omitempty"`
+	}
+	core.Dump(div.Div(hx2.Get("/tasks"), hx2.ValsJSON(filter{})))
+	// Output: <div hx-get="/tasks" hx-vals="{&#34;tags&#34;:null}"></div>
+}

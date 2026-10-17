@@ -13,7 +13,11 @@
 // escaping does not make a value safe where htmx reads JavaScript: hx-vals
 // and hx-headers values that start with "js:" or "javascript:", hx-vars,
 // and hx-trigger event filters in square brackets. Never build those from
-// untrusted input.
+// untrusted input. A page that disables eval (htmx.config.allowEval false,
+// or a Content-Security-Policy without 'unsafe-eval') makes the scripted
+// values do nothing, except event filters: htmx drops a filter it cannot
+// evaluate and triggers on every matching event, so a filter is never a
+// guard (see [Trigger]).
 //
 // # Core Request Attributes
 //

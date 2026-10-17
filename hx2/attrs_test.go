@@ -101,6 +101,65 @@ func TestValsJSON(gt *testing.T) {
 	})
 }
 
+// prototypeNames are the properties of JavaScript's Object.prototype. htmx
+// merges hx-vals and hx-headers into a plain object, so it drops members of
+// these names, and throws on "hasOwnProperty".
+var prototypeNames = []string{
+	"__proto__", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+	"constructor", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+	"toLocaleString", "toString", "valueOf",
+}
+
+func TestValsJSONPrototypeNames(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Run("map", func(t devtest.T) {
+		for _, name := range prototypeNames {
+			out, err := renderAttr(t, hx2.ValsJSON(map[string]string{"a": "1", name: "x"}))
+			t.Must(be.Annotate(be.ErrorIs(err, hx2.ErrInvalidValue), "name %q", name))
+			t.Must(be.Equal("", out))
+		}
+	})
+	t.Run("struct tag", func(t devtest.T) {
+		type kind struct {
+			Constructor string `json:"constructor"`
+		}
+		_, err := renderAttr(t, hx2.ValsJSON(kind{Constructor: "x"}))
+		t.Must(be.ErrorIs(err, hx2.ErrInvalidValue))
+	})
+	t.Run("escaped name", func(t devtest.T) {
+		// htmx reads the decoded name.
+		_, err := renderAttr(t, hx2.ValsJSON(json.RawMessage(`{"\u0063onstructor":1}`)))
+		t.Must(be.ErrorIs(err, hx2.ErrInvalidValue))
+	})
+	t.Run("allowed", func(t devtest.T) {
+		// Names are compared exactly, and only top-level members are merged:
+		// htmx sends a nested object as its JSON text.
+		for _, v := range []any{
+			map[string]string{"Constructor": "x", "to_string": "y", "proto": "z"},
+			map[string]any{"a": map[string]int{"constructor": 1, "hasOwnProperty": 2}},
+			map[string]any{"a": []string{"toString"}},
+			map[string]string{"name": "constructor"},
+		} {
+			_, err := renderAttr(t, hx2.ValsJSON(v))
+			t.Must(be.Annotate(be.NoError(err), "value %#v", v))
+		}
+	})
+}
+
+// encoding/json writes nil slices, maps, pointers and interfaces as null,
+// which htmx sends as the text "null"; omitempty leaves the member out.
+func TestValsJSONNullMembers(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	type filter struct {
+		Tags  []string `json:"tags"`
+		Owner *string  `json:"owner"`
+		Kinds []string `json:"kinds,omitempty"`
+		Empty []string `json:"empty"`
+	}
+	got := parsedAttr(t, hx2.ValsJSON(filter{Empty: []string{}}), "hx-vals")
+	t.Must(be.Equal(`{"tags":null,"owner":null,"empty":[]}`, got))
+}
+
 func TestHeadersJSON(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Run("sorted", func(t devtest.T) {
@@ -129,6 +188,18 @@ func TestHeadersJSON(gt *testing.T) {
 		h["X-K"] = "after"
 		h["bad name"] = "x"
 		t.Must(be.Equal(`{"X-K":"before"}`, parsedAttr(t, a, "hx-headers")))
+	})
+	t.Run("prototype names", func(t devtest.T) {
+		// All are valid tokens, so only the prototype check refuses them.
+		for _, name := range prototypeNames {
+			out, err := renderAttr(t, hx2.HeadersJSON(map[string]string{"X-Ok": "1", name: "v"}))
+			t.Must(be.Annotate(be.ErrorIs(err, hx2.ErrInvalidValue), "name %q", name))
+			t.Must(be.Equal("", out))
+		}
+		// Names are compared exactly: header names are case-insensitive, but
+		// JavaScript property names are not.
+		got := parsedAttr(t, hx2.HeadersJSON(map[string]string{"Constructor": "v", "ToString": "w"}), "hx-headers")
+		t.Must(be.Equal(`{"Constructor":"v","ToString":"w"}`, got))
 	})
 	t.Run("invalid names", func(t devtest.T) {
 		for _, name := range []string{"", "X Y", "X:Y", "X\nY", "X\x00", "naïve", "X(Y)", `"X"`, "X,Y", "X/Y", "X@Y", "{X}"} {

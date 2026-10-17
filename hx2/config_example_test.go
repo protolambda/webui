@@ -3,6 +3,7 @@ package hx2_test
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 
 	"github.com/protolambda/chord/core"
 
@@ -65,6 +66,58 @@ func ExampleDefaultResponseHandling() {
 	// [45].. swap=true error=true
 	// ... swap=false error=false
 	// <nil>
+}
+
+// A handler that answers a failed htmx request with an alert fragment for
+// the page's alerts region. htmx swaps it like a success, so the handler
+// also turns off the inherited hx-select and the history update.
+func ExampleDefaultResponseHandling_errorFragment() {
+	notFound := func(w http.ResponseWriter, r *http.Request) {
+		if hx2.ParseRequestHeaders(r.Header).Request {
+			h := w.Header()
+			hx2.AddVary(h)
+			hx2.SetRetarget(h, "#alerts")
+			hx2.SetReswap(h, hx2.SwapInnerHTML)
+			hx2.SetReselect(h, "unset")
+			hx2.SetPushURL(h, "false")
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `<div class="alert alert-danger" role="alert">Item not found.</div>`)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/items/7", nil)
+	r.Header.Set("HX-Request", "true")
+	r.Header.Set("HX-Boosted", "true")
+	w := httptest.NewRecorder()
+	notFound(w, r)
+	for _, name := range []string{"HX-Retarget", "HX-Reswap", "HX-Reselect", "HX-Push-Url", "Vary"} {
+		fmt.Printf("%s: %s\n", name, w.Header().Get(name))
+	}
+	fmt.Println(w.Code)
+	// Output:
+	// HX-Retarget: #alerts
+	// HX-Reswap: innerHTML
+	// HX-Reselect: unset
+	// HX-Push-Url: false
+	// Vary: HX-Request
+	// 404
+}
+
+// A rule code is three positions of digits, '.' and digit classes: an
+// expression that htmx could not compile, or one that matches too much,
+// fails before it reaches the page.
+func ExampleResponseRule() {
+	for _, code := range []string{"422", "[45]..", "[45", "20"} {
+		rules := append([]hx2.ResponseRule{{Code: code, Swap: true}}, hx2.DefaultResponseHandling()...)
+		_, err := hx2.Config{ResponseHandling: rules}.JSON()
+		fmt.Printf("%q: %v\n", code, err)
+	}
+	// Output:
+	// "422": <nil>
+	// "[45]..": <nil>
+	// "[45": invalid htmx config: response rule 0: code "[45" is not three digits, '.' or digit classes
+	// "20": invalid htmx config: response rule 0: code "20" is not three digits, '.' or digit classes
 }
 
 func ExampleAddVary() {

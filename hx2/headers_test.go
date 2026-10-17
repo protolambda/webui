@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/protolambda/devtest"
+	"github.com/protolambda/mustbe/be"
+
 	"github.com/protolambda/webui/hx2"
 )
 
@@ -113,42 +116,75 @@ func TestSetPlainResponseHeaders(t *testing.T) {
 	expectHeader(t, h, "HX-Redirect", "/other")
 }
 
-func TestSetLocation(t *testing.T) {
-	tests := map[string]struct {
+func TestSetLocation(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	tests := []struct {
+		name string
 		loc  hx2.Location
 		want string
 	}{
-		"path only":       {hx2.Location{Path: "/items"}, "/items"},
-		"path like json":  {hx2.Location{Path: "{x}"}, `{"path":"{x}"}`},
-		"target and swap": {hx2.Location{Path: "/items", Target: "#main", Swap: "innerHTML"}, `{"path":"/items","target":"#main","swap":"innerHTML"}`},
-		"values": {
+		{"path only", hx2.Location{Path: "/items"}, "/items"},
+		{"path like json", hx2.Location{Path: "{x}"}, `{"path":"{x}"}`},
+		{"target and swap", hx2.Location{Path: "/items", Target: "#main", Swap: "innerHTML"}, `{"path":"/items","target":"#main","swap":"innerHTML"}`},
+		{
+			"values",
 			hx2.Location{Path: "/search", Values: map[string]any{"q": "<b>", "n": 2}, Headers: map[string]string{"X-A": "b"}, Push: "false"},
 			`{"path":"/search","values":{"n":2,"q":"\u003cb\u003e"},"headers":{"X-A":"b"},"push":"false"}`,
 		},
-		"non-ascii": {hx2.Location{Path: "/caf%C3%A9", Select: "#résumé 😀"}, `{"path":"/caf%C3%A9","select":"#r\u00e9sum\u00e9 \ud83d\ude00"}`},
+		{"non-ascii", hx2.Location{Path: "/caf%C3%A9", Select: "#résumé 😀"}, `{"path":"/caf%C3%A9","select":"#r\u00e9sum\u00e9 \ud83d\ude00"}`},
+		// htmx pushes Path unless push is "false", and a push wins over a
+		// replace: Replace alone must turn the push off.
+		{"replace", hx2.Location{Path: "/items", Replace: "/r"}, `{"path":"/items","push":"false","replace":"/r"}`},
+		{"replace with push false", hx2.Location{Path: "/items", Push: "false", Replace: "/r"}, `{"path":"/items","push":"false","replace":"/r"}`},
+		{"replace true", hx2.Location{Path: "/items", Replace: "true"}, `{"path":"/items","push":"false","replace":"true"}`},
+		{"replace false", hx2.Location{Path: "/items", Replace: "false"}, `{"path":"/items","replace":"false"}`},
+		{"push", hx2.Location{Path: "/items", Push: "/p"}, `{"path":"/items","push":"/p"}`},
+		// Names are compared exactly, as JavaScript does.
+		{"near prototype names", hx2.Location{
+			Path:    "/items",
+			Values:  map[string]any{"Constructor": 1, "to_string": 2},
+			Headers: map[string]string{"Constructor": "x"},
+		}, `{"path":"/items","values":{"Constructor":1,"to_string":2},"headers":{"Constructor":"x"}}`},
 	}
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range tests {
+		t.Run(tc.name, func(t devtest.T) {
 			h := http.Header{}
-			if err := hx2.SetLocation(h, tc.loc); err != nil {
-				t.Fatalf("set: %v", err)
-			}
-			expectHeader(t, h, "HX-Location", tc.want)
+			t.Must(be.NoError(hx2.SetLocation(h, tc.loc)))
+			t.Must(be.DeepEqual([]string{tc.want}, h.Values("HX-Location")))
 		})
 	}
 
-	for name, loc := range map[string]hx2.Location{
-		"no path":   {Target: "#main"},
-		"bad value": {Path: "/x", Values: map[string]any{"f": func() {}}},
-		"empty":     {},
-	} {
-		t.Run("invalid "+name, func(t *testing.T) {
+	invalid := []struct {
+		name string
+		loc  hx2.Location
+	}{
+		{"no path", hx2.Location{Target: "#main"}},
+		{"bad value", hx2.Location{Path: "/x", Values: map[string]any{"f": func() {}}}},
+		{"empty", hx2.Location{}},
+		{"bad header name", hx2.Location{Path: "/x", Headers: map[string]string{"X-Ok": "1", "Bad Name": "v"}}},
+		{"empty header name", hx2.Location{Path: "/x", Headers: map[string]string{"": "v"}}},
+		{"non-ascii header name", hx2.Location{Path: "/x", Headers: map[string]string{"naïve": "v"}}},
+		{"push and replace", hx2.Location{Path: "/x", Push: "/p", Replace: "/r"}},
+		{"push true and replace", hx2.Location{Path: "/x", Push: "true", Replace: "/r"}},
+	}
+	for _, name := range prototypeNames {
+		invalid = append(invalid,
+			struct {
+				name string
+				loc  hx2.Location
+			}{"header " + name, hx2.Location{Path: "/x", Headers: map[string]string{"X-Ok": "1", name: "v"}}},
+			struct {
+				name string
+				loc  hx2.Location
+			}{"value " + name, hx2.Location{Path: "/x", Values: map[string]any{"ok": 1, name: "v"}}},
+		)
+	}
+	for _, tc := range invalid {
+		t.Run("invalid "+tc.name, func(t devtest.T) {
 			h := http.Header{}
 			h.Set("HX-Location", "/before")
-			if err := hx2.SetLocation(h, loc); !errors.Is(err, hx2.ErrInvalidHeader) {
-				t.Fatalf("expected ErrInvalidHeader, got %v", err)
-			}
-			expectHeader(t, h, "HX-Location", "/before")
+			t.Must(be.ErrorIs(hx2.SetLocation(h, tc.loc), hx2.ErrInvalidHeader))
+			t.Must(be.DeepEqual([]string{"/before"}, h.Values("HX-Location")))
 		})
 	}
 }
@@ -242,4 +278,18 @@ func ExampleSetLocation() {
 	// Output:
 	// /items/42
 	// {"path":"/items/42","target":"#detail","swap":"outerHTML"}
+}
+
+// htmx pushes the location unless push is "false", so a replace sends that
+// too.
+func ExampleSetLocation_replace() {
+	h := http.Header{}
+	_ = hx2.SetLocation(h, hx2.Location{Path: "/items?page=2", Target: "#list", Replace: "/items?page=2"})
+	fmt.Println(h.Get("HX-Location"))
+
+	err := hx2.SetLocation(h, hx2.Location{Path: "/items", Push: "/items", Replace: "/items"})
+	fmt.Println(err)
+	// Output:
+	// {"path":"/items?page=2","target":"#list","push":"false","replace":"/items?page=2"}
+	// invalid htmx header: HX-Location with both push and replace
 }

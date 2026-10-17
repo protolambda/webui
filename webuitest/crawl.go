@@ -115,6 +115,13 @@ type CrawlOptions struct {
 	// Contract checks every crawled page; nil means [PageContract] with
 	// [DefaultShell]() and [Rules]().
 	Contract Contract
+	// ContractFor, when set, picks the contract of each crawled page by
+	// the page's URL, for applications whose pages differ in what they
+	// load or allow, such as a page with an asset set of its own. A nil
+	// result means Contract. The URL is absolute on [BaseURL], with the
+	// path and query of the page (after redirects) and no fragment; each
+	// call gets a fresh copy, which ContractFor may keep or change.
+	ContractFor func(u *url.URL) Contract
 	// Skip, when set, excludes targets by path (for example "/logout" or
 	// a prefix of downloads) from route checks and from crawling.
 	Skip func(path string) bool
@@ -131,8 +138,26 @@ type CrawlOptions struct {
 	// ([HTMX]) and checks the fragment with FragmentContract (or
 	// [FragmentContract] with [Rules]()).
 	Fragments bool
-	// FragmentContract checks the fragments of Fragments.
+	// FragmentContract checks the fragments of Fragments; nil means
+	// [FragmentContract] with [Rules]().
 	FragmentContract Contract
+	// FragmentContractFor, when set, picks the contract of each fragment
+	// of Fragments by the fragment's URL (the hx-get target, absolute on
+	// [BaseURL], a fresh copy for each call) as ContractFor does for
+	// pages. A nil result means FragmentContract.
+	FragmentContractFor func(u *url.URL) Contract
+}
+
+// pick returns the contract of a page key: the one that pickFor returns
+// for its URL, when pickFor is set and returns one, or def.
+func pick(key string, def Contract, pickFor func(u *url.URL) Contract) Contract {
+	if pickFor == nil {
+		return def
+	}
+	if c := pickFor(mustResolve(key)); c != nil {
+		return c
+	}
+	return def
 }
 
 // CrawlReport is the result of a [Crawl]: the pages crawled, the targets
@@ -229,10 +254,11 @@ type assetRef struct {
 // page and every target it finds, collecting all problems in the report
 // instead of stopping at the first:
 //
-//   - every page answers 200 with HTML that satisfies the contract
-//     (redirects are followed when they stay on the site, up to 20 in a
-//     row as browsers follow them: a longer chain, or one that comes back
-//     to a URL of the chain, is a problem; other statuses are problems);
+//   - every page answers 200 with HTML that satisfies its contract, from
+//     ContractFor or Contract (redirects are followed when they stay on
+//     the site, up to 20 in a row as browsers follow them: a longer
+//     chain, or one that comes back to a URL of the chain, is a problem;
+//     other statuses are problems);
 //   - every link, form action, formaction, htmx request URL, sse-connect
 //     URL and asset on the site is routed (with Routes);
 //   - every link to a fragment of another crawled page names an element
@@ -339,7 +365,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			continue
 		}
 		page := res.HTML()
-		if err := contract(page).Check(t.Context()); err != nil {
+		if err := pick(q.url, contract, o.ContractFor)(page).Check(t.Context()); err != nil {
 			problem("page %s: %v", q.url, err)
 		}
 		doc, err := page.Load(t.Context())
@@ -408,7 +434,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			}
 			switch code := res.StatusCode(); code {
 			case http.StatusOK:
-				if err := fragContract(res.HTMLFragment("div")).Check(t.Context()); err != nil {
+				if err := pick(key, fragContract, o.FragmentContractFor)(res.HTMLFragment("div")).Check(t.Context()); err != nil {
 					problem("fragment %s (hx-get on %s): %v", key, fragments[key], err)
 				}
 			case http.StatusNoContent:
@@ -501,11 +527,13 @@ func pageTargets(root ct.Node) []pageTarget {
 	return out
 }
 
-// mustResolve returns the URL of a page key on the base URL.
+// mustResolve returns the URL of a page key on the base URL: a new value,
+// never the shared base.
 func mustResolve(key string) *url.URL {
 	u, err := url.Parse(key)
 	if err != nil {
-		return defaultBase
+		base := *defaultBase
+		return &base
 	}
 	return defaultBase.ResolveReference(u)
 }

@@ -26,6 +26,13 @@ type Contract func(page *ct.Subject) assertion.Assertion
 // application's tests. Requests are built as [Request] builds them, on
 // [BaseURL].
 //
+// A Client keeps no cookies: the Set-Cookie headers of a response never
+// reach the next request, so flows that depend on cookies, such as a
+// login form or a pre-authentication CSRF cookie, do not work through it
+// as a browser would run them. Attach state to each request instead, with
+// Prepare (for example a detached session) or [SendCookie] in Options, or
+// use a [Browser], which keeps a cookie jar.
+//
 // A Client is a plain value; methods take the test, so one client can
 // serve the subtests of a test. It is safe for concurrent use when its
 // fields are not changed and Prepare and the handler are.

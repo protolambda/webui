@@ -11,9 +11,11 @@ import (
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
 
+	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/session"
+	"github.com/protolambda/webui/theme"
 	"github.com/protolambda/webui/webuitest"
 )
 
@@ -170,6 +172,55 @@ func secured(t devtest.T, cfg mw.Headers, page func(w http.ResponseWriter)) *cth
 	return webuitest.Serve(t, h, webuitest.Get(t, "/"))
 }
 
+// TestAssetPolicy serves the files of an asset set behind webui's
+// security headers: they keep every header of the middleware but the
+// Cache-Control.
+func TestAssetPolicy(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	set := theme.MustAssets(theme.Options{})
+	serve := func(t devtest.T, cfg mw.Headers, target string) *cthttp.Result {
+		return webuitest.Serve(t, mw.SecurityHeaders(cfg)(set), webuitest.Get(t, target))
+	}
+	t.Run("defaults", func(t devtest.T) {
+		for info := range set.Files() {
+			res := serve(t, mw.Headers{}, info.URL)
+			t.Must(res.Status(http.StatusOK))
+			t.Mustf(webuitest.SecurityHeaders(res, webuitest.AssetPolicy()), "GET %s", info.Name)
+			t.Must(webuitest.SecurityHeaders(res, webuitest.AssetPolicyFor(mw.Headers{})))
+			err := webuitest.SecurityHeaders(res, webuitest.StrictPolicy()).Check(t.Context())
+			t.Must(be.ErrorContains(err, `has Cache-Control "public, max-age=31536000, immutable", want "no-store"`))
+		}
+	})
+	t.Run("configured", func(t devtest.T) {
+		cfg := mw.Headers{
+			CSP:          mw.StrictCSP().Add(mw.ImgSrc, "https://img.example.test"),
+			CacheControl: "private, no-cache",
+			HSTS:         mw.HSTS{MaxAge: 365 * 24 * time.Hour},
+		}
+		res := serve(t, cfg, set.URL(theme.ThemeCSS))
+		t.Must(webuitest.SecurityHeaders(res, webuitest.AssetPolicyFor(cfg)))
+		err := webuitest.SecurityHeaders(res, webuitest.AssetPolicy()).Check(t.Context())
+		t.Must(be.ErrorContains(err, "CSP img-src is 'self' data: https://img.example.test, want 'self' data:"))
+		t.Must(be.ErrorContains(err, `has Strict-Transport-Security "max-age=31536000", want none`))
+		t.Must(be.False(strings.Contains(err.Error(), "Cache-Control")))
+	})
+	t.Run("other version", func(t devtest.T) {
+		res := serve(t, mw.Headers{}, set.Prefix()+"0123456789abcdef/"+theme.ThemeCSS)
+		t.Must(res.Status(http.StatusOK))
+		err := webuitest.SecurityHeaders(res, webuitest.AssetPolicy()).Check(t.Context())
+		t.Must(be.ErrorContains(err, `has Cache-Control "no-cache", want "public, max-age=31536000, immutable"`))
+		p := webuitest.AssetPolicy()
+		p.Headers.CacheControl = asset.CacheRevalidate
+		t.Must(webuitest.SecurityHeaders(res, p))
+	})
+	t.Run("not found", func(t devtest.T) {
+		// An unknown file keeps the middleware's Cache-Control.
+		res := serve(t, mw.Headers{}, set.Prefix()+"x/missing.css")
+		t.Must(res.Status(http.StatusNotFound))
+		t.Must(webuitest.SecurityHeaders(res, webuitest.StrictPolicy()))
+	})
+}
+
 func TestSecurityHeaders(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	plain := func(http.ResponseWriter) {}
@@ -277,6 +328,7 @@ func TestSecurityHeaders(gt *testing.T) {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		})
 		t.Must(webuitest.SecurityHeaders(res, webuitest.Policy{Headers: mw.Headers{CacheControl: "public, max-age=31536000, immutable"}}))
+		t.Must(webuitest.SecurityHeaders(res, webuitest.AssetPolicy()))
 	})
 	t.Run("hash sources keep their case", func(t devtest.T) {
 		csp := mw.StrictCSP().Add(mw.ScriptSrc, "'sha256-abc='")

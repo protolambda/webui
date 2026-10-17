@@ -14,23 +14,24 @@
 // "/assets/app/", the file "app.css" is at "/assets/app/<version>/app.css".
 // A new build that changes any file of the set changes the version, and so
 // every URL of the set. Responses for the current version are cacheable
-// forever ("immutable"). A request for an older or unknown version gets the
-// current content with "no-cache": a page loaded before an upgrade still
-// gets the files that did not change, and the integrity values of its
-// stylesheets and scripts reject those that did. Files that browsers fetch
-// without integrity metadata, such as the fonts and images a stylesheet
-// refers to and the modules that a module imports, are served at their
-// current content. Relative references between files of one set, such as a
-// stylesheet that loads a font from "fonts/", keep working because the files
-// share the version directory.
+// forever ([CacheImmutable]). A request for an older or unknown version
+// gets the current content with [CacheRevalidate]: a page loaded before an
+// upgrade still gets the files that did not change, and the integrity
+// values of its stylesheets and scripts reject those that did. Files that
+// browsers fetch without integrity metadata, such as the fonts and images
+// a stylesheet refers to and the modules that a module imports, are served
+// at their current content. Relative references between files of one set,
+// such as a stylesheet that loads a font from "fonts/", keep working
+// because the files share the version directory.
 //
 // Responses carry an exact Content-Type from a fixed table (not the operating
 // system's MIME database), "X-Content-Type-Options: nosniff", a
 // Content-Length, an ETag that is a digest of the bytes of the representation
 // (identity or gzip), and, where it saves space, a gzip encoding computed
 // when the set is built. A response without the content, such as the 412 of
-// a failed If-Match, carries "Cache-Control: no-store" instead of the file's
-// cache policy and ETag.
+// a failed If-Match, carries [CacheNoStore] instead of the file's cache
+// policy and ETag. The Cache-Control values are exported constants, so that
+// tests of an application's headers can expect them.
 //
 // # Pages
 //
@@ -645,20 +646,37 @@ func scriptElem(info Info) elem.Node {
 	)()
 }
 
-// immutable is the cache policy of the current version: a year, the
-// longest that caches honor, without revalidation.
-const immutable = "public, max-age=31536000, immutable"
+// The Cache-Control values of the responses of [Set.ServeHTTP]. They
+// replace any Cache-Control set before, such as the "no-store" default of
+// webui's security headers middleware.
+const (
+	// CacheImmutable is the cache policy of the current version of a file:
+	// any cache may keep it for a year, the longest that caches honor,
+	// without revalidation. The URL changes when the content does.
+	CacheImmutable = "public, max-age=31536000, immutable"
+	// CacheRevalidate is the cache policy of a file requested under another
+	// version directory than the current one: caches may store it but must
+	// revalidate it before every use, since the same URL serves whatever
+	// content is current.
+	CacheRevalidate = "no-cache"
+	// CacheNoStore is the cache policy of a response without the content
+	// other than 304, such as a 412 or 416: no cache stores it, so that it
+	// is never taken for the file.
+	CacheNoStore = "no-store"
+)
 
 // ServeHTTP serves the files of the set for GET and HEAD requests below its
 // prefix, and answers 404 for unknown files and 405 for other methods.
 //
-// The current version is served as immutable. Any other version directory
-// gets the current content with "Cache-Control: no-cache", see the package
-// documentation. Conditional requests (If-None-Match, If-Match) and ranges
-// are handled by [http.ServeContent]; ranges apply to the representation
-// sent, gzip or not, each with its own ETag. A response without the content
-// other than 304, such as a 412 or 416, has "Cache-Control: no-store" and no
-// ETag or Content-Encoding, so that no cache stores it as the file.
+// The current version is served with [CacheImmutable]. Any other version
+// directory gets the current content with [CacheRevalidate], see the
+// package documentation. Conditional requests (If-None-Match, If-Match) and
+// ranges are handled by [http.ServeContent]; ranges apply to the
+// representation sent, gzip or not, each with its own ETag. A response
+// without the content other than 304, such as a 412 or 416, has
+// [CacheNoStore] and no ETag or Content-Encoding, so that no cache stores it
+// as the file. The 404 and 405 answers set no Cache-Control: they keep the
+// one of the middleware, if any.
 func (s *Set) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("X-Content-Type-Options", "nosniff")
@@ -683,9 +701,9 @@ func (s *Set) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if version == s.version {
-		h.Set("Cache-Control", immutable)
+		h.Set("Cache-Control", CacheImmutable)
 	} else {
-		h.Set("Cache-Control", "no-cache")
+		h.Set("Cache-Control", CacheRevalidate)
 	}
 	h.Set("Content-Type", e.info.ContentType)
 	cw := &contentWriter{ResponseWriter: w}
@@ -730,7 +748,7 @@ func (w *contentWriter) WriteHeader(code int) {
 		default:
 			h.Del("Content-Encoding")
 			h.Del("Etag")
-			h.Set("Cache-Control", "no-store")
+			h.Set("Cache-Control", CacheNoStore)
 		}
 	}
 	w.ResponseWriter.WriteHeader(code)

@@ -204,6 +204,41 @@ func TestBrowserHTTP2AndInsecure(gt *testing.T) {
 	})
 }
 
+// TestCookieKeeping pins the documented difference between the harnesses:
+// a Client keeps no cookies, a Browser keeps them, Secure ones over plain
+// http on localhost too, as browsers do.
+func TestCookieKeeping(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /set", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "__Host-items", Value: "kept", Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /get", func(w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie("__Host-items")
+		if err != nil {
+			http.Error(w, "no cookie", http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, c.Value)
+	})
+	t.Run("client", func(t devtest.T) {
+		c := &webuitest.Client{Handler: mux}
+		t.Must(c.Get(t, "/set").Status(http.StatusNoContent))
+		t.Must(c.Get(t, "/get").Status(http.StatusNotFound))
+		t.Must(c.Get(t, "/get", webuitest.SendCookie("__Host-items", "sent")).Body(ct.Exact("sent")))
+	})
+	for name, o := range map[string]webuitest.BrowserOptions{"https": {}, "insecure": {Insecure: true}} {
+		t.Run("browser "+name, func(t devtest.T) {
+			b := webuitest.NewBrowser(t, mux, o)
+			t.Must(b.Get(t, "/get").Status(http.StatusNotFound))
+			t.Must(b.Get(t, "/set").Status(http.StatusNoContent))
+			t.Must(b.Get(t, "/get").Body(ct.Exact("kept")))
+			t.Must(b.Fork().Get(t, "/get").Status(http.StatusNotFound))
+		})
+	}
+}
+
 func TestBrowserStream(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	_, h := newAccountApp(t, webuitest.BaseURL, false)

@@ -208,6 +208,15 @@ func TestExplicitContentType(gt *testing.T) {
 	t.Must(be.Equal("application/octet-stream", rec.Header().Get("Content-Type")))
 }
 
+// TestCacheControlValues pins the exported values: they are what browsers
+// and caches see, and what tests of an application's headers expect.
+func TestCacheControlValues(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal("public, max-age=31536000, immutable", asset.CacheImmutable))
+	t.Must(be.Equal("no-cache", asset.CacheRevalidate))
+	t.Must(be.Equal("no-store", asset.CacheNoStore))
+}
+
 func TestServe(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	s := testSet(t)
@@ -216,7 +225,7 @@ func TestServe(gt *testing.T) {
 		res := cthttp.Serve(s, httptest.NewRequestWithContext(t.Context(), http.MethodGet, s.URL("app.js"), nil))
 		t.Must(res.Status(http.StatusOK))
 		t.Must(res.Header("Content-Type", ct.Exact("text/javascript; charset=utf-8")))
-		t.Must(res.Header("Cache-Control", ct.Exact("public, max-age=31536000, immutable")))
+		t.Must(res.Header("Cache-Control", ct.Exact(asset.CacheImmutable)))
 		t.Must(res.Header("X-Content-Type-Options", ct.Exact("nosniff")))
 		t.Must(res.Header("ETag", ct.Prefix(`"`)))
 		t.Must(be.DeepEqual(appJS, res.Bytes()))
@@ -230,7 +239,7 @@ func TestServe(gt *testing.T) {
 	t.Run("other version", func(t devtest.T) {
 		rec := get(t, s, http.MethodGet, "/assets/app/0123456789abcdef/app.js", nil)
 		t.Must(be.Equal(http.StatusOK, rec.Code))
-		t.Must(be.Equal("no-cache", rec.Header().Get("Cache-Control")))
+		t.Must(be.Equal(asset.CacheRevalidate, rec.Header().Get("Cache-Control")))
 		t.Must(be.DeepEqual(appJS, rec.Body.Bytes()))
 	})
 	t.Run("head", func(t devtest.T) {
@@ -254,7 +263,7 @@ func TestServe(gt *testing.T) {
 		for _, accept := range []string{"", "gzip"} {
 			rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"If-Match": {`"other"`}, "Accept-Encoding": {accept}})
 			t.Must(be.Equal(http.StatusPreconditionFailed, rec.Code))
-			t.Must(be.Equal("no-store", rec.Header().Get("Cache-Control")))
+			t.Must(be.Equal(asset.CacheNoStore, rec.Header().Get("Cache-Control")))
 			t.Must(be.Equal("", rec.Header().Get("ETag")))
 			t.Must(be.Equal("", rec.Header().Get("Content-Encoding")))
 			t.Must(be.Equal("", rec.Header().Get("Content-Length")))
@@ -263,13 +272,13 @@ func TestServe(gt *testing.T) {
 		for _, im := range []string{"*", get(t, s, http.MethodGet, s.URL("app.css"), nil).Header().Get("ETag")} {
 			rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"If-Match": {im}})
 			t.Must(be.Equal(http.StatusOK, rec.Code))
-			t.Must(be.Equal("public, max-age=31536000, immutable", rec.Header().Get("Cache-Control")))
+			t.Must(be.Equal(asset.CacheImmutable, rec.Header().Get("Cache-Control")))
 		}
 	})
 	t.Run("range not satisfiable", func(t devtest.T) {
 		rec := get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Range": {"bytes=100000-"}, "Accept-Encoding": {"gzip"}})
 		t.Must(be.Equal(http.StatusRequestedRangeNotSatisfiable, rec.Code))
-		t.Must(be.Equal("no-store", rec.Header().Get("Cache-Control")))
+		t.Must(be.Equal(asset.CacheNoStore, rec.Header().Get("Cache-Control")))
 		t.Must(be.Equal("", rec.Header().Get("ETag")))
 		t.Must(be.Equal("", rec.Header().Get("Content-Encoding")))
 	})
@@ -285,6 +294,18 @@ func TestServe(gt *testing.T) {
 			rec := get(t, s, http.MethodGet, target, nil)
 			t.Must(be.Equal(http.StatusNotFound, rec.Code))
 			t.Must(be.Equal("nosniff", rec.Header().Get("X-Content-Type-Options")))
+			t.Must(be.Equal("", rec.Header().Get("Cache-Control")))
+		}
+	})
+	t.Run("not found keeps the default cache policy", func(t devtest.T) {
+		// The Cache-Control that a middleware set before stays on answers
+		// without a file.
+		for _, target := range []string{"/assets/app/" + s.Version() + "/missing.css", "/assets/app/app.css"} {
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Cache-Control", "no-store")
+			s.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil))
+			t.Must(be.Equal(http.StatusNotFound, rec.Code))
+			t.Must(be.Equal("no-store", rec.Header().Get("Cache-Control")))
 		}
 	})
 	t.Run("method not allowed", func(t devtest.T) {
@@ -358,7 +379,7 @@ func TestGzipRepresentation(gt *testing.T) {
 		t.Must(be.Equal(http.StatusNotModified, rec.Code))
 		t.Must(be.Equal("Accept-Encoding", rec.Header().Get("Vary")))
 		t.Must(be.Equal("", rec.Header().Get("Content-Encoding")))
-		t.Must(be.Equal("public, max-age=31536000, immutable", rec.Header().Get("Cache-Control")))
+		t.Must(be.Equal(asset.CacheImmutable, rec.Header().Get("Cache-Control")))
 		t.Must(be.Equal(0, rec.Body.Len()))
 		// The tag of the other representation does not match.
 		rec = get(t, s, http.MethodGet, s.URL("app.css"), http.Header{"Accept-Encoding": {"gzip"}, "If-None-Match": {plainETag}})

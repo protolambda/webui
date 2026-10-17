@@ -228,7 +228,7 @@ func TestWebErrorsAgreement(gt *testing.T) {
 		frag := c.Fragment(t, res, http.StatusConflict, "div")
 		t.Must(frag.Find(ct.Role("alert")).Matches(ct.InnerTextMatches(ct.Contains("The task changed meanwhile."))))
 		t.Must(webuitest.HXRetarget(res, ct.Exact("#"+page.AlertsID)))
-		t.Must(res.Header(hx2.HeaderReswap, ct.Exact("innerHTML")))
+		t.Must(res.Header(hx2.HeaderReswap, ct.Exact(web.ErrorReswap)))
 		t.Must(be.False(strings.Contains(string(res.Bytes()), "version mismatch")))
 	})
 	t.Run("error pages", func(t devtest.T) {

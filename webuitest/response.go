@@ -12,6 +12,7 @@ import (
 	"github.com/protolambda/chord/ct/cthttp"
 	"github.com/protolambda/mustbe/assertion"
 
+	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/hx2"
 	"github.com/protolambda/webui/mw"
 )
@@ -250,7 +251,9 @@ func (a noCookies) Check(ctx context.Context) error {
 // headers that mw.SecurityHeaders sends for Headers. As in mw.Headers, a
 // zero field means mw's default, so the zero Policy (and [StrictPolicy])
 // expects webui's strict defaults, and [PolicyFor] the headers of an
-// application's own configuration.
+// application's own configuration. [AssetPolicy] and [AssetPolicyFor]
+// expect the same of the files of an asset.Set, which replace the
+// Cache-Control.
 type Policy struct {
 	// Headers is the configuration of mw.SecurityHeaders the response
 	// should reflect.
@@ -280,6 +283,27 @@ func PolicyFor(h mw.Headers) Policy {
 	return Policy{Headers: h}
 }
 
+// AssetPolicy returns the policy of the files of an asset.Set served
+// behind webui's default security headers: [StrictPolicy] with the
+// Cache-Control of the current version of a file, [asset.CacheImmutable],
+// which the set sends in place of the middleware's "no-store". Every other
+// header is the middleware's.
+//
+// A file requested under an older version directory carries
+// [asset.CacheRevalidate] instead; expect it with
+// p.Headers.CacheControl = asset.CacheRevalidate.
+func AssetPolicy() Policy {
+	return AssetPolicyFor(StrictPolicy().Headers)
+}
+
+// AssetPolicyFor returns the policy of the files of an asset.Set served
+// behind mw.SecurityHeaders(h): [PolicyFor](h) with the Cache-Control
+// [asset.CacheImmutable], see [AssetPolicy].
+func AssetPolicyFor(h mw.Headers) Policy {
+	h.CacheControl = asset.CacheImmutable
+	return Policy{Headers: h}
+}
+
 // unsafeSources are the CSP keywords that re-enable inline code or eval.
 var unsafeSources = []string{"'unsafe-inline'", "'unsafe-eval'", "'unsafe-hashes'"}
 
@@ -294,7 +318,8 @@ var unsafeSources = []string{"'unsafe-inline'", "'unsafe-eval'", "'unsafe-hashes
 // Cross-Origin-Resource-Policy; and Strict-Transport-Security when p sets
 // HSTS, absent otherwise. Unless p.AllowUnsafe, no directive may allow
 // 'unsafe-inline', 'unsafe-eval' or 'unsafe-hashes'. The failure lists
-// every difference.
+// every difference. Files of an asset.Set replace the Cache-Control:
+// check them with [AssetPolicy] or [AssetPolicyFor].
 func SecurityHeaders(res *cthttp.Result, p Policy) assertion.Assertion {
 	return securityHeaders{res: res, p: p}
 }

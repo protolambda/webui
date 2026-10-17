@@ -23,9 +23,14 @@ const InsecureBaseURL = "http://localhost"
 type BrowserOptions struct {
 	// Insecure serves plain http at [InsecureBaseURL] instead of https at
 	// [BaseURL]: a loopback name, as plain http sites are loopback sites
-	// for mw.ParseSite. Secure and __Host- cookies, which webui's sessions
-	// use by default, then do not reach the server, and mw.SameOrigin
-	// accepts requests without origin headers on loopback sites.
+	// for mw.ParseSite, and mw.SameOrigin accepts requests without origin
+	// headers on loopback sites. Browsers treat localhost as a secure
+	// origin, and so does the cookie jar: Secure and __Host- cookies,
+	// which webui's sessions use by default, are kept and sent over plain
+	// http there. A test on it therefore cannot show that such cookies
+	// fail on a plain http site; configure the application as it is
+	// served (for example with insecure cookies) and check the cookie
+	// attributes with [Cookie].
 	Insecure bool
 	// HTTP2 enables HTTP/2 (with TLS only).
 	HTTP2 bool
@@ -39,8 +44,12 @@ type BrowserOptions struct {
 
 // Browser is a client of a real HTTP server (httptest) that serves a
 // handler: the full-stack harness, with cookies end to end, middleware
-// that needs connections (deadlines), and streams. It keeps a cookie jar,
-// does not follow redirects (tests assert them, see [Location]), and
+// that needs connections (deadlines), and streams. It keeps a cookie jar
+// ([Browser.Jar]), as a [Client] does not: the cookies that responses set
+// go with the following requests as a browser sends them (by domain, path,
+// expiry and Secure), so anonymous flows, logins and pre-authentication
+// CSRF cookies work as in production; [Browser.Fork] starts another jar.
+// It does not follow redirects (tests assert them, see [Location]), and
 // sends browser-realistic requests as [Request] builds them.
 //
 // The server listens on a loopback port, but the browser names it

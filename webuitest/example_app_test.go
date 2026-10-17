@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"testing/fstest"
 
 	"github.com/protolambda/chord/core/attr"
 	"github.com/protolambda/chord/core/elem"
@@ -16,6 +17,7 @@ import (
 	"github.com/protolambda/chord/html/group/list"
 	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/text"
+	"github.com/protolambda/mustbe/assertion"
 
 	"github.com/protolambda/webui/asset"
 	"github.com/protolambda/webui/bs"
@@ -265,7 +267,7 @@ func ExampleClient_Fragment() {
 	t.Must(frag.Find(ct.Role("alert")).Count(1))
 	fmt.Println(res.Headers().Get("HX-Retarget"), res.Headers().Get("HX-Reswap"))
 	// Output:
-	// #alerts innerHTML
+	// #alerts innerHTML show:top
 }
 
 // The request options build what a browser and htmx send: here an htmx
@@ -313,4 +315,71 @@ func ExampleDefaultShell() {
 	// stylesheet app.css
 	// script app.js module: false
 	// script app.mjs module: true
+}
+
+// AssetPolicy expects the security headers of webui's middleware on the
+// files of an asset set, which replace the Cache-Control with their own.
+func ExampleAssetPolicy() {
+	t := webuitest.PrintT{}
+	set := appAssets()
+	mux := http.NewServeMux()
+	mux.Handle(set.Pattern(), set)
+	h := mw.SecurityHeaders(mw.Headers{})(mux)
+	res := webuitest.Serve(t, h, webuitest.Get(t, set.URL("app.css")))
+	t.Must(webuitest.SecurityHeaders(res, webuitest.AssetPolicy()))
+	fmt.Println(res.Headers().Get("Cache-Control") == asset.CacheImmutable)
+	// The policy of pages does not fit.
+	t.Must(webuitest.SecurityHeaders(res, webuitest.StrictPolicy()))
+	// Output:
+	// true
+	// assertion failed: selected nodes do not match: security headers of GET /assets/app/94e344c36323b020/app.css:
+	//   has Cache-Control "public, max-age=31536000, immutable", want "no-store"
+}
+
+// ContractFor picks the contract of each page by its URL: here the report
+// page loads a second asset set, which the shell of the other pages does
+// not expect.
+func ExampleCrawl_contractFor() {
+	t := webuitest.PrintT{}
+	set := appAssets()
+	charts := asset.Must(asset.New(asset.Options{
+		Prefix: "/assets/charts/",
+		FS:     fstest.MapFS{"charts.js": {Data: []byte("\"use strict\";")}},
+		Files:  []asset.File{{Name: "charts.js"}},
+	}))
+	doc := func(title string, sets []*asset.Set, body ...elem.Node) elem.Node {
+		return page.Document{Title: title, Assets: sets, Body: section.Main()(append([]elem.Node{section.H1()(text.Text(title))}, body...)...)}
+	}
+	mux := http.NewServeMux()
+	mux.Handle(set.Pattern(), set)
+	mux.Handle(charts.Pattern(), charts)
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		_ = web.Render(w, r, http.StatusOK, doc("Projects", []*asset.Set{set}, text.A(text.Href("/report"))(text.Text("Report"))))
+	})
+	mux.HandleFunc("GET /report", func(w http.ResponseWriter, r *http.Request) {
+		_ = web.Render(w, r, http.StatusOK, doc("Report", []*asset.Set{set, charts}))
+	})
+	c := &webuitest.Client{Handler: mux}
+
+	plain := webuitest.DefaultShell(set)
+	contract := func(p *ct.Subject) assertion.Assertion { return webuitest.PageContract(p, plain) }
+	report := webuitest.Crawl(t, c, webuitest.CrawlOptions{Contract: contract})
+	fmt.Println(len(report.Problems), "problem without ContractFor")
+
+	withCharts := webuitest.DefaultShell(set, charts)
+	report = webuitest.Crawl(t, c, webuitest.CrawlOptions{
+		Contract: contract,
+		ContractFor: func(u *url.URL) webuitest.Contract {
+			if u.Path == "/report" {
+				return func(p *ct.Subject) assertion.Assertion { return webuitest.PageContract(p, withCharts) }
+			}
+			return nil // Contract
+		},
+		Assets: true,
+	})
+	t.Must(report)
+	fmt.Println(report.Pages)
+	// Output:
+	// 1 problem without ContractFor
+	// [/ /report]
 }

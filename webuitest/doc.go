@@ -42,14 +42,19 @@
 // CSRF field to hand-built posts, checks pages against a contract
 // ([Client.Page]), and submits the page's own forms as a browser would
 // ([FormData], [Client.Submit], with [PageURL] for actions relative to the
-// page). [Browser] does the same over a real test server with TLS and a
-// cookie jar, for full-stack tests.
+// page). A Client keeps no cookies: attach state to its requests (Prepare,
+// [SendCookie]). [Browser] is the same harness over a real test server
+// with TLS and a cookie jar, for full-stack tests and for flows that need
+// cookies, such as logins.
 //
 // [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookies] and
 // [SecurityHeaders] assert responses; cookie values are never printed.
+// [StrictPolicy] and [PolicyFor] are the security headers of pages,
+// [AssetPolicy] and [AssetPolicyFor] those of asset files.
 // [CrossSiteProbes], [RejectsCrossSite], [OpenRedirectVectors] and
 // [Hostile] supply attack inputs. [Crawl] follows an application's links
-// and checks every page and target it finds. [Logs] captures log records,
+// and checks every page and target it finds, with a contract per page
+// when [CrawlOptions.ContractFor] is set. [Logs] captures log records,
 // and [Logs.NotLogged] checks that no secret reached them.
 //
 // [Descendants], [Elements], [AttrIs], [HasClass] and [Closest] walk ct

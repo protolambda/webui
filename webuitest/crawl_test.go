@@ -163,6 +163,72 @@ func TestCrawlProblems(gt *testing.T) {
 	})
 }
 
+func TestCrawlContractFor(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	mux := site()
+	c := &webuitest.Client{Handler: mux}
+	fails := func(p *ct.Subject) assertion.Assertion { return be.True(false) }
+	var pages, fragments []string
+	report := webuitest.Crawl(t, c, webuitest.CrawlOptions{
+		Contract: fails,
+		ContractFor: func(u *url.URL) webuitest.Contract {
+			pages = append(pages, u.String())
+			defer func() { u.Path = "/changed" }() // The crawl keeps its own copy.
+			if u.Path == "/tasks" {
+				return fails
+			}
+			return func(p *ct.Subject) assertion.Assertion { return webuitest.PageContract(p, webuitest.DefaultShell()) }
+		},
+		Fragments:        true,
+		FragmentContract: fails,
+		FragmentContractFor: func(u *url.URL) webuitest.Contract {
+			fragments = append(fragments, u.String())
+			return func(f *ct.Subject) assertion.Assertion { return webuitest.FragmentContract(f) }
+		},
+	})
+	// "/old" redirects to "/tasks", which ContractFor sees once, by the
+	// URL of the page itself.
+	t.Must(be.DeepEqual([]string{webuitest.BaseURL + "/", webuitest.BaseURL + "/tasks"}, pages))
+	t.Must(be.DeepEqual([]string{webuitest.BaseURL + "/tasks/count"}, fragments))
+	t.Must(be.DeepEqual([]string{"/", "/tasks"}, report.Pages))
+	t.Must(be.Len(report.Problems, 1))
+	t.Must(be.Substring(report.Problems[0], "page /tasks: "))
+
+	t.Run("nil picks the default", func(t devtest.T) {
+		var calls atomic.Int32
+		none := func(*url.URL) webuitest.Contract { calls.Add(1); return nil }
+		report := webuitest.Crawl(t, c, webuitest.CrawlOptions{
+			Contract:            fails,
+			ContractFor:         none,
+			Fragments:           true,
+			FragmentContract:    fails,
+			FragmentContractFor: none,
+		})
+		t.Must(be.Equal(int32(3), calls.Load()))
+		err := report.Check(t.Context())
+		t.Must(be.ErrorContains(err, "page /: "))
+		t.Must(be.ErrorContains(err, "page /tasks: "))
+		t.Must(be.ErrorContains(err, "fragment /tasks/count (hx-get on /tasks): "))
+		// Without Contract, nil is the default contract.
+		report = webuitest.Crawl(t, c, webuitest.CrawlOptions{ContractFor: none, Fragments: true, FragmentContractFor: none})
+		t.Must(report)
+	})
+	t.Run("query", func(t devtest.T) {
+		var got []string
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			render(w, r, http.StatusOK, validDoc().with(func(d *docSpec) {
+				d.body = []elem.Node{section.Main(attr.ID("main"))(text.A(text.Href("/?page=2#main"))(text.Text("Next")))}
+			}).node())
+		})
+		webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{ContractFor: func(u *url.URL) webuitest.Contract {
+			got = append(got, u.Path+" "+u.RawQuery+" "+u.Fragment)
+			return nil
+		}})
+		t.Must(be.DeepEqual([]string{"/  ", "/ page=2 "}, got))
+	})
+}
+
 func TestCrawlRedirects(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Run("chain that mints new URLs", func(t devtest.T) {

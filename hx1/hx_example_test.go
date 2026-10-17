@@ -81,3 +81,15 @@ func Example_combined() {
 	))
 	// Output: <div id="search-results" hx-get="/search" hx-trigger="keyup changed delay:500ms from:#search-input" hx-target="#search-results" hx-swap="innerHTML"></div>
 }
+
+// hx-sse is htmx 1 only; htmx 2 pages use the sse extension through hx2.
+func ExampleSSE() {
+	core.Dump(div.Div(hx1.SSE("connect:/events swap:message")))
+	// Output: <div hx-sse="connect:/events swap:message"></div>
+}
+
+// hx-ws is htmx 1 only; htmx 2 pages use the ws extension through hx2.
+func ExampleWS() {
+	core.Dump(div.Div(hx1.WS("connect:/chat")))
+	// Output: <div hx-ws="connect:/chat"></div>
+}

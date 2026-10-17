@@ -1,0 +1,276 @@
+package hx2
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/protolambda/chord/core/elem"
+	"github.com/protolambda/chord/html/meta"
+)
+
+// ErrInvalidConfig indicates a [Config] that cannot be written as an htmx
+// configuration, such as a negative history cache size or a [Config.Extra]
+// value that is not representable as JSON.
+var ErrInvalidConfig = errors.New("invalid htmx config")
+
+// Config is the htmx configuration of a page. [Config.Meta] renders it as
+// <meta name="htmx-config" content="{...}">, which htmx reads once, when it
+// initializes.
+//
+// The zero value is webui's secure configuration, and the fields opt into
+// htmx behaviors that need a weaker Content-Security-Policy or that keep
+// page content in the browser. With the zero value, htmx:
+//
+//   - injects no inline <style> for request indicators (includeIndicatorStyles
+//     false), which a strict style-src would block; style .htmx-indicator in a
+//     same-origin stylesheet instead;
+//   - never compiles JavaScript from the page (allowEval false): hx-on
+//     attributes, "js:" and "javascript:" values of hx-vals and hx-headers,
+//     and hx-trigger event filters in square brackets do nothing;
+//   - does not run <script> elements of swapped content (allowScriptTags
+//     false);
+//   - keeps no snapshots of page HTML in sessionStorage (historyCacheSize 0),
+//     so forms, tokens and other page content are not stored client side; on
+//     back and forward navigation the browser reloads the page from the
+//     server (refreshOnHistoryMiss true);
+//   - sends no HX-Request header with history restore requests, if it makes
+//     any (historyRestoreAsHxRequest false; see NoRefreshOnHistoryMiss), so
+//     a handler that answers htmx requests with fragments answers them with
+//     full pages;
+//   - only requests URLs of the page's own origin (selfRequestsOnly true);
+//   - swaps the responses of [DefaultResponseHandling]: 2xx responses except
+//     204, and also 4xx and 5xx responses, so a server-rendered error fragment
+//     shows without client-side script.
+//
+// Each of these keys is written explicitly, so the page does not depend on
+// the defaults of a particular htmx release. The keys were checked against
+// htmx 2.0.10.
+//
+// A Config is a plain value; it is safe for concurrent use as long as no
+// goroutine modifies its ResponseHandling or Extra while another reads it.
+type Config struct {
+	// IndicatorStyles lets htmx inject its inline <style> for request
+	// indicators (includeIndicatorStyles). That needs a style-src that allows
+	// inline styles, or a nonce set through Extra ("inlineStyleNonce").
+	IndicatorStyles bool
+
+	// AllowEval lets htmx evaluate JavaScript from the page (allowEval): hx-on
+	// attributes (see [On]), "js:" values of hx-vals and hx-headers, and
+	// hx-trigger event filters. The browser runs these only with a script-src
+	// that allows 'unsafe-eval'. Never combine it with untrusted content in
+	// those attributes.
+	AllowEval bool
+
+	// AllowScriptTags lets htmx run <script> elements of swapped content
+	// (allowScriptTags), subject to the script-src of the page.
+	AllowScriptTags bool
+
+	// HistoryCacheSize is the number of pages that htmx keeps as HTML
+	// snapshots in sessionStorage for history navigation (historyCacheSize).
+	// Zero keeps none. A snapshot holds everything the page showed, form
+	// values and hidden tokens included: mark pages with sensitive content
+	// with [History](false) when the cache is enabled. It must not be
+	// negative.
+	HistoryCacheSize int
+
+	// NoRefreshOnHistoryMiss makes htmx restore a page missing from the
+	// history cache with a history restore request (a GET with the header
+	// HX-History-Restore-Request: true) whose response it swaps into the
+	// page, instead of reloading the page (refreshOnHistoryMiss false). The
+	// handler must then answer such requests with a full page.
+	NoRefreshOnHistoryMiss bool
+
+	// HistoryRestoreAsHXRequest makes htmx send HX-Request: true with history
+	// restore requests too (historyRestoreAsHxRequest), as htmx does by
+	// default.
+	HistoryRestoreAsHXRequest bool
+
+	// AllowCrossOrigin lets htmx request URLs of other origins
+	// (selfRequestsOnly false). The connect-src of the page still applies.
+	AllowCrossOrigin bool
+
+	// NoErrorSwap makes htmx ignore the bodies of 4xx and 5xx responses, as
+	// htmx does by default: the "[45].." rule of [DefaultResponseHandling]
+	// does not swap. It cannot be combined with ResponseHandling.
+	NoErrorSwap bool
+
+	// ResponseHandling, when not empty, replaces [DefaultResponseHandling]
+	// (responseHandling). htmx uses the first rule whose Code matches the
+	// status of a response, and swaps nothing when no rule matches.
+	ResponseHandling []ResponseRule
+
+	// DefaultSwapStyle is the swap style of elements without hx-swap
+	// (defaultSwapStyle); empty leaves the htmx default, [SwapInnerHTML]. It
+	// must be one of [SwapInnerHTML], [SwapOuterHTML], [SwapBeforeBegin],
+	// [SwapAfterBegin], [SwapBeforeEnd], [SwapAfterEnd], [SwapDelete], or
+	// [SwapNone]: htmx falls back to it for unknown swap styles, and falling
+	// back to an unknown style, or to [SwapTextContent], never ends.
+	DefaultSwapStyle string
+
+	// Extra holds additional htmx config keys, e.g. "timeout" or
+	// "inlineScriptNonce", written in sorted key order with the keys above.
+	// Values are encoded with encoding/json. Keys are not checked against the
+	// htmx config, so a misspelled key is silently ignored by htmx. A key that
+	// a field of Config controls, such as "allowEval", is an error: use the
+	// field instead.
+	Extra map[string]any
+}
+
+// ResponseRule is an htmx response handling rule: it decides what htmx does
+// with a response whose status matches Code. See [Config.ResponseHandling].
+type ResponseRule struct {
+	// Code is a JavaScript regular expression that htmx tests against the
+	// status code as three decimal digits, e.g. "404", "[45]..", or "..."
+	// for any status. It is not anchored: "20" matches 200 and also 420, so
+	// write one character class or digit per position. It is required.
+	Code string `json:"code"`
+	// Swap is whether htmx swaps the response in.
+	Swap bool `json:"swap"`
+	// Error is whether htmx treats the response as an error: it then fires
+	// htmx:responseError (after the swap, if any) and logs the status.
+	Error bool `json:"error,omitempty"`
+	// IgnoreTitle makes htmx ignore a <title> in the response.
+	IgnoreTitle bool `json:"ignoreTitle,omitempty"`
+	// Select is a CSS selector for the part of the response that is swapped
+	// in, as hx-select.
+	Select string `json:"select,omitempty"`
+	// Target is a CSS selector for the element that the response is swapped
+	// into, as hx-target.
+	Target string `json:"target,omitempty"`
+	// SwapOverride is the swap style of the response, as hx-swap.
+	SwapOverride string `json:"swapOverride,omitempty"`
+	// Event is the name of an event that htmx triggers before the swap;
+	// a listener can cancel the swap.
+	Event string `json:"event,omitempty"`
+}
+
+// DefaultResponseHandling returns webui's response handling rules, in order:
+//
+//	{"code":"204","swap":false}
+//	{"code":"[23]..","swap":true}
+//	{"code":"[45]..","swap":true,"error":true}
+//	{"code":"...","swap":false}
+//
+// htmx's own default differs only in not swapping 4xx and 5xx responses (see
+// [Config.NoErrorSwap]); the last rule spells out what htmx does without a
+// matching rule. Swapping errors lets a handler answer a failed htmx request
+// with a fragment that shows the error, keeping the real status code; such a
+// handler usually retargets it with [SetRetarget] and [SetReswap]. A 204
+// response swaps nothing, which suits polling that found no change.
+//
+// Each call returns a new slice, which the caller may modify, for example to
+// add a rule in front.
+func DefaultResponseHandling() []ResponseRule {
+	return []ResponseRule{
+		{Code: "204", Swap: false},
+		{Code: "[23]..", Swap: true},
+		{Code: "[45]..", Swap: true, Error: true},
+		{Code: "...", Swap: false},
+	}
+}
+
+// Config keys that Config fields control. Extra must not contain them.
+const (
+	keyIncludeIndicatorStyles    = "includeIndicatorStyles"
+	keyAllowEval                 = "allowEval"
+	keyAllowScriptTags           = "allowScriptTags"
+	keyHistoryCacheSize          = "historyCacheSize"
+	keyRefreshOnHistoryMiss      = "refreshOnHistoryMiss"
+	keyHistoryRestoreAsHxRequest = "historyRestoreAsHxRequest"
+	keySelfRequestsOnly          = "selfRequestsOnly"
+	keyResponseHandling          = "responseHandling"
+	keyDefaultSwapStyle          = "defaultSwapStyle"
+)
+
+// JSON returns the htmx configuration as JSON text: one object with the keys
+// in sorted order, so that the same Config always gives the same text.
+// It fails with [ErrInvalidConfig] when HistoryCacheSize is negative,
+// DefaultSwapStyle is not one of the swap styles it lists, NoErrorSwap is
+// combined with ResponseHandling, a response rule has no Code, or an Extra
+// key is empty, controlled by a Config field, or has a value that
+// encoding/json cannot encode.
+func (c Config) JSON() (string, error) {
+	if c.HistoryCacheSize < 0 {
+		return "", fmt.Errorf("%w: negative history cache size %d", ErrInvalidConfig, c.HistoryCacheSize)
+	}
+	rules := c.ResponseHandling
+	if len(rules) == 0 {
+		rules = DefaultResponseHandling()
+		if c.NoErrorSwap {
+			rules[2].Swap = false
+		}
+	} else if c.NoErrorSwap {
+		return "", fmt.Errorf("%w: NoErrorSwap combined with ResponseHandling", ErrInvalidConfig)
+	}
+	for i, r := range rules {
+		if r.Code == "" {
+			return "", fmt.Errorf("%w: response rule %d without a code", ErrInvalidConfig, i)
+		}
+	}
+	values := map[string]any{
+		keyIncludeIndicatorStyles:    c.IndicatorStyles,
+		keyAllowEval:                 c.AllowEval,
+		keyAllowScriptTags:           c.AllowScriptTags,
+		keyHistoryCacheSize:          c.HistoryCacheSize,
+		keyRefreshOnHistoryMiss:      !c.NoRefreshOnHistoryMiss,
+		keyHistoryRestoreAsHxRequest: c.HistoryRestoreAsHXRequest,
+		keySelfRequestsOnly:          !c.AllowCrossOrigin,
+		keyResponseHandling:          rules,
+	}
+	if c.DefaultSwapStyle != "" {
+		if !defaultSwapStyle(c.DefaultSwapStyle) {
+			return "", fmt.Errorf("%w: default swap style %q", ErrInvalidConfig, c.DefaultSwapStyle)
+		}
+		values[keyDefaultSwapStyle] = c.DefaultSwapStyle
+	}
+	for k, v := range c.Extra {
+		if k == "" {
+			return "", fmt.Errorf("%w: empty extra key", ErrInvalidConfig)
+		}
+		if _, ok := values[k]; ok || k == keyDefaultSwapStyle {
+			return "", fmt.Errorf("%w: extra key %q is controlled by a Config field", ErrInvalidConfig, k)
+		}
+		// Encode each value on its own so that an error names its key.
+		data, err := json.Marshal(v)
+		if err != nil {
+			return "", fmt.Errorf("%w: extra key %q: %w", ErrInvalidConfig, k, err)
+		}
+		values[k] = json.RawMessage(data)
+	}
+	// encoding/json writes map keys in sorted order.
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
+	return string(data), nil
+}
+
+// Meta returns the <meta name="htmx-config"> element for the configuration,
+// with the [Config.JSON] text as its content attribute value, which chord
+// HTML-escapes. The configuration is encoded when Meta is called; when that
+// fails, rendering the returned node fails with the [ErrInvalidConfig]
+// error.
+//
+// Render it once, in the head of every full page that loads htmx, before
+// any content derived from user input: htmx reads the first such element
+// when it initializes, and ignores the element in swapped content.
+func (c Config) Meta() elem.Node {
+	data, err := c.JSON()
+	if err != nil {
+		return elem.Fn(func(context.Context) (elem.Node, error) { return nil, err })
+	}
+	return meta.Meta(meta.Name("htmx-config"), meta.Content(data))
+}
+
+// defaultSwapStyle reports whether htmx can use s as its default swap style:
+// a style that htmx swaps without falling back to the default.
+func defaultSwapStyle(s string) bool {
+	switch s {
+	case SwapInnerHTML, SwapOuterHTML, SwapBeforeBegin, SwapAfterBegin,
+		SwapBeforeEnd, SwapAfterEnd, SwapDelete, SwapNone:
+		return true
+	}
+	return false
+}

@@ -69,8 +69,8 @@ var ErrInvalidHeader = errors.New("invalid htmx header")
 // The client sets them, and anyone can forge them: use them to choose a
 // representation (for example a fragment instead of a full page), never to
 // make an authorization decision. A response that depends on them should say
-// so in its Vary header, e.g. Vary: HX-Request, so that caches keep the
-// representations apart.
+// so in its Vary header, e.g. Vary: HX-Request (see [AddVary]), so that
+// caches keep the representations apart.
 //
 // The string fields are decoded the way htmx encodes them. htmx sets headers
 // with XMLHttpRequest, which sends characters up to U+00FF as one byte each
@@ -118,6 +118,28 @@ func ParseRequestHeaders(h http.Header) RequestHeaders {
 		Trigger:               requestValue(h, HeaderTrigger),
 		TriggerName:           requestValue(h, HeaderTriggerName),
 	}
+}
+
+// AddVary adds HX-Request to the Vary header of h, usually the header of a
+// response before it is written. The existing Vary values are kept, and
+// nothing is added when one of them already names HX-Request (in any letter
+// case) or is "*", so calling it again is harmless. h must not be nil.
+//
+// Call it for every response whose content depends on whether the request
+// came from htmx, such as a fragment for htmx and a full page otherwise, so
+// that caches, the browser's own HTTP cache included, keep the two
+// representations apart: without it, going back to a URL can show a cached
+// fragment as the page.
+func AddVary(h http.Header) {
+	for _, line := range h.Values("Vary") {
+		for v := range strings.SplitSeq(line, ",") {
+			v = strings.TrimSpace(v)
+			if v == "*" || strings.EqualFold(v, HeaderRequest) {
+				return
+			}
+		}
+	}
+	h.Add("Vary", HeaderRequest)
 }
 
 // requestValue reads a string header that htmx sets: percent-decoded when

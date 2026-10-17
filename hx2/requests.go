@@ -1,5 +1,3 @@
-// Package hx2 provides HTMX v2 attributes.
-// This is a standalone package with no dependency on the hx (v1) package.
 package hx2
 
 import (

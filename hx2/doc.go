@@ -1,39 +1,58 @@
-// Package hx2 provides HTMX v2 attributes for building hypermedia-driven applications.
+// Package hx2 provides htmx 2 attributes, the htmx request and response
+// headers, and the htmx configuration of a page, for chord views.
 //
-// HTMX v2 is a major update with breaking changes from v1. This package provides
-// the v2 attribute API independently from the v1 package.
+// webui's theme ships htmx 2 (2.0.10), and this is the package for new
+// code. The sibling package [github.com/protolambda/webui/hx1] keeps the
+// htmx 1 attributes for legacy pages.
 //
-// # Key Changes from v1
+// # Attributes
 //
-//   - Event binding uses [On] with hx-on:event syntax (kebab-case event names)
-//   - SSE/WebSocket moved to extensions: use [Ext]("sse") or [Ext]("ws")
-//   - SSE uses [SSEConnect], [SSESwap], [SSEClose] instead of hx-sse
-//   - WebSocket uses [WSConnect], [WSSend] instead of hx-ws
-//   - DELETE requests use URL params by default (not form-encoded body)
-//   - Cross-domain requests disabled by default
-//   - IE support removed
+// Each attribute helper returns a chord
+// [github.com/protolambda/chord/core/attr.Node] whose value chord
+// HTML-escapes:
 //
-// # Core Request Attributes
+//   - [Get], [Post], [Put], [Patch], [Delete]: issue a request.
+//   - [Target], [Swap] with the swap style constants ([SwapOuterHTML] and
+//     others), [Select], [SwapOOB], [SelectOOB]: place the response.
+//   - [Trigger], [Sync], [Indicator], [DisabledElt], [Confirm], [Prompt]:
+//     when and how requests run.
+//   - [Include], [Params], [Encoding], [ValsJSON], [HeadersJSON] (and the
+//     raw [Vals], [Headers]): what a request sends.
+//   - [PushURL], [ReplaceURL], [History], [HistoryElt]: browser history.
+//   - [Boost], [Preserve], [Disable], [Disinherit], [Inherit], [Request],
+//     [Validate], [Ext]: everything else.
 //
-//   - [Get], [Post], [Put], [Patch], [Delete]: HTTP request triggers
+// The JSON helpers [ValsJSON] and [HeadersJSON] encode their values with
+// encoding/json, and fail the render on values that htmx cannot read,
+// instead of inviting JSON built by string formatting.
 //
-// # Common Attributes
+// # Configuration
 //
-//   - [Target]: CSS selector for response target
-//   - [Swap]: How to swap the response into the DOM
-//   - [Trigger]: Event that triggers the request
-//   - [Indicator]: Element to show during request
-//   - [Vals]: Additional values to submit
+// [Config] is the htmx configuration of a page; its zero value is webui's
+// secure configuration, and [Config.Meta] renders it as the
+// <meta name="htmx-config"> element of the head. It disables everything in
+// htmx that needs a weaker Content-Security-Policy (inline indicator styles,
+// eval) or keeps page content in the browser (the history cache), and makes
+// htmx swap 4xx and 5xx responses, so that server-rendered error fragments
+// show without script.
 //
-// # Event Binding (v2 syntax)
+// # Scripting attributes
 //
-//   - [On]: hx-on:event-name="handler" (replaces v1's hx-on="event: handler")
+// Some htmx features are JavaScript in attributes: [On] (hx-on:*), hx-vals
+// and hx-headers values that start with "js:" or "javascript:", and
+// hx-trigger event filters in square brackets. HTML escaping does not
+// protect a JavaScript context, so never build them from untrusted input.
+// htmx evaluates them only with [Config.AllowEval], and the browser only
+// with a Content-Security-Policy that allows 'unsafe-eval'; webui's defaults
+// allow neither. The helpers stay available for applications that opt in.
 //
 // # Extensions
 //
-//   - [Ext]: Enable HTMX extensions (hx-ext attribute)
-//   - [SSEConnect], [SSESwap], [SSEClose]: SSE extension attributes
-//   - [WSConnect], [WSSend]: WebSocket extension attributes
+// Server-sent events and WebSockets are htmx 2 extensions: enable them with
+// [Ext]("sse") or [Ext]("ws") on an ancestor, and use [SSEConnect],
+// [SSESwap], [SSEClose] or [WSConnect], [WSSend]. webui's theme assets
+// include the sse extension script by default; the ws extension script is
+// opt-in.
 //
 // # Request and response headers
 //
@@ -41,11 +60,15 @@
 // into [RequestHeaders], for example to answer an htmx request with a
 // fragment and other requests with a full page:
 //
+//	hx2.AddVary(w.Header())
 //	if hx2.ParseRequestHeaders(r.Header).Request { ... }
 //
 // It decodes the values that htmx sends as Latin-1 bytes or percent-encoded
 // (for characters above U+00FF), so that ids, names and prompt answers read
-// as the user wrote them.
+// as the user wrote them. The client sets these headers: use them to choose
+// a representation, never for authorization. [AddVary] adds HX-Request to
+// the Vary header of a response that depends on them, so that caches keep
+// the representations apart.
 //
 // The Set functions write the response headers that htmx reads, on the header
 // of a response before it is written: [SetRedirect], [SetRefresh],
@@ -55,8 +78,19 @@
 // value of its header. Plain values are set as given: URLs must be
 // percent-encoded, and no value may contain control characters; JSON values
 // are encoded with ASCII escapes. htmx ignores these headers on 3xx
-// responses. The Header constants name every header.
+// responses. The Header constants name every header. A redirect or location
+// taken from the request must be checked to be local before it is set, or
+// it is an open redirect.
+//
+// # Changes from htmx 1
+//
+//   - Event binding uses [On] with hx-on:event syntax (kebab-case event names).
+//   - SSE and WebSocket moved to extensions, with the attributes above
+//     instead of hx-sse and hx-ws.
+//   - DELETE requests send parameters in the URL, not a form-encoded body.
+//   - Requests to other origins are disabled by default.
 //
 // Reference: https://htmx.org/reference/
+//
 // Migration guide: https://htmx.org/migration-guide-htmx-1/
 package hx2

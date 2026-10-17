@@ -1,4 +1,3 @@
-// Package hx provides HTMX v1 attributes.
 package hx1
 
 import (

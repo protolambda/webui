@@ -1,23 +1,122 @@
 package hx2
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
 	"github.com/protolambda/chord/core/attr"
 )
+
+// ErrInvalidValue indicates an attribute value that htmx cannot read as
+// intended, such as hx-vals that is not a JSON object.
+var ErrInvalidValue = errors.New("invalid htmx attribute value")
 
 // Include sets the hx-include attribute to include additional elements in request.
 func Include(v string) attr.Node { return attr.Name("hx-include").Value(v) }
 
-// Params sets the hx-params attribute to filter request parameters.
+// Params sets the hx-params attribute to filter request parameters:
+// "*", "none", "not a,b", or a comma-separated list of names.
 func Params(v string) attr.Node { return attr.Name("hx-params").Value(v) }
 
-// Vals sets the hx-vals attribute to add values to the request.
+// Vals sets the hx-vals attribute to add values to the request. v is JSON
+// object text; prefer [ValsJSON], which encodes it.
+//
+// The value is HTML-escaped, but never build it from untrusted input with
+// string formatting: a quote in the input can add or override values. A
+// value that starts with "js:" or "javascript:" is a JavaScript expression,
+// which htmx evaluates only with [Config.AllowEval].
 func Vals(v string) attr.Node { return attr.Name("hx-vals").Value(v) }
 
-// Headers sets the hx-headers attribute to add headers to the request.
+// ValsJSON sets the hx-vals attribute to the JSON encoding of v, which must
+// encode as a JSON object, such as a struct or a map with string keys. htmx
+// submits each member as a request parameter, in addition to the form values
+// (overriding those with the same name), and merges the hx-vals of ancestors
+// in, the nearest element winning. A string, number or boolean member is sent
+// as its text, an array as one parameter per element, and an object as its
+// JSON text.
+//
+// v is encoded when ValsJSON is called, with encoding/json (maps in sorted
+// key order); later changes to v do not show. When v does not encode as a
+// JSON object (nil, a slice, a string...) rendering fails with
+// [ErrInvalidValue]; when it cannot be encoded at all, rendering fails with
+// an error that wraps both ErrInvalidValue and the encoding error.
+func ValsJSON(v any) attr.Node {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return failAttr(fmt.Errorf("%w: hx-vals: %w", ErrInvalidValue, err))
+	}
+	if !bytes.HasPrefix(data, []byte("{")) {
+		return failAttr(fmt.Errorf("%w: hx-vals is not a JSON object", ErrInvalidValue))
+	}
+	return attr.Name("hx-vals").Value(string(data))
+}
+
+// Headers sets the hx-headers attribute to add headers to the request. v is
+// JSON object text; prefer [HeadersJSON], which encodes it. The cautions of
+// [Vals] apply.
 func Headers(v string) attr.Node { return attr.Name("hx-headers").Value(v) }
+
+// HeadersJSON sets the hx-headers attribute to the JSON encoding of h: htmx
+// sends each entry as a request header, and merges the hx-headers of
+// ancestors in, the nearest element winning. Names are written in sorted
+// order; a nil or empty h gives "{}". Browsers silently drop forbidden
+// request headers such as Cookie or Host. htmx sends a value that a browser
+// refuses in a header (characters above U+00FF, line breaks) percent-encoded,
+// with the extra header <name>-URI-AutoEncoded: true.
+//
+// h is encoded when HeadersJSON is called; later changes to h do not show.
+// Rendering fails with [ErrInvalidValue] when a name is not a valid HTTP
+// header name (a non-empty token).
+//
+// The value sits in the page: anyone who can read the page can read it. It
+// suits a per-session CSRF token, not a credential the page must not see.
+func HeadersJSON(h map[string]string) attr.Node {
+	for name := range h {
+		if !headerName(name) {
+			return failAttr(fmt.Errorf("%w: hx-headers name %q is not a header name", ErrInvalidValue, name))
+		}
+	}
+	if len(h) == 0 {
+		return attr.Name("hx-headers").Value("{}")
+	}
+	data, err := json.Marshal(h) // a map of strings always encodes
+	if err != nil {
+		return failAttr(fmt.Errorf("%w: hx-headers: %w", ErrInvalidValue, err))
+	}
+	return attr.Name("hx-headers").Value(string(data))
+}
 
 // Request sets the hx-request attribute to configure request behavior.
 func Request(v string) attr.Node { return attr.Name("hx-request").Value(v) }
 
-// Sync sets the hx-sync attribute to synchronize AJAX requests.
+// Sync sets the hx-sync attribute to synchronize AJAX requests, e.g.
+// Sync("this:replace") or Sync("closest form:abort").
 func Sync(v string) attr.Node { return attr.Name("hx-sync").Value(v) }
+
+// failAttr returns an attribute node whose evaluation fails with err, so
+// that rendering a page that uses it fails as a whole.
+func failAttr(err error) attr.Node {
+	return attr.Fn(func(context.Context) (attr.Node, error) { return nil, err })
+}
+
+// headerName reports whether name is an HTTP field name: a token of the
+// characters that RFC 9110 allows.
+func headerName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case c == '!', c == '#', c == '$', c == '%', c == '&', c == '\'', c == '*',
+			c == '+', c == '-', c == '.', c == '^', c == '_', c == '`', c == '|', c == '~':
+		default:
+			return false
+		}
+	}
+	return true
+}

@@ -123,3 +123,97 @@ func VStack() attr.Node { return rawClass("vstack") }
 // VR creates a Bootstrap vr class: a vertical divider, e.g. between the
 // items of an [HStack]. Use it on an empty element.
 func VR() attr.Node { return rawClass("vr") }
+
+// FlexWrapAt creates a Bootstrap flex-{bp}-wrap class that applies from
+// breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func FlexWrapAt(bp Breakpoint) attr.Node { return atClass("flex-", bp, "-wrap") }
+
+// FlexNowrapAt creates a Bootstrap flex-{bp}-nowrap class that applies from
+// breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func FlexNowrapAt(bp Breakpoint) attr.Node { return atClass("flex-", bp, "-nowrap") }
+
+// JustifyContentStartAt creates a Bootstrap justify-content-{bp}-start class
+// that applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func JustifyContentStartAt(bp Breakpoint) attr.Node { return atClass("justify-content-", bp, "-start") }
+
+// JustifyContentEndAt creates a Bootstrap justify-content-{bp}-end class that
+// applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func JustifyContentEndAt(bp Breakpoint) attr.Node { return atClass("justify-content-", bp, "-end") }
+
+// JustifyContentCenterAt creates a Bootstrap justify-content-{bp}-center class
+// that applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func JustifyContentCenterAt(bp Breakpoint) attr.Node {
+	return atClass("justify-content-", bp, "-center")
+}
+
+// JustifyContentBetweenAt creates a Bootstrap justify-content-{bp}-between
+// class that applies from breakpoint bp upwards. For example,
+// JustifyContentStart() with JustifyContentBetweenAt(MD) packs items at the
+// start on small screens and spreads them from md up. An invalid bp fails the
+// render with [ErrInvalidValue].
+func JustifyContentBetweenAt(bp Breakpoint) attr.Node {
+	return atClass("justify-content-", bp, "-between")
+}
+
+// JustifyContentAroundAt creates a Bootstrap justify-content-{bp}-around class
+// that applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func JustifyContentAroundAt(bp Breakpoint) attr.Node {
+	return atClass("justify-content-", bp, "-around")
+}
+
+// JustifyContentEvenlyAt creates a Bootstrap justify-content-{bp}-evenly class
+// that applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func JustifyContentEvenlyAt(bp Breakpoint) attr.Node {
+	return atClass("justify-content-", bp, "-evenly")
+}
+
+// AlignItemsStartAt creates a Bootstrap align-items-{bp}-start class that
+// applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func AlignItemsStartAt(bp Breakpoint) attr.Node { return atClass("align-items-", bp, "-start") }
+
+// AlignItemsEndAt creates a Bootstrap align-items-{bp}-end class that applies
+// from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func AlignItemsEndAt(bp Breakpoint) attr.Node { return atClass("align-items-", bp, "-end") }
+
+// AlignItemsCenterAt creates a Bootstrap align-items-{bp}-center class that
+// applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func AlignItemsCenterAt(bp Breakpoint) attr.Node { return atClass("align-items-", bp, "-center") }
+
+// AlignItemsBaselineAt creates a Bootstrap align-items-{bp}-baseline class
+// that applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func AlignItemsBaselineAt(bp Breakpoint) attr.Node { return atClass("align-items-", bp, "-baseline") }
+
+// AlignItemsStretchAt creates a Bootstrap align-items-{bp}-stretch class that
+// applies from breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func AlignItemsStretchAt(bp Breakpoint) attr.Node { return atClass("align-items-", bp, "-stretch") }
+
+// GapAt creates a Bootstrap gap-{bp}-{n} class that applies from breakpoint bp
+// upwards, for n in 0..5. An invalid bp or n fails the render with
+// [ErrInvalidValue].
+func GapAt(bp Breakpoint, n int) attr.Node { return atIntClass("gap-", bp, n, minSpace, maxSpace) }
+
+// RowGapAt creates a Bootstrap row-gap-{bp}-{n} class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func RowGapAt(bp Breakpoint, n int) attr.Node {
+	return atIntClass("row-gap-", bp, n, minSpace, maxSpace)
+}
+
+// ColumnGapAt creates a Bootstrap column-gap-{bp}-{n} class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func ColumnGapAt(bp Breakpoint, n int) attr.Node {
+	return atIntClass("column-gap-", bp, n, minSpace, maxSpace)
+}

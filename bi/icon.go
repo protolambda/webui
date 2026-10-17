@@ -16,21 +16,36 @@ import (
 // [Icon.Label].
 var ErrEmptyLabel = errors.New("empty icon label")
 
+// ErrInvalidName indicates an [Icon] whose name is empty or contains a
+// character other than a lower-case ASCII letter, a digit or a hyphen. No
+// Bootstrap Icons class has such a name, so the icon never renders: the
+// render fails with an error wrapping ErrInvalidName, which does not repeat
+// the name.
+var ErrInvalidName = errors.New("invalid icon name")
+
 // Icon is the name of a Bootstrap Icons icon, without the "bi-" class prefix,
 // e.g. "alarm". The constants of this package are all the icons of release
 // [Version]; [Lookup] checks a run-time name against them.
 //
 // An Icon is an [elem.Node]: it renders as a decorative
-// <i class="bi bi-NAME" aria-hidden="true"></i>. A name that is not
-// lower-case ASCII letters, digits and hyphens is HTML-escaped (see the
-// package documentation). The rendered icon needs the icons stylesheet and
-// font.
+// <i class="bi bi-NAME" aria-hidden="true"></i>. The rendered icon needs the
+// icons stylesheet and font.
+//
+// A name must be non-empty and consist of lower-case ASCII letters, digits
+// and hyphens. An Icon with any other name, including the zero Icon, fails
+// the render with an error wrapping [ErrInvalidName], in [Icon.Eval],
+// [Icon.With] and [Icon.Label] alike, so that a name from elsewhere can
+// neither break out of the class attribute nor add classes of its own. A
+// well-formed name that is not an icon of release [Version] (e.g. the name
+// of an application-defined glyph) renders as given; check a name only
+// known at run time with [Lookup] first.
 type Icon string
 
 var _ elem.Node = Icon("")
 
 // Eval renders the icon as a decorative element, hidden from assistive
-// technology. It is the same as i.With().
+// technology. It is the same as i.With(). An invalid name fails with
+// [ErrInvalidName].
 func (i Icon) Eval(ctx context.Context) (elem.Obj, error) {
 	return i.With().Eval(ctx)
 }
@@ -42,7 +57,8 @@ func (i Icon) Eval(ctx context.Context) (elem.Obj, error) {
 // Other attributes follow the usual chord rule that an attribute may appear
 // once: passing aria-hidden fails the render. For an icon with meaning, use
 // [Icon.Label] rather than adding role or aria-label here, because
-// aria-hidden would hide that label. A nil attribute fails the render.
+// aria-hidden would hide that label. A nil attribute fails the render, and
+// so does an invalid name, with [ErrInvalidName].
 func (i Icon) With(attrs ...attr.Node) elem.Node {
 	return i.element(ariaHidden, attrs)
 }
@@ -50,11 +66,18 @@ func (i Icon) With(attrs ...attr.Node) elem.Node {
 // Label returns the icon as a meaningful image named label:
 // <i class="bi bi-NAME ..." role="img" aria-label="LABEL" ...></i>. Use it
 // for an icon that conveys information that is not also given as text, such
-// as a status icon in a table cell. The label is HTML-escaped. Extra
-// attributes behave as in [Icon.With].
+// as a status icon in a table cell. The label is HTML-escaped.
+//
+// Extra classes are merged into the icon's class attribute. Other
+// attributes may appear once, so passing role or aria-label fails the
+// render, and so does a nil attribute. Label does not check the extras for
+// attributes that hide the element, such as aria-hidden or hidden: they
+// would hide the labelled image from assistive technology, so do not pass
+// them.
 //
 // An empty or blank label would leave the image without an accessible name:
-// the node then fails evaluation with an error wrapping [ErrEmptyLabel].
+// the node then fails evaluation with an error wrapping [ErrEmptyLabel]. An
+// invalid name fails with [ErrInvalidName].
 func (i Icon) Label(label string, attrs ...attr.Node) elem.Node {
 	if strings.TrimSpace(label) == "" {
 		return elem.Fn(func(context.Context) (elem.Node, error) {
@@ -67,9 +90,21 @@ func (i Icon) Label(label string, attrs ...attr.Node) elem.Node {
 var (
 	ariaHidden = attr.Name("aria-hidden").Raw("true")
 	roleImg    = attr.Name("role").Raw("img")
-	// errEmptyLabel is shared: the error carries no per-call detail.
-	errEmptyLabel = fmt.Errorf("bi: %w", ErrEmptyLabel)
+	// errEmptyLabel and errInvalidName are shared: the errors carry no
+	// per-call detail, and never the name, which may come from anywhere.
+	errEmptyLabel  = fmt.Errorf("bi: %w", ErrEmptyLabel)
+	errInvalidName = fmt.Errorf("bi: %w", ErrInvalidName)
 )
+
+// invalidClass is the class attribute of an Icon with an invalid name: it
+// fails evaluation with errInvalidName, so that the name is never rendered.
+type invalidClass struct{}
+
+var _ attr.Node = invalidClass{}
+
+func (invalidClass) Eval(context.Context) (attr.Obj, error) {
+	return attr.Obj{}, errInvalidName
+}
 
 // element renders the icon's <i> element: the class, the accessibility
 // attributes a11y, then the extra attributes.
@@ -80,15 +115,15 @@ func (i Icon) element(a11y attr.Node, extra []attr.Node) elem.Node {
 	return elem.Name("i").New(attrs...)()
 }
 
-// class returns the class attribute of the icon. Only a name made of
-// lower-case ASCII letters, digits and hyphens is written raw; any other name
-// is escaped, so a forged Icon cannot break out of the attribute.
+// class returns the class attribute of the icon. Only a valid name, made of
+// lower-case ASCII letters, digits and hyphens, is rendered, and it is
+// written raw: it can neither break out of the attribute nor contain the
+// whitespace that would separate further classes. Any other name fails.
 func (i Icon) class() attr.Node {
-	value := "bi bi-" + string(i)
-	if validName(string(i)) {
-		return attr.Name("class").Raw(value)
+	if !validName(string(i)) {
+		return invalidClass{}
 	}
-	return attr.Name("class").Value(value)
+	return attr.Name("class").Raw("bi bi-" + string(i))
 }
 
 // validName reports whether name is non-empty and consists of lower-case

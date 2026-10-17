@@ -65,6 +65,27 @@ func ExampleDNoneAt() {
 	// <div class="d-flex flex-column flex-lg-row d-print-none">Toolbar</div>
 }
 
+// Responsive spacing and alignment: stacked with a bottom margin on small
+// screens, a spaced-out row from md up.
+func ExampleMBAt() {
+	core.Dump(div.Div(ba.DFlex(), ba.FlexColumn(), ba.FlexRowAt(ba.MD), ba.JustifyContentBetweenAt(ba.MD), ba.GapAt(ba.MD, 3))(
+		div.Div(ba.MB(3), ba.MBAt(ba.MD, 0))(text.Text("Tasks")),
+		div.Div(ba.TextStart(), ba.TextEndAt(ba.MD), ba.MSAutoAt(ba.MD))(text.Text("3 open")),
+	))
+	// Output: <div class="d-flex flex-column flex-md-row justify-content-md-between gap-md-3"><div class="mb-3 mb-md-0">Tasks</div><div class="text-start text-md-end ms-md-auto">3 open</div></div>
+}
+
+// Offsets shift a column to the right. Offset(0) adds no class, since no
+// offset is the default, so a computed offset such as (12-w)/2 for a column
+// of width w works for every width.
+func ExampleOffset() {
+	core.Dump(div.Div(ba.Col8(), ba.Offset((12-8)/2))(text.Text("Form")))
+	core.Dump(div.Div(ba.Col12(), ba.Offset((12-12)/2))(text.Text("Form")))
+	// Output:
+	// <div class="col-8 offset-2">Form</div>
+	// <div class="col-12">Form</div>
+}
+
 // Responsive grid columns.
 func ExampleColAt() {
 	core.Dump(div.Div(ba.Row(), ba.RowGap(3))(

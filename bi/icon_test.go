@@ -41,30 +41,55 @@ func TestIconDecorative(gt *testing.T) {
 	t.Must(page.Find(ct.Role("img")).None())
 }
 
-func TestForgedIconValueIsEscaped(gt *testing.T) {
+func TestForgedIconNameFails(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	forged := bi.Icon(`alarm" onclick="attack()`)
-	t.Must(be.Equal(`<i class="bi bi-alarm&#34; onclick=&#34;attack()" aria-hidden="true"></i>`, render(t, forged)))
-	t.Must(be.Equal(`<i class="bi bi-alarm&#34; onclick=&#34;attack() fs-4" aria-hidden="true"></i>`,
-		render(t, forged.With(attr.Class("fs-4")))))
-	t.Must(be.Equal(`<i class="bi bi-alarm&#34; onclick=&#34;attack()" role="img" aria-label="x"></i>`,
-		render(t, forged.Label("x"))))
-	t.Must(ct.View(forged).Find(ct.HasAttr("onclick")).None())
+	for name, n := range map[string]elem.Node{
+		"Eval":  forged,
+		"With":  forged.With(attr.Class("fs-4")),
+		"Label": forged.Label("x"),
+	} {
+		var out strings.Builder
+		err := core.Render(context.Background(), n, &out)
+		t.Mustf(be.ErrorIs(err, bi.ErrInvalidName), "%s", name)
+		t.Mustf(be.False(strings.Contains(err.Error(), "onclick")), "%s: error repeats the name: %v", name, err)
+		t.Mustf(be.False(strings.Contains(out.String(), "onclick")), "%s: output %q", name, out.String())
+	}
 }
 
-func TestIconNamesOutsideTheSafeSetAreEscaped(gt *testing.T) {
+// TestIconNameCannotAddClasses checks that a name with whitespace, which
+// would split into several classes, fails instead of rendering.
+func TestIconNameCannotAddClasses(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	for name, want := range map[bi.Icon]string{
-		"":         `<i class="bi bi-" aria-hidden="true"></i>`,
-		"Alarm":    `<i class="bi bi-Alarm" aria-hidden="true"></i>`,
-		"a&b":      `<i class="bi bi-a&amp;b" aria-hidden="true"></i>`,
-		"a<b>":     `<i class="bi bi-a&lt;b&gt;" aria-hidden="true"></i>`,
-		"x'y":      `<i class="bi bi-x&#39;y" aria-hidden="true"></i>`,
-		"é":        "<i class=\"bi bi-é\" aria-hidden=\"true\"></i>",
-		"custom-1": `<i class="bi bi-custom-1" aria-hidden="true"></i>`,
+	for _, name := range []bi.Icon{
+		"alarm position-fixed top-0 start-0 w-100 h-100",
+		"x position-fixed", "x\tz-3", "x\nd-none", "x\fa", "x\rb", " alarm", "alarm ",
 	} {
-		t.Mustf(be.Equal(want, render(t, name)), "icon %q", string(name))
+		for kind, n := range map[string]elem.Node{
+			"Eval":  name,
+			"With":  name.With(attr.Class("fs-4")),
+			"Label": name.Label("x"),
+		} {
+			err := renderErr(n)
+			t.Mustf(be.ErrorIs(err, bi.ErrInvalidName), "%s of %q", kind, string(name))
+			t.Mustf(be.False(strings.Contains(err.Error(), "position-fixed")), "%s: error repeats the name: %v", kind, err)
+		}
 	}
+	err := renderErr(bi.Icon("x position-fixed"))
+	t.Must(be.Equal("render: at i[0]: attribute: bi: invalid icon name", err.Error()))
+}
+
+func TestIconNamesOutsideTheSafeSetFail(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, name := range []bi.Icon{"", "Alarm", "a&b", "a<b>", "x'y", "é", "bi_alarm", "alarm\x00"} {
+		t.Mustf(be.ErrorIs(renderErr(name), bi.ErrInvalidName), "icon %q", string(name))
+	}
+	// A well-formed name renders even when it is not an icon of the release,
+	// e.g. an application-defined glyph.
+	t.Must(be.Equal(`<i class="bi bi-custom-1" aria-hidden="true"></i>`, render(t, bi.Icon("custom-1"))))
+	// The zero Icon fails too, rather than rendering an empty "bi-" class.
+	var zero bi.Icon
+	t.Must(be.ErrorIs(renderErr(zero.With()), bi.ErrInvalidName))
 }
 
 func TestIconWith(gt *testing.T) {
@@ -84,6 +109,8 @@ func TestIconWithDuplicateAttribute(gt *testing.T) {
 	t.Must(be.ErrorContains(err, `duplicate attribute "aria-hidden"`))
 	err = renderErr(bi.Trash.Label("Delete", aria.Label("Other")))
 	t.Must(be.ErrorContains(err, `duplicate attribute "aria-label"`))
+	err = renderErr(bi.Trash.Label("Delete", aria.Role("presentation")))
+	t.Must(be.ErrorContains(err, `duplicate attribute "role"`))
 	err = renderErr(bi.Trash.With(nil))
 	t.Must(be.ErrorIs(err, attr.ErrNilNode))
 }

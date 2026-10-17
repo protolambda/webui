@@ -13,6 +13,22 @@ func TextCenter() attr.Node { return rawClass("text-center") }
 // TextEnd creates a Bootstrap text-end class.
 func TextEnd() attr.Node { return rawClass("text-end") }
 
+// TextStartAt creates a Bootstrap text-{bp}-start class that applies from
+// breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func TextStartAt(bp Breakpoint) attr.Node { return atClass("text-", bp, "-start") }
+
+// TextCenterAt creates a Bootstrap text-{bp}-center class that applies from
+// breakpoint bp upwards. An invalid bp fails the render with
+// [ErrInvalidValue].
+func TextCenterAt(bp Breakpoint) attr.Node { return atClass("text-", bp, "-center") }
+
+// TextEndAt creates a Bootstrap text-{bp}-end class that applies from
+// breakpoint bp upwards. For example, TextStart() with TextEndAt(MD) aligns a
+// footer cell to the end from md up. An invalid bp fails the render with
+// [ErrInvalidValue].
+func TextEndAt(bp Breakpoint) attr.Node { return atClass("text-", bp, "-end") }
+
 // TextWrap creates a Bootstrap text-wrap class.
 func TextWrap() attr.Node { return rawClass("text-wrap") }
 

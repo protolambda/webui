@@ -31,13 +31,19 @@ func iconsCSS(t devtest.T) []byte {
 }
 
 // stylesheetNames extracts the icon names from the stylesheet, in order. It
-// is deliberately independent of the generator.
+// is deliberately independent of the generator. Every icon rule must be a
+// standalone rule that directly follows the end of another rule, and the
+// only at-rule is the font face, so that each icon applies as plain
+// "bi bi-NAME".
 func stylesheetNames(t devtest.T, css []byte) []string {
 	t.Helper()
+	t.Must(be.Equal(1, bytes.Count(css, []byte("@"))))
+	t.Must(be.Equal(1, bytes.Count(css, []byte("@font-face"))))
 	re := regexp.MustCompile(`\.bi-([a-z0-9-]+)::before\{content:"\\f[0-9a-f]+"\}`)
 	var names []string
-	for _, m := range re.FindAllSubmatch(css, -1) {
-		names = append(names, string(m[1]))
+	for _, loc := range re.FindAllSubmatchIndex(css, -1) {
+		t.Mustf(be.Equal(byte('}'), css[loc[0]-1]), "icon rule at offset %d is not standalone", loc[0])
+		names = append(names, string(css[loc[2]:loc[3]]))
 	}
 	t.Must(be.Equal(bytes.Count(css, []byte(".bi-")), len(names)))
 	return names

@@ -37,10 +37,14 @@
 //
 // # Escaping
 //
-// The constants are safe literals. An Icon made from another string is
-// still rendered safely: a name that is not lower-case letters, digits and
-// hyphens is HTML-escaped in the class attribute, so it cannot break out of
-// it, and labels are always escaped.
+// The constants are safe literals. An Icon made from another string renders
+// only when its name is lower-case ASCII letters, digits and hyphens; any
+// other name (empty, with spaces, upper-case or with markup) fails the render
+// with an error wrapping [ErrInvalidName], which does not repeat the name. A
+// name thus cannot break out of the class attribute or add classes to the
+// icon. Check a name only known at run time with [Lookup] before converting
+// it, so that an unknown name is handled where it is read rather than as a
+// render error. Labels are always escaped.
 //
 // # Generation
 //

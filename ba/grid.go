@@ -107,10 +107,17 @@ func ColAuto() attr.Node { return rawClass("col-auto") }
 // the render with [ErrInvalidValue].
 func ColAutoAt(bp Breakpoint) attr.Node { return atClass("col-", bp, "-auto") }
 
-// Offset returns an "offset-{n}" class attribute, for n in 1..11. Bootstrap
-// has no offset-0 for the smallest screens (no offset is the default), so 0
-// fails the render with [ErrInvalidValue], as does any other n out of range.
-func Offset(n int) attr.Node { return intClass("offset-", n, 1, maxOffset) }
+// Offset returns an "offset-{n}" class attribute, for n in 0..11. No offset
+// is the default at the smallest screens and Bootstrap has no offset-0, so 0
+// returns an attribute that renders nothing; a computed offset such as
+// Offset((12-w)/2) thus works for every column width w. Any other n fails
+// the render with [ErrInvalidValue].
+func Offset(n int) attr.Node {
+	if n == 0 {
+		return attr.Noop()
+	}
+	return intClass("offset-", n, 0, maxOffset)
+}
 
 // OffsetAt returns an "offset-{bp}-{n}" class attribute, for n in 0..11;
 // offset-{bp}-0 resets an offset set for a smaller breakpoint. An invalid bp

@@ -80,7 +80,7 @@ func intHelpers() []intHelper {
 		{"ColLG", ba.ColLG, "col-lg-", 1, 12},
 		{"ColXL", ba.ColXL, "col-xl-", 1, 12},
 		{"ColXXL", ba.ColXXL, "col-xxl-", 1, 12},
-		{"Offset", ba.Offset, "offset-", 1, 11},
+		{"Offset", ba.Offset, "offset-", 0, 11}, // 0 adds no class; see TestOffsetZero
 		{"OffsetSM", ba.OffsetSM, "offset-sm-", 0, 11},
 		{"OffsetMD", ba.OffsetMD, "offset-md-", 0, 11},
 		{"OffsetLG", ba.OffsetLG, "offset-lg-", 0, 11},
@@ -92,12 +92,43 @@ func intHelpers() []intHelper {
 			intHelper{fmt.Sprintf("ColAt(%s)", bp), func(n int) attr.Node { return ba.ColAt(bp, n) }, "col-" + bp.String() + "-", 1, 12},
 			intHelper{fmt.Sprintf("OffsetAt(%s)", bp), func(n int) attr.Node { return ba.OffsetAt(bp, n) }, "offset-" + bp.String() + "-", 0, 11},
 		)
+		for _, sp := range spacingAt {
+			h = append(h, intHelper{fmt.Sprintf("%s(%s)", sp.name, bp), func(n int) attr.Node { return sp.fn(bp, n) }, sp.class + "-" + bp.String() + "-", 0, 5})
+		}
 	}
 	return h
 }
 
+// bpIntHelper is a responsive helper that takes a Breakpoint and an int.
+type bpIntHelper struct {
+	name  string
+	fn    func(ba.Breakpoint, int) attr.Node
+	class string // class before the breakpoint infix, e.g. "mb"
+}
+
+// spacingAt are the responsive helpers of the spacing scale 0..5.
+var spacingAt = []bpIntHelper{
+	{"MAt", ba.MAt, "m"},
+	{"MTAt", ba.MTAt, "mt"},
+	{"MBAt", ba.MBAt, "mb"},
+	{"MSAt", ba.MSAt, "ms"},
+	{"MEAt", ba.MEAt, "me"},
+	{"MXAt", ba.MXAt, "mx"},
+	{"MYAt", ba.MYAt, "my"},
+	{"PAt", ba.PAt, "p"},
+	{"PTAt", ba.PTAt, "pt"},
+	{"PBAt", ba.PBAt, "pb"},
+	{"PSAt", ba.PSAt, "ps"},
+	{"PEAt", ba.PEAt, "pe"},
+	{"PXAt", ba.PXAt, "px"},
+	{"PYAt", ba.PYAt, "py"},
+	{"GapAt", ba.GapAt, "gap"},
+	{"RowGapAt", ba.RowGapAt, "row-gap"},
+	{"ColumnGapAt", ba.ColumnGapAt, "column-gap"},
+}
+
 func bpHelpers() []bpHelper {
-	return []bpHelper{
+	h := []bpHelper{
 		{"DNoneAt", ba.DNoneAt, "d-%s-none"},
 		{"DInlineAt", ba.DInlineAt, "d-%s-inline"},
 		{"DInlineBlockAt", ba.DInlineBlockAt, "d-%s-inline-block"},
@@ -116,7 +147,34 @@ func bpHelpers() []bpHelper {
 		{"StickyBottomAt", ba.StickyBottomAt, "sticky-%s-bottom"},
 		{"ColAt(n=1)", func(bp ba.Breakpoint) attr.Node { return ba.ColAt(bp, 1) }, "col-%s-1"},
 		{"OffsetAt(n=0)", func(bp ba.Breakpoint) attr.Node { return ba.OffsetAt(bp, 0) }, "offset-%s-0"},
+		{"MAutoAt", ba.MAutoAt, "m-%s-auto"},
+		{"MTAutoAt", ba.MTAutoAt, "mt-%s-auto"},
+		{"MBAutoAt", ba.MBAutoAt, "mb-%s-auto"},
+		{"MSAutoAt", ba.MSAutoAt, "ms-%s-auto"},
+		{"MEAutoAt", ba.MEAutoAt, "me-%s-auto"},
+		{"MXAutoAt", ba.MXAutoAt, "mx-%s-auto"},
+		{"MYAutoAt", ba.MYAutoAt, "my-%s-auto"},
+		{"FlexWrapAt", ba.FlexWrapAt, "flex-%s-wrap"},
+		{"FlexNowrapAt", ba.FlexNowrapAt, "flex-%s-nowrap"},
+		{"JustifyContentStartAt", ba.JustifyContentStartAt, "justify-content-%s-start"},
+		{"JustifyContentEndAt", ba.JustifyContentEndAt, "justify-content-%s-end"},
+		{"JustifyContentCenterAt", ba.JustifyContentCenterAt, "justify-content-%s-center"},
+		{"JustifyContentBetweenAt", ba.JustifyContentBetweenAt, "justify-content-%s-between"},
+		{"JustifyContentAroundAt", ba.JustifyContentAroundAt, "justify-content-%s-around"},
+		{"JustifyContentEvenlyAt", ba.JustifyContentEvenlyAt, "justify-content-%s-evenly"},
+		{"AlignItemsStartAt", ba.AlignItemsStartAt, "align-items-%s-start"},
+		{"AlignItemsEndAt", ba.AlignItemsEndAt, "align-items-%s-end"},
+		{"AlignItemsCenterAt", ba.AlignItemsCenterAt, "align-items-%s-center"},
+		{"AlignItemsBaselineAt", ba.AlignItemsBaselineAt, "align-items-%s-baseline"},
+		{"AlignItemsStretchAt", ba.AlignItemsStretchAt, "align-items-%s-stretch"},
+		{"TextStartAt", ba.TextStartAt, "text-%s-start"},
+		{"TextCenterAt", ba.TextCenterAt, "text-%s-center"},
+		{"TextEndAt", ba.TextEndAt, "text-%s-end"},
 	}
+	for _, sp := range spacingAt {
+		h = append(h, bpHelper{sp.name + "(n=0)", func(bp ba.Breakpoint) attr.Node { return sp.fn(bp, 0) }, sp.class + "-%s-0"})
+	}
+	return h
 }
 
 func classCases() []classCase {
@@ -393,6 +451,9 @@ func classCases() []classCase {
 	}
 	for _, h := range intHelpers() {
 		for n := h.lo; n <= h.hi; n++ {
+			if h.name == "Offset" && n == 0 {
+				continue // no class; see TestOffsetZero
+			}
 			cases = append(cases, classCase{fmt.Sprintf("%s(%d)", h.name, n), h.fn(n), fmt.Sprintf("%s%d", h.prefix, n)})
 		}
 	}
@@ -498,8 +559,29 @@ func TestInvalidInts(gt *testing.T) {
 	}
 	_, err := on(ba.MT(-1))
 	t.Must(be.Equal("render: at i[0]: attribute: ba: mt--1: invalid utility value (want 0 to 5)", err.Error()))
-	_, err = on(ba.Offset(0))
-	t.Must(be.ErrorContains(err, "offset-0: invalid utility value (want 1 to 11)"))
+	_, err = on(ba.Offset(-1))
+	t.Must(be.ErrorContains(err, "ba: offset--1: invalid utility value (want 0 to 11)"))
+	_, err = on(ba.MBAt(ba.MD, 6))
+	t.Must(be.ErrorContains(err, "ba: mb-md-6: invalid utility value (want 0 to 5)"))
+	_, err = on(ba.GapAt(0, 1))
+	t.Must(be.ErrorContains(err, "ba: gap-{bp}-1: invalid utility value: Breakpoint(0) (want SM to XXL)"))
+}
+
+// TestOffsetZero checks that Offset(0), no offset, renders no class rather
+// than failing: Bootstrap has no offset-0, and no offset is the default.
+func TestOffsetZero(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	got, err := on(ba.Offset(0))
+	t.Must(be.NoError(err))
+	t.Must(be.Equal("<i></i>", got))
+	got, err = on(ba.Col12(), ba.Offset(0), ba.OffsetMD(2))
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(`<i class="col-12 offset-md-2"></i>`, got))
+	// A centered column of any width.
+	for w := 1; w <= 12; w++ {
+		_, err := on(ba.ColMD(w), ba.Offset((12-w)/2))
+		t.Mustf(be.NoError(err), "width %d", w)
+	}
 }
 
 func TestInvalidBreakpoints(gt *testing.T) {

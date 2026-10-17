@@ -19,10 +19,15 @@ func ExampleIcon() {
 	// Output: <p><i class="bi bi-alarm" aria-hidden="true"></i> It&#39;s time</p>
 }
 
-// A forged icon name cannot break out of the class attribute.
+// A name that is not an icon name fails the render: it can neither break
+// out of the class attribute nor add classes, and the error does not repeat
+// it. Check a run-time name with Lookup instead of converting it.
 func ExampleIcon_forged() {
 	core.Dump(bi.Icon(`x" onclick="alert(1)`))
-	// Output: <i class="bi bi-x&#34; onclick=&#34;alert(1)" aria-hidden="true"></i>
+	core.Dump(bi.Icon("x position-fixed top-0 start-0 w-100 h-100"))
+	// Output:
+	// ERROR: render: at i[0]: attribute: bi: invalid icon name
+	// ERROR: render: at i[0]: attribute: bi: invalid icon name
 }
 
 // An icon-only button gets its accessible name from the button; the icon

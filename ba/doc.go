@@ -21,11 +21,12 @@
 // # Validated values
 //
 // Helpers that take a value accept only values that have a Bootstrap class:
-// spacing ([M], [P], [MT], ... and [Gap]) 0..5, [FS] 1..6, column spans
-// ([ColMD], [ColAt], ...) 1..12, [Offset] 1..11 and responsive offsets
-// ([OffsetMD], [OffsetAt], ...) 0..11, [BorderWidth] and [RoundedSize] 0..5,
-// the named weights of [FW] and line heights of [LH], and the breakpoints
-// [SM] to [XXL]. Any other value never becomes a class that Bootstrap does
+// spacing ([M], [P], [MT], ..., [Gap] and their responsive variants such as
+// [MBAt] and [GapAt]) 0..5, [FS] 1..6, column spans ([ColMD], [ColAt], ...)
+// 1..12, offsets ([Offset], [OffsetMD], [OffsetAt], ...) 0..11, where
+// Offset(0) adds no class because no offset is the default, [BorderWidth]
+// and [RoundedSize] 0..5, the named weights of [FW] and line heights of
+// [LH], and the breakpoints [SM] to [XXL]. Any other value never becomes a class that Bootstrap does
 // not define: the helper returns an attribute that fails the render with an
 // error wrapping [ErrInvalidValue], so the mistake shows up in tests and as
 // a render error instead of as a silently unstyled page.
@@ -41,6 +42,15 @@
 //
 //	div.Div(ba.DNone(), ba.DBlockAt(ba.MD))(sidebar)
 //	div.Div(ba.DFlex(), ba.FlexColumn(), ba.FlexRowAt(ba.LG), ba.Gap(2))(tools...)
+//
+// Responsive variants exist for display ([DNoneAt], ...), flex direction and
+// wrapping ([FlexRowAt], [FlexWrapAt], ...), justify-content and align-items
+// ([JustifyContentBetweenAt], [AlignItemsCenterAt], ...), text alignment
+// ([TextEndAt], ...), spacing and gaps ([MBAt], [MSAutoAt], [PXAt], [GapAt],
+// ...), grid columns and offsets ([ColAt], [OffsetAt], ...) and sticky
+// positioning ([StickyTopAt], ...). Every class they produce exists in the
+// Bootstrap stylesheet; for a responsive class without a helper, attr.Class
+// still works but is not checked.
 //
 // # Accessibility and forms
 //

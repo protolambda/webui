@@ -91,3 +91,102 @@ func PX(n int) attr.Node { return intClass("px-", n, minSpace, maxSpace) }
 // PY creates a Bootstrap py-{n} (vertical padding) class, for n in 0..5. Any
 // other n fails the render with [ErrInvalidValue].
 func PY(n int) attr.Node { return intClass("py-", n, minSpace, maxSpace) }
+
+// MAt creates a Bootstrap m-{bp}-{n} (margin) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func MAt(bp Breakpoint, n int) attr.Node { return atIntClass("m-", bp, n, minSpace, maxSpace) }
+
+// MTAt creates a Bootstrap mt-{bp}-{n} (margin-top) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func MTAt(bp Breakpoint, n int) attr.Node { return atIntClass("mt-", bp, n, minSpace, maxSpace) }
+
+// MBAt creates a Bootstrap mb-{bp}-{n} (margin-bottom) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue]. It overrides a plain margin from bp up: MB(3) with
+// MBAt(MD, 0) is a bottom margin on small screens only.
+func MBAt(bp Breakpoint, n int) attr.Node { return atIntClass("mb-", bp, n, minSpace, maxSpace) }
+
+// MSAt creates a Bootstrap ms-{bp}-{n} (margin-start) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func MSAt(bp Breakpoint, n int) attr.Node { return atIntClass("ms-", bp, n, minSpace, maxSpace) }
+
+// MEAt creates a Bootstrap me-{bp}-{n} (margin-end) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func MEAt(bp Breakpoint, n int) attr.Node { return atIntClass("me-", bp, n, minSpace, maxSpace) }
+
+// MXAt creates a Bootstrap mx-{bp}-{n} (horizontal margin) class that applies
+// from breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the
+// render with [ErrInvalidValue].
+func MXAt(bp Breakpoint, n int) attr.Node { return atIntClass("mx-", bp, n, minSpace, maxSpace) }
+
+// MYAt creates a Bootstrap my-{bp}-{n} (vertical margin) class that applies
+// from breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the
+// render with [ErrInvalidValue].
+func MYAt(bp Breakpoint, n int) attr.Node { return atIntClass("my-", bp, n, minSpace, maxSpace) }
+
+// PAt creates a Bootstrap p-{bp}-{n} (padding) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func PAt(bp Breakpoint, n int) attr.Node { return atIntClass("p-", bp, n, minSpace, maxSpace) }
+
+// PTAt creates a Bootstrap pt-{bp}-{n} (padding-top) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func PTAt(bp Breakpoint, n int) attr.Node { return atIntClass("pt-", bp, n, minSpace, maxSpace) }
+
+// PBAt creates a Bootstrap pb-{bp}-{n} (padding-bottom) class that applies
+// from breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the
+// render with [ErrInvalidValue].
+func PBAt(bp Breakpoint, n int) attr.Node { return atIntClass("pb-", bp, n, minSpace, maxSpace) }
+
+// PSAt creates a Bootstrap ps-{bp}-{n} (padding-start) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func PSAt(bp Breakpoint, n int) attr.Node { return atIntClass("ps-", bp, n, minSpace, maxSpace) }
+
+// PEAt creates a Bootstrap pe-{bp}-{n} (padding-end) class that applies from
+// breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the render
+// with [ErrInvalidValue].
+func PEAt(bp Breakpoint, n int) attr.Node { return atIntClass("pe-", bp, n, minSpace, maxSpace) }
+
+// PXAt creates a Bootstrap px-{bp}-{n} (horizontal padding) class that applies
+// from breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the
+// render with [ErrInvalidValue].
+func PXAt(bp Breakpoint, n int) attr.Node { return atIntClass("px-", bp, n, minSpace, maxSpace) }
+
+// PYAt creates a Bootstrap py-{bp}-{n} (vertical padding) class that applies
+// from breakpoint bp upwards, for n in 0..5. An invalid bp or n fails the
+// render with [ErrInvalidValue].
+func PYAt(bp Breakpoint, n int) attr.Node { return atIntClass("py-", bp, n, minSpace, maxSpace) }
+
+// MAutoAt creates a Bootstrap m-{bp}-auto class that applies from breakpoint
+// bp upwards. An invalid bp fails the render with [ErrInvalidValue].
+func MAutoAt(bp Breakpoint) attr.Node { return atClass("m-", bp, "-auto") }
+
+// MTAutoAt creates a Bootstrap mt-{bp}-auto class that applies from breakpoint
+// bp upwards. An invalid bp fails the render with [ErrInvalidValue].
+func MTAutoAt(bp Breakpoint) attr.Node { return atClass("mt-", bp, "-auto") }
+
+// MBAutoAt creates a Bootstrap mb-{bp}-auto class that applies from breakpoint
+// bp upwards. An invalid bp fails the render with [ErrInvalidValue].
+func MBAutoAt(bp Breakpoint) attr.Node { return atClass("mb-", bp, "-auto") }
+
+// MSAutoAt creates a Bootstrap ms-{bp}-auto class that applies from breakpoint
+// bp upwards. An invalid bp fails the render with [ErrInvalidValue].
+func MSAutoAt(bp Breakpoint) attr.Node { return atClass("ms-", bp, "-auto") }
+
+// MEAutoAt creates a Bootstrap me-{bp}-auto class that applies from breakpoint
+// bp upwards. An invalid bp fails the render with [ErrInvalidValue].
+func MEAutoAt(bp Breakpoint) attr.Node { return atClass("me-", bp, "-auto") }
+
+// MXAutoAt creates a Bootstrap mx-{bp}-auto class that applies from breakpoint
+// bp upwards. An invalid bp fails the render with [ErrInvalidValue].
+func MXAutoAt(bp Breakpoint) attr.Node { return atClass("mx-", bp, "-auto") }
+
+// MYAutoAt creates a Bootstrap my-{bp}-auto class that applies from breakpoint
+// bp upwards. An invalid bp fails the render with [ErrInvalidValue].
+func MYAutoAt(bp Breakpoint) attr.Node { return atClass("my-", bp, "-auto") }

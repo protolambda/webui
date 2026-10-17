@@ -17,9 +17,11 @@
 // starts with an upper-case letter, and a name that starts with a digit gets
 // the prefix "Num" ("x-lg" is XLg, "1-circle" is Num1Circle). gen fails,
 // rather than writing a partial file, on a stylesheet it does not understand:
-// a missing banner, an icon rule of an unexpected shape, an invalid or
-// duplicate name, two names that map to the same constant, or a name that
-// maps to another exported identifier of package bi.
+// a missing banner, an at-rule other than @font-face, an icon rule of an
+// unexpected shape or one that is not a standalone top-level rule (a
+// compound, descendant or nested selector), an invalid or duplicate name,
+// two names that map to the same constant, or a name that maps to another
+// exported identifier of package bi.
 package main
 
 import (
@@ -48,11 +50,12 @@ const maxCSSSize = 4 << 20
 // reserved are the exported names of package bi that are not icons. An icon
 // that maps to one of them would break the package.
 var reserved = map[string]bool{
-	"Icon":          true,
-	"Version":       true,
-	"All":           true,
-	"Lookup":        true,
-	"ErrEmptyLabel": true,
+	"Icon":           true,
+	"Version":        true,
+	"All":            true,
+	"Lookup":         true,
+	"ErrEmptyLabel":  true,
+	"ErrInvalidName": true,
 }
 
 var (
@@ -121,21 +124,30 @@ func parse(css []byte) (version string, icons []icon, err error) {
 	}
 	version = string(m[1])
 
-	rules := ruleRe.FindAllSubmatch(css, -1)
-	if n := bytes.Count(css, []byte(".bi-")); n != len(rules) {
-		return "", nil, fmt.Errorf("found %d icon rules of the expected shape, but %d \".bi-\" selectors", len(rules), n)
+	// An at-rule other than the font face could scope icon rules (@media,
+	// @supports, @layer, ...), so that they would not apply as plain
+	// "bi bi-NAME".
+	if n := bytes.Count(css, []byte("@")); n != bytes.Count(css, []byte("@font-face")) {
+		return "", nil, errors.New("stylesheet has an at-rule other than @font-face")
 	}
-	if len(rules) == 0 {
+	locs := ruleRe.FindAllSubmatchIndex(css, -1)
+	if n := bytes.Count(css, []byte(".bi-")); n != len(locs) {
+		return "", nil, fmt.Errorf("found %d icon rules of the expected shape, but %d \".bi-\" selectors", len(locs), n)
+	}
+	if len(locs) == 0 {
 		return "", nil, errors.New("no icon rules")
 	}
-	if len(rules) > math.MaxUint16 {
-		return "", nil, fmt.Errorf("%d icons do not fit the uint16 name index", len(rules))
+	if len(locs) > math.MaxUint16 {
+		return "", nil, fmt.Errorf("%d icons do not fit the uint16 name index", len(locs))
 	}
-	names := make(map[string]bool, len(rules))
-	idents := make(map[string]string, len(rules))
-	icons = make([]icon, 0, len(rules))
-	for _, r := range rules {
-		name := string(r[1])
+	if err := checkStandalone(css, locs); err != nil {
+		return "", nil, err
+	}
+	names := make(map[string]bool, len(locs))
+	idents := make(map[string]string, len(locs))
+	icons = make([]icon, 0, len(locs))
+	for _, loc := range locs {
+		name := string(css[loc[2]:loc[3]])
 		if !nameRe.MatchString(name) {
 			return "", nil, fmt.Errorf("invalid icon name %q", name)
 		}
@@ -157,6 +169,31 @@ func parse(css []byte) (version string, icons []icon, err error) {
 		icons = append(icons, icon{ident: ident, name: name})
 	}
 	return version, icons, nil
+}
+
+// checkStandalone checks that every icon rule, given by its match indexes
+// in css, is a top-level rule of its own: outside any block, and right after
+// the end of the previous rule or of a comment. A compound selector
+// (".x.bi-a"), a descendant or child selector (".x .bi-a", "x>.bi-a") or a
+// nested rule would apply only in some context, so gen rejects it instead
+// of emitting a constant for an icon that does not render by itself.
+//
+// The block depth is counted from the braces between the rules; an icon rule
+// itself holds exactly one balanced block. A brace inside a comment or string
+// skews the count, which makes gen fail rather than accept a rule.
+func checkStandalone(css []byte, locs [][]int) error {
+	depth, prev := 0, 0
+	for _, loc := range locs {
+		gap := css[prev:loc[0]]
+		depth += bytes.Count(gap, []byte("{")) - bytes.Count(gap, []byte("}"))
+		before := bytes.TrimRight(css[:loc[0]], " \t\r\n\f")
+		standalone := bytes.HasSuffix(before, []byte("}")) || bytes.HasSuffix(before, []byte("*/"))
+		if depth != 0 || !standalone {
+			return fmt.Errorf("icon rule at offset %d is not a standalone top-level rule", loc[0])
+		}
+		prev = loc[1]
+	}
+	return nil
 }
 
 // identifier returns the Go constant name of a valid icon name.

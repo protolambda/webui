@@ -75,6 +75,19 @@ func TestParse(gt *testing.T) {
 	t.Must(be.Substring(s, "var byName = [...]uint16{\n\t2, 1, 0,\n}"))
 }
 
+// TestParseAcceptsStandaloneRules covers the shapes of standalone rules:
+// after the banner, after another rule (minified or not), after a comment,
+// and after a leading @font-face.
+func TestParseAcceptsStandaloneRules(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	css := testBanner + "\n@font-face{font-family:x;src:url(\"x.woff2\") format(\"woff2\")}\n" +
+		`.bi-a::before{content:"\f101"}` + "\n\n" + `.bi-b::before {` + "\n  " + `content: "\f102";` + "\n}\n" +
+		`/* c */ .bi-c::before{content:"\f103"}.bi-d::before{content:"\f104"}`
+	_, icons, err := parse([]byte(css))
+	t.Must(be.NoError(err))
+	t.Must(be.DeepEqual([]icon{{"A", "a"}, {"B", "b"}, {"C", "c"}, {"D", "d"}}, icons))
+}
+
 func TestParseRejects(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, c := range []struct {
@@ -95,6 +108,16 @@ func TestParseRejects(gt *testing.T) {
 		{"grouped selectors", testBanner + `.bi-a::before,.bi-b::before{content:"\f101"}`, "expected shape"},
 		{"other shape", testBanner + `.bi-a::after{content:"\f101"}`, "expected shape"},
 		{"no content", testBanner + `.bi-a::before{color:red}`, "expected shape"},
+		{"compound selector", testBanner + `x{}.x.bi-a::before{content:"\f101"}`, "standalone"},
+		{"descendant selector", testBanner + `x{}.p .bi-a::before{content:"\f101"}`, "standalone"},
+		{"child selector", testBanner + `x{}div>.bi-a::before{content:"\f101"}`, "standalone"},
+		{"pseudo-class argument", testBanner + `x{}:not(.bi-a::before{content:"\f101"})`, "standalone"},
+		{"nested rule", testBanner + `x{.bi-a::before{content:"\f101"}}`, "standalone"},
+		{"nested after comment", testBanner + `x{/*c*/.bi-a::before{content:"\f101"}}`, "standalone"},
+		{"second rule compound", testBanner + `.bi-a::before{content:"\f101"}.x.bi-b::before{content:"\f102"}`, "standalone"},
+		{"media query", testBanner + `@media print{.bi-a::before{content:"\f101"}}`, "at-rule"},
+		{"media query after rule", testBanner + `@media print{x{}.bi-a::before{content:"\f101"}}`, "at-rule"},
+		{"layer", testBanner + `@layer icons;.bi-a::before{content:"\f101"}`, "at-rule"},
 	} {
 		_, _, err := parse([]byte(c.css))
 		t.Mustf(be.ErrorContains(err, c.msg), "case %s", c.name)

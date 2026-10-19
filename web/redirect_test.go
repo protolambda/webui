@@ -32,6 +32,7 @@ func TestRedirectPlain(gt *testing.T) {
 		t.Must(res.Status(http.StatusSeeOther))
 		t.Must(res.Header("Location", ct.Exact("/tasks?page=2#new")))
 		t.Must(res.Header("Vary", ct.Exact("HX-Request")))
+		t.Must(res.Header("Vary", ct.Exact("HX-History-Restore-Request")))
 		t.Must(res.HeaderAbsent("HX-Redirect"))
 		t.Must(res.HeaderAbsent("HX-Refresh"))
 	}
@@ -45,6 +46,7 @@ func TestRedirectHTMX(gt *testing.T) {
 	t.Must(res.HeaderAbsent("HX-Refresh"))
 	t.Must(res.HeaderAbsent("Location"))
 	t.Must(res.Header("Vary", ct.Exact("HX-Request")))
+	t.Must(res.Header("Vary", ct.Exact("HX-History-Restore-Request")))
 	t.Must(res.Body(ct.Exact("")))
 }
 

@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"testing"
@@ -152,6 +153,86 @@ func TestLogin(gt *testing.T) {
 	t.Must(g.logs.NotLogged(app.DemoPassword, csrf, "Buy <milk>"))
 	for _, c := range b.Jar().Cookies(&url.URL{Scheme: "https", Host: "app.example.test", Path: "/"}) {
 		t.Must(g.logs.NotLogged(c.Value))
+	}
+}
+
+// TestLoginThrottled makes more attempts than the throttle allows within a
+// minute from one client: the answer is 429 with Retry-After, also with the
+// right password and for another name, until the window has passed.
+func TestLoginThrottled(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clock := newFakeClock()
+	g := newGallery(t, app.Options{Now: clock.Now})
+	b := webuitest.NewBrowser(t, g, webuitest.BrowserOptions{})
+	for i := range session.DefaultThrottleLimit {
+		res := logIn(t, b, "/login", "Ada", "wrong")
+		t.Mustf(res.Status(http.StatusUnprocessableEntity), "attempt %d", i+1)
+	}
+	res := logIn(t, b, "/login", "Ada", app.DemoPassword)
+	t.Must(res.Status(http.StatusTooManyRequests))
+	t.Must(res.Header("Retry-After", ct.Exact("60")))
+	t.Must(be.False(slices.Contains(cookieNames(res), "__Host-session")))
+	page := res.HTML()
+	t.Must(contract("")(page))
+	t.Must(page.Find(ct.ID("alerts")).Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusTooManyRequests)))
+	// The client's address is a key of its own: another name is refused too.
+	t.Must(logIn(t, b, "/login", "Bo", app.DemoPassword).Status(http.StatusTooManyRequests))
+	clock.Advance(30 * time.Second)
+	res = logIn(t, b, "/login", "Ada", app.DemoPassword)
+	t.Must(res.Status(http.StatusTooManyRequests))
+	t.Must(res.Header("Retry-After", ct.Exact("30")))
+
+	clock.Advance(30 * time.Second)
+	res = logIn(t, b, "/login", "Ada", app.DemoPassword)
+	t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/notes?notice=signed-in")))
+	t.Must(g.logs.NotLogged(app.DemoPassword))
+}
+
+func TestLoginThrottleBehindProxy(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, c := range []struct {
+		name  string
+		trust func(netip.Addr) bool
+		want  int
+	}{
+		{"trusted", netip.MustParsePrefix("127.0.0.1/32").Contains, http.StatusSeeOther},
+		{"untrusted header spoof", nil, http.StatusTooManyRequests},
+	} {
+		t.Run(c.name, func(t devtest.T) {
+			clock := newFakeClock()
+			g := newGallery(t, app.Options{Now: clock.Now, TrustedProxy: c.trust})
+			first := webuitest.NewBrowser(t, g, webuitest.BrowserOptions{})
+			first.Options = []webuitest.ReqOption{webuitest.Header("X-Real-IP", "198.51.100.10")}
+			for range session.DefaultThrottleLimit {
+				t.Must(logIn(t, first, "/login", "Ada", "wrong").Status(http.StatusUnprocessableEntity))
+			}
+			t.Must(logIn(t, first, "/login", "Bo", app.DemoPassword).Status(http.StatusTooManyRequests))
+
+			// Both browsers connect from loopback, as two users behind the
+			// same proxy do. Only a trusted peer may distinguish its clients.
+			other := first.Fork()
+			other.Options = []webuitest.ReqOption{webuitest.Header("X-Real-IP", "203.0.113.42")}
+			t.Must(logIn(t, other, "/login", "Bo", app.DemoPassword).Status(c.want))
+			// The account allowance still applies across client addresses.
+			third := first.Fork()
+			third.Options = []webuitest.ReqOption{webuitest.Header("X-Real-IP", "203.0.113.43")}
+			t.Must(logIn(t, third, "/login", "Ada", app.DemoPassword).Status(http.StatusTooManyRequests))
+		})
+	}
+}
+
+func TestLoginRejectsInvalidProxyIdentity(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, header := range []string{"", "203.0.113.2, 203.0.113.3", "private request text"} {
+		g := newGallery(t, app.Options{TrustedProxy: netip.MustParsePrefix("127.0.0.1/32").Contains})
+		b := webuitest.NewBrowser(t, g, webuitest.BrowserOptions{})
+		if header != "" {
+			b.Options = []webuitest.ReqOption{webuitest.Header("X-Real-IP", header)}
+		}
+		res := logIn(t, b, "/login", "Ada", app.DemoPassword)
+		t.Must(res.Status(http.StatusBadRequest))
+		t.Must(be.False(slices.Contains(cookieNames(res), "__Host-session")))
+		t.Must(g.logs.NotLogged("private request text"))
 	}
 }
 

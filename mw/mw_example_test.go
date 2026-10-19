@@ -7,12 +7,31 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/protolambda/webui/mw"
 )
+
+// A local proxy overwrites X-Real-IP; an untrusted peer cannot choose its
+// client address with that header.
+func ExampleClientIP() {
+	trustedProxy := netip.MustParsePrefix("127.0.0.1/32").Contains
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("X-Real-IP", "203.0.113.2")
+	addr, err := mw.ClientIP(r, trustedProxy)
+	fmt.Println(addr, err)
+
+	r.RemoteAddr = "198.51.100.2:1234"
+	addr, err = mw.ClientIP(r, trustedProxy)
+	fmt.Println(addr, err)
+	// Output:
+	// 203.0.113.2 <nil>
+	// 198.51.100.2 <nil>
+}
 
 // The recommended stack, outermost first, in front of an application mux.
 func ExampleChain() {

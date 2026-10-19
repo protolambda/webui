@@ -4,6 +4,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 	"time"
 	"unsafe"
@@ -93,6 +94,63 @@ func TestStoreListInvariants(gt *testing.T) {
 }
 
 type item struct{ ID int }
+
+// The internal test can observe the store lock: it lets match return only
+// once Rotate owns that lock and is waiting for the session lock that
+// match holds. This forces the check/end interleaving without a sleep or
+// an assumption about how quickly the rotation goroutine is scheduled.
+func TestEndFuncFollowsRotationAfterMatch(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st, err := NewStore(Options[int]{Rand: rand.NewChaCha8([32]byte{10})})
+	t.Must(be.NoError(err))
+	oldRec := httptest.NewRecorder()
+	old, err := st.New(oldRec, nil, 1)
+	t.Must(be.NoError(err))
+	other, err := st.New(httptest.NewRecorder(), nil, 2)
+	t.Must(be.NoError(err))
+	r := httptest.NewRequest(http.MethodPost, "/reauth", nil)
+	r.AddCookie(oldRec.Result().Cookies()[0])
+
+	var rotated *Session[int]
+	var rotateErr error
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	started := false
+	n := st.EndFunc(func(id int) bool {
+		if id == 1 && !started {
+			started = true
+			go func() {
+				defer close(done)
+				rotated, rotateErr = st.Rotate(rec, r)
+			}()
+			for st.mu.TryLock() {
+				st.mu.Unlock()
+				select {
+				case <-done:
+					t.Fatal("rotation returned before acquiring the store lock")
+				default:
+					runtime.Gosched()
+				}
+			}
+			// Only Rotate can hold st.mu here. It cannot release it until
+			// match returns and releases old.mu, so it moves the value
+			// before EndFunc can acquire st.mu to end the old session.
+		}
+		return id == 1
+	})
+	<-done
+	t.Must(be.NoError(rotateErr))
+	t.Must(be.Equal(1, n))
+	t.Must(be.Equal(EndRotated, old.EndReason()))
+	t.Must(be.True(rotated.Ended()))
+	t.Must(be.Equal(EndRevoked, rotated.EndReason()))
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(rec.Result().Cookies()[0])
+	_, ok := st.Lookup(r)
+	t.Mustf(be.False(ok), "the rotated cookie names no session")
+	t.Must(be.False(other.Ended()))
+	t.Must(be.Equal(1, st.Len()))
+}
 
 func TestEndFuncPanicLeavesSessionsUnlocked(gt *testing.T) {
 	t := devtest.ParallelT(gt)

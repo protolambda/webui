@@ -30,7 +30,8 @@ const NextParam = "next"
 //
 // The next value is passed through [SafeNext] and left out when it is not
 // a safe local path; the login handler must check it with SafeNext again
-// before redirecting to it. Answers add HX-Request to Vary.
+// before redirecting to it. Answers add the headers of [IsHTMX] to Vary
+// (hx2.AddVary).
 //
 // authed decides only whether to let the request through, e.g. by looking
 // up the session cookie; it must not write to the response. Do not put

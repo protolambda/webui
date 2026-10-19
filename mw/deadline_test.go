@@ -61,6 +61,14 @@ func TestWriteDeadlineStartsWithResponse(gt *testing.T) {
 		// A LimitedReader has no WriteTo, so io.Copy uses the writer's ReadFrom.
 		_, _ = io.Copy(w, io.LimitReader(strings.NewReader("xyz"), 1))
 	}
+	copyNothing := func(w http.ResponseWriter) {
+		_, _ = io.Copy(w, io.LimitReader(strings.NewReader(""), 1))
+	}
+	slowCopy := func(d time.Duration) step {
+		return func(w http.ResponseWriter) {
+			_, _ = io.Copy(w, io.LimitReader(&slowReader{delay: d, r: strings.NewReader("xyz")}, 2))
+		}
+	}
 	takeOver := func(d time.Time) step {
 		return func(w http.ResponseWriter) { _ = http.NewResponseController(w).SetWriteDeadline(d) }
 	}
@@ -93,6 +101,10 @@ func TestWriteDeadlineStartsWithResponse(gt *testing.T) {
 			[]time.Time{t0.Add(time.Second + timeout), t0.Add(2*time.Second + timeout)}},
 		{"HTTP/2 nothing written", 2, false, []step{sleep(10 * time.Second)},
 			[]time.Time{t0.Add(10*time.Second + timeout)}},
+		{"HTTP/2 empty copy", 2, false, []step{sleep(time.Second), copyNothing, sleep(time.Second)},
+			[]time.Time{t0.Add(2*time.Second + timeout)}},
+		{"HTTP/2 slow copy", 2, false, []step{slowCopy(10 * time.Second), sleep(time.Second)},
+			[]time.Time{t0.Add(10*time.Second + timeout), t0.Add(11*time.Second + timeout)}},
 		{"HTTP/1 take over", 1, false, []step{sleep(5 * time.Second), takeOver(far), sleep(time.Minute), write},
 			[]time.Time{far, t0.Add(65*time.Second + timeout)}},
 		{"HTTP/1 take over without deadline", 1, false, []step{takeOver(time.Time{}), write},
@@ -137,6 +149,51 @@ func TestWriteDeadlineStartsWithResponse(gt *testing.T) {
 			})
 		})
 	}
+}
+
+// slowReader takes delay before it yields its first byte.
+type slowReader struct {
+	delay   time.Duration
+	r       io.Reader
+	started bool
+}
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	if !s.started {
+		s.started = true
+		time.Sleep(s.delay)
+	}
+	return s.r.Read(p)
+}
+
+// TestWriteDeadlineCoversRecoveredPanics has the handler panic: the
+// deadline is set as the panic passes through WriteDeadline, so that the
+// error page of a recovering middleware outside it (as web.Errors.Recover
+// is placed) is bounded as any response.
+func TestWriteDeadlineCoversRecoveredPanics(gt *testing.T) {
+	synctest.Test(gt, func(st *testing.T) {
+		t := mustbe.WrapT(st)
+		const timeout = 30 * time.Second
+		t0 := time.Now()
+		inner := mw.WriteDeadline(timeout)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			time.Sleep(time.Second)
+			panic("handler failed")
+		}))
+		recovering := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if recover() != nil {
+					http.Error(w, "failed", http.StatusInternalServerError)
+				}
+			}()
+			inner.ServeHTTP(w, r)
+		})
+		rec := newDeadlineRecorder()
+		recovering.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		t.Must(be.Equal(http.StatusInternalServerError, rec.Code))
+		writes := rec.Writes()
+		t.Must(be.Len(writes, 1))
+		t.Must(be.True(t0.Add(time.Second + timeout).Equal(writes[0])))
+	})
 }
 
 func TestWriteDeadlineExpectWithoutBody(gt *testing.T) {

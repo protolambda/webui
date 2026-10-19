@@ -192,7 +192,7 @@ func ExampleAddVary() {
 	hx2.AddVary(h)
 	hx2.AddVary(h) // already present: no change
 	fmt.Println(h.Values("Vary"))
-	// Output: [Accept-Encoding HX-Request]
+	// Output: [Accept-Encoding HX-Request HX-History-Restore-Request]
 }
 
 // A response that is a fragment for htmx requests but the full page for

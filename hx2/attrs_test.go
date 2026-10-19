@@ -302,16 +302,17 @@ func TestAddVary(gt *testing.T) {
 		have []string
 		want []string
 	}{
-		{"none", nil, []string{"HX-Request"}},
-		{"other", []string{"Accept-Encoding"}, []string{"Accept-Encoding", "HX-Request"}},
-		{"other list", []string{"Accept-Encoding, Origin"}, []string{"Accept-Encoding, Origin", "HX-Request"}},
-		{"present", []string{"HX-Request"}, []string{"HX-Request"}},
-		{"present lower case", []string{"hx-request"}, []string{"hx-request"}},
-		{"present in list", []string{"Origin,  HX-Request ,Accept"}, []string{"Origin,  HX-Request ,Accept"}},
-		{"present in second line", []string{"Origin", "HX-Request"}, []string{"Origin", "HX-Request"}},
+		{"none", nil, []string{"HX-Request", "HX-History-Restore-Request"}},
+		{"other", []string{"Accept-Encoding"}, []string{"Accept-Encoding", "HX-Request", "HX-History-Restore-Request"}},
+		{"other list", []string{"Accept-Encoding, Origin"}, []string{"Accept-Encoding, Origin", "HX-Request", "HX-History-Restore-Request"}},
+		{"present", []string{"HX-Request"}, []string{"HX-Request", "HX-History-Restore-Request"}},
+		{"both present", []string{"HX-Request, HX-History-Restore-Request"}, []string{"HX-Request, HX-History-Restore-Request"}},
+		{"present lower case", []string{"hx-request, hx-history-restore-request"}, []string{"hx-request, hx-history-restore-request"}},
+		{"present in list", []string{"Origin,  HX-Request ,Accept"}, []string{"Origin,  HX-Request ,Accept", "HX-History-Restore-Request"}},
+		{"present in second line", []string{"Origin", "HX-Request"}, []string{"Origin", "HX-Request", "HX-History-Restore-Request"}},
 		{"star", []string{"*"}, []string{"*"}},
-		{"similar names", []string{"HX-Request-Id, XHX-Request"}, []string{"HX-Request-Id, XHX-Request", "HX-Request"}},
-		{"empty value", []string{""}, []string{"", "HX-Request"}},
+		{"similar names", []string{"HX-Request-Id, XHX-Request"}, []string{"HX-Request-Id, XHX-Request", "HX-Request", "HX-History-Restore-Request"}},
+		{"empty value", []string{""}, []string{"", "HX-Request", "HX-History-Restore-Request"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t devtest.T) {
@@ -332,7 +333,7 @@ func TestAddVary(gt *testing.T) {
 	h := http.Header{}
 	hx2.AddVary(h)
 	t.Must(be.Equal(1, len(h)))
-	t.Must(be.Equal("HX-Request", strings.Join(h["Vary"], ",")))
+	t.Must(be.Equal("HX-Request,HX-History-Restore-Request", strings.Join(h["Vary"], ",")))
 }
 
 func TestAddVaryHeaders(gt *testing.T) {
@@ -373,12 +374,13 @@ func TestAddVaryHeaders(gt *testing.T) {
 		})
 	}
 
-	// AddVary is AddVaryHeaders with HX-Request, and the two combine.
+	// AddVary is AddVaryHeaders with the headers of web.IsHTMX, and the two
+	// combine.
 	h := http.Header{}
 	hx2.AddVary(h)
 	hx2.AddVaryHeaders(h, both...)
 	hx2.AddVary(h)
-	t.Must(be.DeepEqual([]string{"HX-Request", "HX-Boosted"}, h.Values("Vary")))
+	t.Must(be.DeepEqual([]string{"HX-Request", "HX-History-Restore-Request", "HX-Boosted"}, h.Values("Vary")))
 }
 
 // A name that is not a header name would corrupt the Vary list: it is a

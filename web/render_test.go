@@ -105,7 +105,7 @@ func TestChoose(gt *testing.T) {
 			res := cthttp.Serve(http.HandlerFunc(handler), r)
 			t.Must(res.Status(http.StatusOK))
 			t.Must(res.Body(ct.Exact("<p>" + c.want + "</p>")))
-			t.Must(be.DeepEqual([]string{"Accept-Encoding", "HX-Request", "HX-Boosted"}, res.Headers().Values("Vary")))
+			t.Must(be.DeepEqual([]string{"Accept-Encoding", "HX-Request", "HX-History-Restore-Request", "HX-Boosted"}, res.Headers().Values("Vary")))
 		})
 	}
 }
@@ -119,9 +119,10 @@ func TestChooseVaryOnce(gt *testing.T) {
 		vary []string
 		want []string
 	}{
-		{"both", []string{"hx-request, hx-boosted"}, []string{"hx-request, hx-boosted"}},
+		{"all", []string{"hx-request, hx-history-restore-request, hx-boosted"}, []string{"hx-request, hx-history-restore-request, hx-boosted"}},
 		{"star", []string{"*"}, []string{"*"}},
-		{"boosted", []string{"Accept-Encoding,HX-Boosted"}, []string{"Accept-Encoding,HX-Boosted", "HX-Request"}},
+		{"boosted", []string{"Accept-Encoding,HX-Boosted"}, []string{"Accept-Encoding,HX-Boosted", "HX-Request", "HX-History-Restore-Request"}},
+		{"request", []string{"HX-Request"}, []string{"HX-Request", "HX-History-Restore-Request", "HX-Boosted"}},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()

@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1294,4 +1295,153 @@ func TestConcurrentUse(gt *testing.T) {
 	}
 	wg.Wait()
 	t.Must(be.LessOrEq(st.Len(), 16))
+}
+
+func TestReplace(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	e := new(ended)
+	st := newStore(t, session.Options[account]{OnEnd: e.hook})
+	first, _ := login(t, st, nil, account{ID: 1})
+	second, _ := login(t, st, nil, account{ID: 1})
+	other, otherCookie := login(t, st, nil, account{ID: 2})
+	// The browser's own session ends as at New, whatever match says.
+	browser, browserCookie := login(t, st, nil, account{ID: 3})
+
+	rec := httptest.NewRecorder()
+	s, err := st.Replace(rec, get(t, "/login", browserCookie), account{ID: 1}, func(a account) bool { return a.ID == 1 })
+	t.Must(be.NoError(err))
+	cookies := rec.Result().Cookies()
+	t.Must(be.Len(cookies, 1))
+	t.Must(be.True(first.Ended()))
+	t.Must(be.Equal(session.EndRevoked, first.EndReason()))
+	t.Must(be.True(second.Ended()))
+	t.Must(be.Equal(session.EndRevoked, second.EndReason()))
+	t.Must(be.True(browser.Ended()))
+	t.Must(be.Equal(session.EndRotated, browser.EndReason()))
+	t.Must(be.False(other.Ended()))
+	t.Must(be.False(s.Ended()))
+	t.Must(be.Equal(2, st.Len()))
+	t.Must(be.Len(e.list(), 3))
+	data, ok := s.Data()
+	t.Must(be.True(ok))
+	t.Must(be.Equal(int64(1), data.ID))
+	got, ok := st.Lookup(get(t, "/", cookies[0]))
+	t.Must(be.True(ok))
+	t.Must(be.True(got == s))
+	_, ok = st.Lookup(get(t, "/", otherCookie))
+	t.Must(be.True(ok))
+
+	// Nothing to end: a plain New.
+	s2, err := st.Replace(httptest.NewRecorder(), nil, account{ID: 4}, func(a account) bool { return a.ID == 4 })
+	t.Must(be.NoError(err))
+	t.Must(be.False(s2.Ended()))
+	t.Must(be.Equal(3, st.Len()))
+
+	t.Must(be.Panic(func() { _, _ = st.Replace(httptest.NewRecorder(), nil, account{}, nil) }))
+}
+
+// TestReplaceBoundsConcurrentLogins logs one account in from many
+// goroutines at once: one session is left, where EndFunc followed by New
+// could leave one per goroutine.
+func TestReplaceBoundsConcurrentLogins(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{MaxSessions: 8})
+	_, otherCookie := login(t, st, nil, account{ID: 2})
+	const logins = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, logins)
+	for range logins {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := st.Replace(httptest.NewRecorder(), nil, account{ID: 1}, func(a account) bool { return a.ID == 1 })
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Must(be.NoError(err))
+	}
+	t.Mustf(be.Equal(2, st.Len()), "one session of the account, and the other account's")
+	_, ok := st.Lookup(get(t, "/", otherCookie))
+	t.Mustf(be.True(ok), "no eviction of the other account")
+}
+
+// A panic of match leaves the store usable: it is unlocked, the sessions
+// removed before the panic have ended, the others are live, no session was
+// created, and the response is untouched.
+func TestReplaceMatchPanic(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{})
+	first, _ := login(t, st, nil, account{ID: 1})
+	second, _ := login(t, st, nil, account{ID: 2})
+	third, _ := login(t, st, nil, account{ID: 3}) // the most recent: checked first
+	rec := httptest.NewRecorder()
+	t.Must(be.Panic(func() {
+		_, _ = st.Replace(rec, nil, account{ID: 1}, func(a account) bool {
+			if a.ID == 2 {
+				panic("match failed")
+			}
+			return a.ID == 3
+		})
+	}))
+	t.Must(be.True(third.Ended()))
+	t.Must(be.Equal(session.EndRevoked, third.EndReason()))
+	t.Must(be.False(second.Ended()))
+	t.Must(be.False(first.Ended()))
+	t.Must(be.Equal(2, st.Len()))
+	t.Must(be.Len(rec.Result().Cookies(), 0))
+	// The store is not left locked.
+	_, err := st.New(httptest.NewRecorder(), nil, account{ID: 4})
+	t.Must(be.NoError(err))
+	t.Must(be.Equal(3, st.Len()))
+}
+
+// TestEndByCookieDoesNotFollowRotation pins the documented difference
+// between End and EndSession: once a rotation moved the cookie's session,
+// End finds no session for the old cookie and only clears it, while
+// EndSession follows the move.
+func TestEndByCookieDoesNotFollowRotation(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{})
+	old, oldCookie := login(t, st, nil, account{ID: 1})
+	rec := httptest.NewRecorder()
+	successor, err := st.Rotate(rec, get(t, "/reauth", oldCookie))
+	t.Must(be.NoError(err))
+	newCookie := rec.Result().Cookies()[0]
+
+	rec = httptest.NewRecorder()
+	st.End(rec, get(t, "/logout", oldCookie))
+	t.Must(be.Len(rec.Result().Cookies(), 1))
+	t.Must(be.False(successor.Ended()))
+	_, ok := st.Lookup(get(t, "/", newCookie))
+	t.Must(be.True(ok))
+
+	st.EndSession(httptest.NewRecorder(), old)
+	t.Must(be.True(successor.Ended()))
+	t.Must(be.Equal(session.EndLogout, successor.EndReason()))
+	_, ok = st.Lookup(get(t, "/", newCookie))
+	t.Must(be.False(ok))
+}
+
+// TestFormattingHidesSecretsOfCopies formats a Session and a Store by
+// value, as fmt.Sprintf("%+v", *s) would (a vet error, so the copy is made
+// through reflection here): the fields print, but opaque handles protect
+// the secrets, including for unsupported format verbs.
+func TestFormattingHidesSecretsOfCopies(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{})
+	s, cookie := login(t, st, nil, account{ID: 424242, Secret: []byte("hunter2")})
+	// Complete secret encodings cannot collide with pointer addresses;
+	// short numeric identifiers can, even when no session data is exposed.
+	forbidden := leaks(s.CSRF(), cookie.Value, "hunter2")
+	for _, v := range []any{reflect.ValueOf(s).Elem().Interface(), reflect.ValueOf(st).Elem().Interface()} {
+		for _, verb := range formatVerbs {
+			out := fmt.Sprintf(verb, v)
+			for _, secret := range forbidden {
+				t.Mustf(be.False(strings.Contains(out, secret)), "%s: %s", verb, out)
+			}
+		}
+	}
 }

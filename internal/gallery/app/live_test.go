@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"net/http"
+	"net/netip"
 	"net/url"
 	"testing"
 	"testing/synctest"
@@ -68,6 +69,23 @@ func TestLiveClock(gt *testing.T) {
 		t.Must(end.Fragment("div").Find(ct.Role("link", ct.Named("Start it again"))).Matches(ct.Attr("href", "/live")))
 		st.ExpectEnd(gt)
 		t.Must(be.Equal(2500*time.Millisecond, time.Since(start)))
+	})
+}
+
+func TestLiveClockRefusesMissingProxyIdentity(gt *testing.T) {
+	synctest.Test(gt, func(gt *testing.T) {
+		t := mustbe.WrapT(gt)
+		a, err := app.New(app.Options{
+			Sites:        []mw.Site{mw.MustParseSite(webuitest.BaseURL)},
+			Logger:       webuitest.NewLogs().Logger(),
+			TrustedProxy: netip.MustParsePrefix("192.0.2.0/24").Contains,
+		})
+		t.Must(be.NoError(err))
+		st := webuitest.ServeStream(gt, a, webuitest.Get(gt, "/live/clock",
+			webuitest.EventSource(), webuitest.RemoteAddr("192.0.2.1:1234")))
+		t.Must(st.Status(http.StatusOK))
+		t.Must(be.Equal("The live view could not identify this client.", endText(gt, st.Expect(gt, sse.EventEnd))))
+		st.ExpectEnd(gt)
 	})
 }
 

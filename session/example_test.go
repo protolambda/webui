@@ -3,7 +3,6 @@ package session_test
 import (
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,9 +24,7 @@ type User struct {
 // the session to later requests; the logout checks the form's CSRF token,
 // ends the session and clears the cookie.
 func ExampleStore() {
-	store, err := session.NewStore(session.Options[User]{
-		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
-	})
+	store, err := session.NewStore(session.Options[User]{})
 	if err != nil {
 		panic(err)
 	}
@@ -158,9 +155,7 @@ func ExampleNewDetached() {
 // A login form is protected before any session exists: GET /login issues
 // the form token and its cookie, POST /login verifies them.
 func ExamplePreAuth() {
-	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
-	})
+	preauth, err := session.NewPreAuth(session.PreAuthOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -194,7 +189,6 @@ func ExampleOptions_onEnd() {
 	type Secrets struct{ Key []byte }
 	store, err := session.NewStore(session.Options[Secrets]{
 		OnEnd: func(id string, v *Secrets) { clear(v.Key) },
-		Rand:  rand.NewChaCha8([32]byte{}),
 	})
 	if err != nil {
 		panic(err)
@@ -220,7 +214,6 @@ func ExampleStore_Rotate() {
 	}
 	store, err := session.NewStore(session.Options[Account]{
 		OnEnd: func(id string, v *Account) { clear(v.Key) },
-		Rand:  rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
 	})
 	if err != nil {
 		panic(err)
@@ -264,20 +257,41 @@ func ExampleStore_Rotate() {
 	// page for the new session: true
 }
 
-// Ending the earlier sessions of an account before its login keeps one
-// session per account, so that logging in again and again does not push
-// the sessions of others out of the store.
+// After a password change, EndFunc ends every session of the account.
 func ExampleStore_EndFunc() {
 	type Account struct{ ID int }
-	store, err := session.NewStore(session.Options[Account]{
-		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
-	})
+	store, err := session.NewStore(session.Options[Account]{})
 	if err != nil {
 		panic(err)
 	}
 	login := func(id int) *session.Session[Account] {
-		store.EndFunc(func(a Account) bool { return a.ID == id })
 		s, err := store.New(httptest.NewRecorder(), nil, Account{ID: id})
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}
+	first := login(1)
+	login(1)
+	other := login(2)
+
+	n := store.EndFunc(func(a Account) bool { return a.ID == 1 })
+	fmt.Println(n, store.Len(), first.Ended(), first.EndReason(), other.Ended())
+	// Output: 2 1 true revoked false
+}
+
+// A login with Replace ends the earlier sessions of the account in the
+// same step, which keeps one session per account: logging in again and
+// again does not push the sessions of others out of the store, also when
+// logins of one account run at the same time.
+func ExampleStore_Replace() {
+	type Account struct{ ID int }
+	store, err := session.NewStore(session.Options[Account]{})
+	if err != nil {
+		panic(err)
+	}
+	login := func(id int) *session.Session[Account] {
+		s, err := store.Replace(httptest.NewRecorder(), nil, Account{ID: id}, func(a Account) bool { return a.ID == id })
 		if err != nil {
 			panic(err)
 		}
@@ -290,27 +304,52 @@ func ExampleStore_EndFunc() {
 		login(1)
 	}
 	fmt.Println(store.Len(), first.Ended(), first.EndReason(), other.Ended())
+	// Output: 2 true revoked false
+}
 
-	// After a password change: end every session of the account.
-	fmt.Println(store.EndFunc(func(a Account) bool { return a.ID == 1 }), store.Len())
+// A login throttle bounds the attempts per key, successful ones included:
+// the login handler asks it for the account name and for the client's
+// address before it checks anything, and answers a refusal with 429 and
+// Retry-After.
+func ExampleThrottle() {
+	now := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	logins, err := session.NewThrottle(session.ThrottleOptions{
+		Limit:  3,
+		Window: time.Minute,
+		Now:    func() time.Time { return now }, // a manual clock for the example
+	})
+	if err != nil {
+		panic(err)
+	}
+	for attempt := 1; attempt <= 4; attempt++ {
+		now = now.Add(5 * time.Second)
+		retryAfter, ok := logins.Allow("name:ada")
+		fmt.Println(attempt, ok, retryAfter)
+	}
+	_, ok := logins.Allow("name:bo") // another key has its own count
+	fmt.Println("bo:", ok)
+
+	now = now.Add(time.Minute)
+	_, ok = logins.Allow("name:ada")
+	fmt.Println("ada, a minute later:", ok)
 	// Output:
-	// 2 true revoked false
-	// 1 1
+	// 1 true 0s
+	// 2 true 0s
+	// 3 true 0s
+	// 4 false 45s
+	// bo: true
+	// ada, a minute later: true
 }
 
 // The login: the form is protected by PreAuth until the credentials check
 // out, then Store.New starts the session and the pre-auth cookie goes. The
 // next page's forms carry the session's CSRF token.
 func ExamplePreAuth_login() {
-	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Rand: rand.NewChaCha8([32]byte{1}), // deterministic for the example; omit in applications
-	})
+	preauth, err := session.NewPreAuth(session.PreAuthOptions{})
 	if err != nil {
 		panic(err)
 	}
-	store, err := session.NewStore(session.Options[User]{
-		Rand: rand.NewChaCha8([32]byte{2}),
-	})
+	store, err := session.NewStore(session.Options[User]{})
 	if err != nil {
 		panic(err)
 	}
@@ -362,8 +401,7 @@ func ExamplePreAuth_login() {
 func ExamplePreAuth_expired() {
 	now := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
 	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Now:  func() time.Time { return now },
-		Rand: rand.NewChaCha8([32]byte{1}), // deterministic for the example; omit in applications
+		Now: func() time.Time { return now },
 	})
 	if err != nil {
 		panic(err)
@@ -421,7 +459,6 @@ func ExampleOptions_onEndReason() {
 		OnEndReason: func(id string, reason session.EndReason, v *User) {
 			fmt.Println("session of", v.Name, "ended:", reason)
 		},
-		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
 	})
 	if err != nil {
 		panic(err)
@@ -450,9 +487,7 @@ func ExampleOptions_onEndReason() {
 // clears the cookie. The same handler works behind the store's middleware
 // and in a test with a detached session.
 func ExampleStore_EndSession() {
-	store, err := session.NewStore(session.Options[User]{
-		Rand: rand.NewChaCha8([32]byte{}), // deterministic for the example; omit in applications
-	})
+	store, err := session.NewStore(session.Options[User]{})
 	if err != nil {
 		panic(err)
 	}
@@ -514,8 +549,7 @@ func ExampleStore_EndSession() {
 func ExamplePreAuth_Token() {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Now:  func() time.Time { return now }, // a manual clock for the example
-		Rand: rand.NewChaCha8([32]byte{}),     // deterministic for the example; omit in applications
+		Now: func() time.Time { return now }, // a manual clock for the example
 	})
 	if err != nil {
 		panic(err)

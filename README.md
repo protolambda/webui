@@ -1,273 +1,138 @@
 # webui
 
-A minimal, security-conscious toolkit for server-rendered web user interfaces in Go.
+A Go toolkit for server-rendered web interfaces, with typed components, a compact dark theme, and htmx interactions.
 
-Pages are typed [chord](https://github.com/protolambda/chord) element trees, styled by Bootstrap 5.3 CSS and a
-dark, dense, high-contrast theme, and made interactive by htmx 2 and its server-sent events extension.
+Build views with [chord](https://github.com/protolambda/chord), style them with Bootstrap 5.3, and serve them through
+ordinary `net/http` handlers. Links and forms work as HTML; htmx adds partial updates, and server-sent events keep
+live regions current.
 
-- **No application JavaScript, no Bootstrap JavaScript.** Dialogs open as native modal `<dialog>` elements through
-  invoker commands; accordions and dropdowns are `<details>`; htmx swaps server-rendered fragments. Every form also
-  works as a plain HTML form.
-- **Strict content security policy.** Bootstrap, Bootstrap Icons, htmx and the theme are embedded and served from the
-  application's own origin with subresource integrity, so scripts, styles and fonts load only from `'self'` (images
-  also from `data:` URLs, which Bootstrap's CSS uses for form controls and close buttons): no inline scripts, no
-  inline styles, no `eval`. See `mw.StrictCSP` for the full policy.
-- **Typed, accessible components.** Navbars, dialogs, cards, form fields and tables render Bootstrap's documented
-  markup with ARIA wiring by default, and invalid options or ids fail the render instead of producing broken pages.
-- **Secure HTTP defaults.** Security headers, host checks against DNS rebinding, a same-origin policy for
-  state-changing requests, CSRF tokens, bounded form reading, deadlines, and hardened server defaults. HSTS is
-  opt-in: `mw.HSTSFor` sends it for https sites, and it can stay off when a TLS proxy sends it already.
-- **Testable.** `webuitest` checks pages, fragments, responses and event streams with
-  [chord's ct](https://github.com/protolambda/chord) queries and [mustbe](https://github.com/protolambda/mustbe)
-  assertions.
+- **Views in Go.** Compose pages, navigation, forms, tables, and dialogs from typed elements.
+- **Interaction without application JavaScript.** Use native dialogs and disclosure controls, htmx swaps, and event streams.
+- **Security helpers.** Local assets with integrity checks, strict CSP, origin checks, CSRF protection, cookie sessions,
+  and bounded request handling.
+- **Tests at the HTTP boundary.** Check rendered pages, form submissions, cookies, headers, and streams with `webuitest`.
 
-## Install
+[Go reference](https://pkg.go.dev/github.com/protolambda/webui) · [Application example](./example_test.go) · [Gallery](./internal/gallery)
 
-```bash
+## Get started
+
+Requires Go 1.27 or later.
+
+```sh
 go get github.com/protolambda/webui@latest
 ```
 
-Requires Go 1.27.
+To explore the components and their behavior, run the gallery from a checkout:
 
-## Quick start
+```sh
+go run ./internal/gallery
+```
 
-Adapted from [`example_test.go`](./example_test.go): a page with a form, behind the recommended middleware stack.
+Open [127.0.0.1:8080](http://127.0.0.1:8080). The gallery includes forms, dialogs, live updates, and a demo login;
+its [handlers](./internal/gallery/app) are examples you can adapt.
+
+## Build a page
+
+A document supplies the assets and page metadata. A layout supplies navigation, a header, and the main content.
+The default theme is dark, dense, and high contrast; assets are embedded and served by your application.
 
 ```go
-var assets = theme.MustAssets(theme.Options{}) // embedded Bootstrap, icons, htmx, theme
+var assets = theme.MustAssets(theme.Options{})
 
-func layout(title string, main elem.Node) elem.Node {
-	return page.Document{
-		Title:  title + " · Tasks",
+func home(w http.ResponseWriter, r *http.Request) error {
+	return web.Render(w, r, http.StatusOK, page.Document{
+		Title:  "Tasks",
 		Assets: []*asset.Set{assets},
 		Body: page.Layout{
 			Navbar: page.Navbar{
-				Brand: page.Brand{Label: "Tasks", Href: "/"},
-				Items: []page.NavItem{{Label: "Today", Href: "/", Current: true}},
+				Brand: page.Brand{Label: "My app", Href: "/"},
 			},
-			Header: page.Header{Title: text.Text(title)},
-			Main:   main,
+			Header: page.Header{Title: text.Text("Tasks")},
+			Main:   text.P()(text.Text("Your work starts here.")),
 		},
-	}
+	})
 }
+```
 
-type account struct{ Name string } // the value of a signed-in visitor's session
+Register the assets and handler with a standard router. `web.Errors` turns returned errors into error pages or
+htmx alerts.
 
-func newHandler(site mw.Site, logger *slog.Logger) (http.Handler, error) {
-	store, err := session.NewStore(session.Options[account]{})
-	if err != nil {
-		return nil, err
-	}
-	preauth, err := session.NewPreAuth(session.PreAuthOptions{})
-	if err != nil {
-		return nil, err
-	}
-	forms := session.Forms[account]{PreAuth: preauth} // CSRF tokens, with and without a session
-	errs := web.Errors{Assets: []*asset.Set{assets}}  // error pages, and alerts for htmx requests
+```go
+errs := web.Errors{Assets: []*asset.Set{assets}}
+mux := http.NewServeMux()
+mux.Handle(assets.Pattern(), assets)
+mux.Handle("GET /{$}", errs.Handle(home))
+mux.Handle("/", errs.NotFound())
+```
 
-	mux := http.NewServeMux()
-	mux.Handle(assets.Pattern(), assets)
-	mux.Handle("GET /{$}", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
-		token, err := forms.PageToken(w, r)
-		if err != nil {
-			return err
-		}
-		return web.Render(w, r, http.StatusOK, layout("Today", taskForm(token, "", "")))
-	}))
-	mux.Handle("POST /tasks", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
-		f, err := forms.Read(w, r) // bounded, and the CSRF token checked
-		if err != nil {
-			return err // 400, 403, 413 or 415, through errs
-		}
-		defer f.Zero()
-		title := strings.TrimSpace(f.String("title"))
-		if title == "" {
-			form := taskForm(f.String(session.CSRFField), title, "Give the task a title.")
-			return web.Choose(w, r, http.StatusUnprocessableEntity, form, layout("Today", form))
-		}
-		// ... save the task
-		web.Redirect(w, r, "/")
-		return nil
-	}))
-	mux.Handle("/", errs.NotFound())
+The [application example](./example_test.go) shows the complete handler setup, including the recommended
+middleware order and a working form. Use [`mw`](./mw/doc.go) for request policies and
+[`server`](./server/doc.go) for server defaults and graceful shutdown.
 
-	return mw.Chain(mux,
-		mw.LogRequests(mw.RequestLog{Logger: logger, Routes: mux}),
-		errs.Recover,
-		errs.Intercept,
-		mw.BodyDeadline(mw.DefaultBodyTimeout),
-		mw.WriteDeadline(mw.DefaultWriteTimeout),
-		mw.SecurityHeaders(mw.Headers{HSTS: mw.HSTSFor(site)}),
-		mw.HostCheck(site),
-		mw.SameOrigin(mw.OriginPolicy{Deny: errs.Answer(mw.ErrCrossOrigin)}),
-		mw.MaxBody(1<<20),
-		store.Middleware,
-	), nil
-}
+## Forms and interaction
 
-// taskForm works as a plain form, and htmx swaps it in place.
-func taskForm(token, title, problem string) elem.Node {
-	var msg elem.Node
-	if problem != "" {
-		msg = text.Text(problem)
-	}
-	return session.PostForm("/tasks", token, attr.ID("task-form"), hx2.Post("/tasks"), hx2.Swap(hx2.SwapOuterHTML))(
-		bs.Field{ID: "task-title", Name: "title", Label: text.Text("New task"), Value: title, Error: msg},
-		bs.BtnPrimary(button.Type(button.TypeSubmit))(text.Text("Add")),
+Forms keep their ordinary HTML action and method. Add htmx attributes to choose which request to make and how
+to update the page:
+
+```go
+func taskForm(token string) elem.Node {
+	return session.PostForm("/tasks", token,
+		attr.ID("task-form"),
+		hx2.Post("/tasks"),
+		hx2.Swap(hx2.SwapOuterHTML),
+	)(
+		bs.Field{ID: "task-title", Name: "title", Label: text.Text("New task")},
+		bs.BtnPrimary(button.Type(button.TypeSubmit))(text.Text("Add task")),
 	)
 }
-
-func main() {
-	logger := slog.Default()
-	// The origin that browsers use, served by a TLS proxy in front of the listener.
-	handler, err := newHandler(mw.MustParseSite("https://tasks.example.com"), logger)
-	if err != nil {
-		log.Fatal(err)
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:8080")
-	if err != nil {
-		log.Fatal(err)
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := server.Run(ctx, server.New(handler, server.Options{Logger: logger}), ln); err != nil {
-		log.Fatal(err)
-	}
-}
 ```
 
-The order of the middleware matters:
+[`session.Forms`](./session/forms.go) supplies CSRF tokens and reads submissions within bounds, checking the token
+before the handler uses the values. `web.Choose` returns a fragment or a full page as appropriate, and
+`web.Redirect` handles navigation after a successful submission. See the [form examples](./session/forms_example_test.go)
+for the complete flow.
 
-- `errs.Recover` and `errs.Intercept` sit right inside the request log, so that a panic becomes an error page and
-  a plain-text error that other code writes (`http.Error`, a refusal of the host check) reaches htmx as an alert:
-  htmx inserts every answer that it swaps as HTML.
-- The host check and the same-origin policy refuse before any handler runs; `errs.Answer` turns the same-origin
-  refusal into the error page, or an alert for htmx.
-- The session middleware comes last, so that refused requests never count as use of a session. Without it,
-  `session.FromContext` finds nothing and every visitor looks signed out.
+For live views, [`sse`](./sse/doc.go) streams rendered fragments to htmx regions and handles update coalescing,
+keep-alives, and stream lifetimes. Session and login helpers live in [`session`](./session/doc.go); your application
+supplies credential verification and access rules.
 
-The [gallery](./internal/gallery) is a complete demo of every package: `go run ./internal/gallery`, then open
-http://127.0.0.1:8080.
+## Find your way around
 
-## Forms and sessions
-
-Every POST form carries a CSRF token: `session.PostForm` renders the form with the token's hidden field first. The
-token comes from `session.Forms`: the session's token for a signed-in visitor, or a stateless pre-authentication
-token (`session.PreAuth`, a signed cookie and a form token) for anyone else. `Forms.Read` reads the form within
-bounds and checks the token before the handler sees any value; return its error to the error policy, which answers
-with 400, 403, 413 or 415. A form that should come back with what was typed when its token expired is the exception:
-read it with `form.Read`, check it with `Forms.Check`, and render it again with a fresh token (behind
-`mw.SameOrigin`), as the login below does. A fragment that updates part of a page takes its token from
-`Forms.FragmentToken`, so that the page's other forms stay valid; an event stream, which cannot set a cookie once it
-started, takes it from `Forms.Token`.
-
-A login checks its form with `PreAuth.Verify`, starts the session with `Store.New` (a new session ID), and clears
-the pre-authentication cookie. Pages behind `errs.RequireAuth` send visitors without a session to the login page,
-and back. Inside `newHandler`:
-
-```go
-mux.Handle("POST /login", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
-	f, err := form.Read(w, r, form.Limits{})
-	if err != nil {
-		return err
-	}
-	defer f.Zero()
-	next := web.SafeNext(f.String(web.NextParam), "/")
-	if err := preauth.Verify(r, f.String(session.CSRFField)); err != nil {
-		// The form expired: show it again with a fresh token, the name and next, never the password.
-		return showLogin(w, r, http.StatusForbidden, f.String("name"), next, "The form expired. Log in again.")
-	}
-	password := f.Take("password") // owned by the handler now: cleared after the check
-	name, ok := checkLogin(f.String("name"), password)
-	clear(password)
-	if !ok {
-		return showLogin(w, r, http.StatusUnprocessableEntity, name, next, "The name or password is wrong.")
-	}
-	if _, err := store.New(w, r, account{Name: name}); err != nil {
-		return err
-	}
-	preauth.ClearCookie(w)
-	web.Redirect(w, r, next)
-	return nil
-}))
-
-signedIn := errs.RequireAuth("/login", func(r *http.Request) bool {
-	_, ok := session.FromContext[account](r.Context())
-	return ok
-})
-mux.Handle("GET /settings", signedIn(errs.Handle(settings)))
-```
-
-`showLogin` renders the login form with a token from `preauth.Issue`. The session package's examples cover the rest:
-logout (`Store.EndSession`), rotation, expiry and fragments.
-
-Text that other users chose is escaped against markup by chord, but can still mislead: a right-to-left override
-reverses what follows it, and invisible characters make two names look the same. Show names and titles with
-`visible.Text`, and identifiers with `visible.Code`.
-
-## Packages
-
-| Package | Purpose |
+| What you need | Packages |
 |---|---|
-| [`asset`](./asset) | Embedded files as an immutable set: integrity values, content-versioned URLs, immutable caching, gzip, and the `<link>`/`<script>` tags that load them. |
-| [`theme`](./theme) | The embedded browser stack (Bootstrap 5.3.8 CSS, Bootstrap Icons 1.13.1, htmx 2.0.10, htmx SSE 2.2.4; opt-in Bootstrap JS and the htmx WebSocket extension) and the webui theme stylesheet. |
-| [`page`](./page) | The HTML document and the page layout: navbar, sidebar, header, alerts and dialogs regions. |
-| [`bs`](./bs) | Bootstrap 5.3 components, including script-free dialogs, accordions, dropdowns, toasts, form fields and data tables. |
-| [`ba`](./ba) | Bootstrap 5.3 class utilities, validated when rendering. |
-| [`bi`](./bi) | Bootstrap Icons, decorative by default or labelled. |
-| [`hx2`](./hx2) | htmx 2 attributes, the htmx configuration (secure by default), and request and response headers. |
-| [`hx1`](./hx1) | htmx 1 attributes, for legacy pages. |
-| [`sse`](./sse) | Server-sent event streams of rendered fragments for htmx SSE swaps, with a coalescing update loop. |
-| [`web`](./web) | Handlers that return errors, rendering, htmx-aware redirects and error answers, auth guards, notices. |
-| [`mw`](./mw) | Middleware: security headers and a typed CSP builder, host check, same-origin policy, deadlines, body limits, request logging. |
-| [`session`](./session) | Cookie sessions with hashed tokens, lifetimes, rotation and CSRF tokens; stateless tokens for anonymous forms; forms that carry and check them. |
-| [`form`](./form) | Bounded form reading into owned, zeroable bytes. |
-| [`visible`](./visible) | Untrusted text that shows what it is: escapes direction controls, invisible and collapsing characters, with a marker. |
-| [`server`](./server) | Hardened `http.Server` defaults, a graceful run loop, per-client connection limits. |
-| [`webuitest`](./webuitest) | Test helpers: page rules, page and fragment contracts, browser-like requests and form submission (also as htmx sends it), response assertions, SSE streams, crawling, cross-site probes. |
+| Page structure and components | [`page`](./page), [`bs`](./bs), [`ba`](./ba), [`bi`](./bi) |
+| Theme and embedded assets | [`theme`](./theme), [`asset`](./asset) |
+| Forms, sessions, and CSRF | [`form`](./form), [`session`](./session) |
+| Handlers, middleware, and serving | [`web`](./web), [`mw`](./mw), [`server`](./server) |
+| Partial updates and live regions | [`hx2`](./hx2), [`sse`](./sse) |
+| Displaying untrusted names and identifiers | [`visible`](./visible) |
+| Testing pages and request flows | [`webuitest`](./webuitest) |
 
-The `bs`, `ba`, `bi`, `hx1` and `hx2` packages started in chord. Their APIs stay familiar, and moving code over is
-mostly a change of import path, with these exceptions:
+The package documentation covers contracts and configuration; executable `Example` tests show how the APIs fit
+together. For example:
 
-- `bs.Modal.Size` and `bs.Offcanvas.Placement` are typed (`bs.ModalSize`, `bs.OffcanvasPlacement`), so a string
-  variable needs a conversion.
-- Invalid ids, options and utility values (`bs`, `ba`, `hx2`) fail the render instead of producing broken markup.
-- Components render additional ARIA attributes and different heading levels.
-
-## Testing pages
-
-webuitest sends requests as a browser on `webuitest.BaseURL` (https://app.example.test) sends them, so the handler
-under test is built for that site:
-
-```go
-func TestToday(gt *testing.T) {
-	t := devtest.ParallelT(gt)
-	site := mw.MustParseSite(webuitest.BaseURL)
-	handler, err := newHandler(site, slog.New(slog.DiscardHandler))
-	t.Must(be.NoError(err))
-
-	b := webuitest.NewBrowser(t, handler, webuitest.BrowserOptions{}) // keeps cookies
-	res := b.Get(t, "/")
-	t.Must(res.Status(http.StatusOK))
-	t.Must(webuitest.SecurityHeaders(res, webuitest.PolicyFor(mw.Headers{HSTS: mw.HSTSFor(site)})))
-	page := res.HTML()
-	t.Must(webuitest.PageContract(page, webuitest.DefaultShell(assets), webuitest.Rules()...))
-	t.Must(page.Find(ct.Role("heading", ct.Named("Today"))))
-
-	// Submit the form as the browser does, with its CSRF token.
-	res = b.Submit(t, page, page.Find(ct.ID("task-form")), nil, url.Values{"title": {" "}})
-	t.Must(res.Status(http.StatusUnprocessableEntity))
-	t.Must(res.HTML().Find(ct.ID("task-title-error")).Texts("Give the task a title."))
-}
+```sh
+go doc github.com/protolambda/webui/session
+go doc github.com/protolambda/webui/web Errors
+go doc github.com/protolambda/webui/sse Loop
 ```
+
+## Test your application
+
+[`webuitest`](./webuitest/doc.go) provides handler-level clients and a test-server client with TLS and cookies.
+It can submit the forms rendered by your pages, send htmx requests, read event streams, and check page structure,
+accessibility rules, CSP, and CSRF wiring.
+
+Start with the [application test](./example_test.go), then see the
+[testing examples](./webuitest/example_test.go) and [gallery tests](./internal/gallery/app/app_test.go).
 
 ## Browser support
 
-webui targets current evergreen browsers. Dialogs use invoker commands (`commandfor`/`command`) and fall back to the
-Popover API; the theme uses `:has()`. Pages render and work without script; htmx and its SSE extension add partial
-updates.
+webui targets current evergreen browsers. Native dialogs use invoker commands with a Popover API fallback;
+the theme uses `:has()`. htmx enhances the server-rendered pages, while ordinary links and forms remain usable
+without script.
 
 ## License
 
-MIT, see [`LICENSE`](./LICENSE). The embedded third-party files keep their own licenses, next to them in
-[`theme/files`](./theme/files): Bootstrap and Bootstrap Icons (MIT), htmx and its extensions (BSD Zero Clause).
+[MIT](./LICENSE). Embedded Bootstrap, Bootstrap Icons, htmx, and extension files retain their own
+[licenses](./theme/files).

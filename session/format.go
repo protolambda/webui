@@ -5,6 +5,19 @@ import (
 	"io"
 )
 
+// hidden keeps secret state behind two pointer levels. A single pointer
+// field is insufficient: when a copied public struct is formatted with
+// an unsupported verb, fmt's diagnostic dereferences that pointer at the
+// top level. It then prints this handle's value pointer at a nested
+// level, where it does not dereference it. No secret state is formatted.
+type hidden[T any] struct {
+	value *T
+}
+
+func hide[T any](value T) *hidden[T] {
+	return &hidden[T]{value: &value}
+}
+
 // formatRedacted writes desc, the redacted description of a value, for the
 // formatting verb: fmt consults String only for %v, %s, %q, %x and %X (and
 // GoString for %#v), and prints the fields of the value for every other

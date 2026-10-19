@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/protolambda/chord/html/text"
 
 	"github.com/protolambda/webui/bi"
+	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/server"
 	"github.com/protolambda/webui/session"
 	"github.com/protolambda/webui/sse"
@@ -94,14 +94,15 @@ func liveEnd(message, href, label string) elem.Node {
 	)
 }
 
-// streamKey returns the key of r's client for the stream limiter: its
-// address group (server.AddrPrefix).
-func streamKey(r *http.Request) string {
-	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+// clientKey returns the key of r's client for the stream limiter and the
+// login throttle: its address group (server.AddrPrefix), after resolving a
+// trusted proxy's verified client address.
+func (a *App) clientKey(r *http.Request) (string, error) {
+	addr, err := mw.ClientIP(r, a.trustedProxy)
 	if err != nil {
-		return "unknown"
+		return "", err
 	}
-	return server.AddrPrefix(ap.Addr()).String()
+	return server.AddrPrefix(addr).String(), nil
 }
 
 // liveClock streams the clock and the number of updates, to anyone.
@@ -110,7 +111,11 @@ func (a *App) liveClock(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 	s := sse.New(w)
-	release, ok := a.streams.Acquire(streamKey(r))
+	key, err := a.clientKey(r)
+	if err != nil {
+		return s.End(r.Context(), liveEnd("The live view could not identify this client.", "", ""))
+	}
+	release, ok := a.streams.Acquire(key)
 	if !ok {
 		return s.End(r.Context(), liveEnd("Too many live views are open. Close one and reload.", "/live", "Reload"))
 	}

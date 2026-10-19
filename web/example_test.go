@@ -70,7 +70,7 @@ func ExampleRedirect() {
 	// Output:
 	// 303
 	// Location: /tasks#new
-	// Vary: HX-Request
+	// Vary: HX-Request, HX-History-Restore-Request
 	// 200
 	// HX-Redirect: /tasks#new
 	// 200
@@ -108,10 +108,10 @@ func ExampleChoose() {
 	serve(h, boosted)
 	// Output:
 	// 200
-	// Vary: HX-Request, HX-Boosted
+	// Vary: HX-Request, HX-History-Restore-Request, HX-Boosted
 	// <p>3 tasks</p>
 	// 200
-	// Vary: HX-Request, HX-Boosted
+	// Vary: HX-Request, HX-History-Restore-Request, HX-Boosted
 	// <main id="main" class="flex-grow-1"><div class="container py-3"><div id="alerts" aria-live="polite"></div><p>3 tasks</p></div></main>
 	// 200
 	// <main id="main" class="flex-grow-1"><div class="container py-3"><div id="alerts" aria-live="polite"></div><p>3 tasks</p></div></main>
@@ -233,7 +233,7 @@ func ExampleErrors_Intercept() {
 	// <div class="alert alert-danger">The request is not valid.</div>
 	// 400
 	// Content-Type: text/plain; charset=utf-8
-	// Vary: HX-Request
+	// Vary: HX-Request, HX-History-Restore-Request
 	// strconv.Atoi: parsing "<i hx-get=\"/x\" hx-trigger=\"load\">": invalid syntax
 	// 405
 	// HX-Retarget: #alerts

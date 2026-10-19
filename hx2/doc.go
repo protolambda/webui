@@ -98,12 +98,15 @@
 // It decodes the values that htmx sends as Latin-1 bytes or percent-encoded
 // (for characters above U+00FF), so that ids, names and prompt answers read
 // as the user wrote them. The client sets these headers: use them to choose
-// a representation, never for authorization. [AddVary] adds HX-Request to
-// the Vary header of a response that depends on them, so that caches keep
-// the representations apart, and [AddVaryHeaders] adds other names too,
-// such as HX-Boosted for a response that boosted requests get in full:
+// a representation, never for authorization. [AddVary] adds HX-Request and
+// HX-History-Restore-Request, the headers that decide whether htmx handles
+// an answer, to the Vary header of a response that depends on them, so
+// that caches keep the representations apart, and [AddVaryHeaders] adds
+// other names too, such as HX-Boosted for a response that boosted requests
+// get in full:
 //
-//	hx2.AddVaryHeaders(w.Header(), hx2.HeaderRequest, hx2.HeaderBoosted)
+//	hx2.AddVary(w.Header())
+//	hx2.AddVaryHeaders(w.Header(), hx2.HeaderBoosted)
 //
 // The Set functions write the response headers that htmx reads, on the header
 // of a response before it is written: [SetRedirect], [SetRefresh],

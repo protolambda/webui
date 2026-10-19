@@ -284,7 +284,10 @@ func (v *Values) add(name string, value []byte) {
 // A request whose declared Content-Length exceeds the body limit is refused
 // before its body is read. Otherwise the body is wrapped in
 // [http.MaxBytesReader] with w, which on an oversized body tells the server
-// to close the connection after the response; w may be nil. r.Body itself
+// to close the connection after the response. Only the server's own writer
+// takes that signal, so Read follows the Unwrap methods of w (as the
+// writers of webui's middleware and of [http.ResponseController] have)
+// down to it; w may be nil. r.Body itself
 // is not replaced: on success it has been read to its end (for multipart,
 // past the closing delimiter, so that trailing bytes count against the body
 // limit too), and on error it is left partly read or unread.
@@ -359,7 +362,7 @@ func (rd *reader) read(w http.ResponseWriter, r *http.Request) (_ *Values, err e
 	if r.Body != nil {
 		src = r.Body
 	}
-	body := &bodyReader{r: http.MaxBytesReader(w, io.NopCloser(src), rd.limits.Body)}
+	body := &bodyReader{r: http.MaxBytesReader(innermost(w), io.NopCloser(src), rd.limits.Body)}
 	if mediaType == URLEncoded {
 		err = rd.readURLEncoded(body)
 	} else {
@@ -374,6 +377,24 @@ func (rd *reader) read(w http.ResponseWriter, r *http.Request) (_ *Values, err e
 		return nil, body.classify(err)
 	}
 	return rd.values, nil
+}
+
+// maxUnwrap bounds the walk through wrapped writers, in case of a cycle.
+const maxUnwrap = 32
+
+// innermost follows the Unwrap methods of w to the writer that the wrappers
+// wrap, the server's own when every wrapper implements Unwrap: only that one
+// takes the signal of [http.MaxBytesReader] to close the connection after
+// the response. A nil w stays nil.
+func innermost(w http.ResponseWriter) http.ResponseWriter {
+	for range maxUnwrap {
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		w = u.Unwrap()
+	}
+	return w
 }
 
 // bodyReader records the first error of the underlying body other than

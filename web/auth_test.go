@@ -70,6 +70,7 @@ func TestRequireAuthRedirects(gt *testing.T) {
 			res := cthttp.Serve(guarded(c.login), r)
 			t.Must(res.Status(c.status))
 			t.Must(res.Header("Vary", ct.Exact("HX-Request")))
+			t.Must(res.Header("Vary", ct.Exact("HX-History-Restore-Request")))
 			if c.htmx {
 				t.Must(res.Header("HX-Redirect", ct.Exact(c.location)))
 				t.Must(res.HeaderAbsent("Location"))

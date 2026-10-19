@@ -82,7 +82,8 @@
 // [Render] renders a view into a buffer before it writes anything, so a
 // failing view never produces half a page. [Choose] picks the fragment for
 // htmx requests and the full page otherwise, and sets Vary: HX-Request,
-// HX-Boosted. [WantsFragment] reports whether a request wants a fragment:
+// HX-History-Restore-Request, HX-Boosted. [WantsFragment] reports whether
+// a request wants a fragment:
 // an htmx request ([IsHTMX]) that is not boosted, since htmx swaps a
 // boosted answer into the whole body, as it does for history restore
 // requests, which IsHTMX excludes. htmx headers are set by the client: they

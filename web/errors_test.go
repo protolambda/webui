@@ -56,6 +56,7 @@ func TestErrorPage(gt *testing.T) {
 	t.Must(res.Status(http.StatusNotFound))
 	t.Must(res.Header("Content-Type", ct.Exact(web.ContentType)))
 	t.Must(res.Header("Vary", ct.Exact("HX-Request")))
+	t.Must(res.Header("Vary", ct.Exact("HX-History-Restore-Request")))
 	t.Must(res.Header("Cache-Control", ct.Exact("no-store")))
 	t.Must(res.HeaderAbsent("HX-Retarget"))
 	doc := res.HTML()
@@ -94,6 +95,7 @@ func TestErrorFragment(gt *testing.T) {
 	t.Must(res.Header("HX-Push-Url", ct.Exact("false")))
 	t.Must(res.HeaderAbsent("HX-Trigger"))
 	t.Must(res.Header("Vary", ct.Exact("HX-Request")))
+	t.Must(res.Header("Vary", ct.Exact("HX-History-Restore-Request")))
 	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger">` + web.DefaultMessage(http.StatusConflict) + `</div>`)))
 	// The alerts region is a live region, which announces the alert: the
 	// alert has no role of its own, which would nest a second one.

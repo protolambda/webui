@@ -36,7 +36,8 @@ import (
 // A boosted request (HX-Boosted) is an htmx request: HX-Redirect makes
 // htmx load the target as a full page, as for other htmx requests.
 //
-// Both answers add HX-Request to Vary. Redirect does not check target:
+// Both answers add the headers of [IsHTMX] to Vary (hx2.AddVary). Redirect
+// does not check target:
 // pass a value from the request (such as a "next" parameter) through
 // [SafeNext] first.
 func Redirect(w http.ResponseWriter, r *http.Request, target string) {

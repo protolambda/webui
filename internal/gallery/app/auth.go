@@ -4,7 +4,9 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/protolambda/chord/core/attr"
 	"github.com/protolambda/chord/core/elem"
@@ -88,11 +90,20 @@ func (a *App) loginPage(r *http.Request, token, next, name, problem string) elem
 // rather than with session.Forms.Read, which would check it against a
 // session that the visitor started meanwhile in another tab.
 //
+// Before anything is checked, the attempt counts against the throttle,
+// under the client's address and under the name: a client at its limit
+// gets 429 with Retry-After, whatever it sent. Successful logins count
+// too, since each one costs the store a session (session.Options.MaxSessions).
+//
 // A form whose token fails (it expired, or its cookie is gone) gets the
 // login page again with a fresh token, the name and the page to return
 // to, never the password, and status 403. That is safe: mw.SameOrigin has
 // refused cross-site posts already, and the answer signs no one in.
 func (a *App) login(w http.ResponseWriter, r *http.Request) error {
+	client, err := a.clientKey(r)
+	if err != nil {
+		return web.BadRequest("", err)
+	}
 	f, err := webform.Read(w, r, formLimits)
 	if err != nil {
 		return err
@@ -102,6 +113,12 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	name, nameOK := cleanLine(f.String("name"), maxName)
 	if !nameOK {
 		name = ""
+	}
+	for _, key := range []string{"client:" + client, "name:" + strings.ToLower(name)} {
+		if retryAfter, ok := a.logins.Allow(key); !ok {
+			w.Header().Set("Retry-After", wholeSeconds(retryAfter))
+			return web.StatusError(http.StatusTooManyRequests, "", nil)
+		}
 	}
 	again := func(status int, problem string) error {
 		token, err := a.preauth.Issue(w, r)
@@ -125,6 +142,11 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	a.preauth.ClearCookie(w)
 	notices.Redirect(w, r, web.SafeNext(next, "/notes"), "signed-in")
 	return nil
+}
+
+// wholeSeconds formats d for a Retry-After header: rounded up, at least 1.
+func wholeSeconds(d time.Duration) string {
+	return strconv.FormatInt(max(int64((d+time.Second-1)/time.Second), 1), 10)
 }
 
 // logout ends the session of the request, the one whose CSRF token the

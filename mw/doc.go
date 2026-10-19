@@ -60,6 +60,11 @@
 // refuses Host headers that name no configured site, which keeps the origin
 // comparisons of SameOrigin meaningful under DNS rebinding.
 //
+// [ClientIP] resolves the address for a per-client limit. Direct requests
+// use RemoteAddr; an explicitly trusted proxy must overwrite X-Real-IP
+// with one verified client IP. This policy is separate from site origins
+// and never changes the request's Host, scheme or RemoteAddr.
+//
 // # Response writers
 //
 // The middleware that wraps the [http.ResponseWriter] ([WriteDeadline] and

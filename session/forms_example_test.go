@@ -3,7 +3,6 @@ package session_test
 import (
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -36,15 +35,11 @@ func ExamplePostForm() {
 // handlers read their form through it, which checks the token against the
 // session of the request or, without one, its pre-authentication cookie.
 func ExampleForms() {
-	store, err := session.NewStore(session.Options[User]{
-		Rand: rand.NewChaCha8([32]byte{1}), // deterministic for the example; omit in applications
-	})
+	store, err := session.NewStore(session.Options[User]{})
 	if err != nil {
 		panic(err)
 	}
-	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Rand: rand.NewChaCha8([32]byte{2}),
-	})
+	preauth, err := session.NewPreAuth(session.PreAuthOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -155,8 +150,7 @@ func formStatus(err error) int {
 func ExampleForms_FragmentToken() {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Now:  func() time.Time { return now }, // a manual clock for the example
-		Rand: rand.NewChaCha8([32]byte{}),     // deterministic for the example; omit in applications
+		Now: func() time.Time { return now }, // a manual clock for the example
 	})
 	if err != nil {
 		panic(err)
@@ -207,8 +201,7 @@ func ExampleForms_FragmentToken() {
 func ExampleForms_Check() {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Now:  func() time.Time { return now }, // a manual clock for the example
-		Rand: rand.NewChaCha8([32]byte{3}),    // deterministic for the example; omit in applications
+		Now: func() time.Time { return now }, // a manual clock for the example
 	})
 	if err != nil {
 		panic(err)
@@ -292,8 +285,7 @@ func ExampleForms_Check() {
 func ExampleForms_Token() {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	preauth, err := session.NewPreAuth(session.PreAuthOptions{
-		Now:  func() time.Time { return now }, // a manual clock for the example
-		Rand: rand.NewChaCha8([32]byte{}),     // deterministic for the example; omit in applications
+		Now: func() time.Time { return now }, // a manual clock for the example
 	})
 	if err != nil {
 		panic(err)

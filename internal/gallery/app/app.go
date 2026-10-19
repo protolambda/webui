@@ -19,8 +19,8 @@
 //     into the alerts region (also a plain-text error that web.Errors
 //     Intercept replaces), a confirmed delete, a search and a poll;
 //   - /live: server-sent event streams that end with an end event;
-//   - /login, /logout and /notes: sessions, pre-authentication CSRF tokens
-//     and an authentication guard;
+//   - /login, /logout and /notes: sessions, pre-authentication CSRF tokens,
+//     a login throttle and an authentication guard;
 //   - /bootstrap-js: the opt-in Bootstrap script with its components, from a
 //     second theme asset set.
 //
@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -92,6 +93,13 @@ type Options struct {
 	// means slog.Default at the time of New.
 	Logger *slog.Logger
 
+	// TrustedProxy identifies the connection peers that must supply one
+	// verified client address in X-Real-IP (mw.ClientIP), for login and
+	// public stream limits. Nil trusts no proxies. A trusted proxy must
+	// overwrite the header on every request. The function must be safe
+	// for concurrent calls.
+	TrustedProxy func(netip.Addr) bool
+
 	// Now is the clock of sessions, pre-authentication tokens and the live
 	// clock. Nil means time.Now.
 	Now func() time.Time
@@ -111,13 +119,14 @@ type Account struct {
 // App is the gallery application. Create it with New. It is safe for
 // concurrent use.
 type App struct {
-	handler  http.Handler
-	mux      *http.ServeMux
-	errs     web.Errors
-	logger   *slog.Logger
-	now      func() time.Time
-	started  time.Time
-	lifetime time.Duration
+	handler      http.Handler
+	mux          *http.ServeMux
+	errs         web.Errors
+	logger       *slog.Logger
+	now          func() time.Time
+	started      time.Time
+	lifetime     time.Duration
+	trustedProxy func(netip.Addr) bool
 
 	assets   *asset.Set
 	jsAssets *asset.Set
@@ -125,6 +134,7 @@ type App struct {
 	sessions *session.Store[Account]
 	preauth  *session.PreAuth
 	forms    session.Forms[Account]
+	logins   *session.Throttle
 	streams  *sse.Limiter
 
 	tasks       *taskList
@@ -193,20 +203,28 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gallery: pre-authentication: %w", err)
 	}
+	// Logins are throttled per client address and per name, successful
+	// ones included: the defaults, 10 attempts per key and minute.
+	logins, err := session.NewThrottle(session.ThrottleOptions{Now: opts.Now})
+	if err != nil {
+		return nil, fmt.Errorf("gallery: login throttle: %w", err)
+	}
 
 	a := &App{
-		logger:   logger,
-		now:      now,
-		started:  now(),
-		lifetime: lifetime,
-		assets:   assets,
-		jsAssets: jsAssets,
-		sessions: sessions,
-		preauth:  preauth,
+		logger:       logger,
+		now:          now,
+		started:      now(),
+		lifetime:     lifetime,
+		trustedProxy: opts.TrustedProxy,
+		assets:       assets,
+		jsAssets:     jsAssets,
+		sessions:     sessions,
+		preauth:      preauth,
 		// Store stays nil: every route is behind the sessions' middleware,
 		// so the request context holds the session, the one that the
 		// handlers act for (session.FromContext).
 		forms:   session.Forms[Account]{PreAuth: preauth, Limits: formLimits},
+		logins:  logins,
 		streams: sse.NewLimiter(streamsPerClient, streamsTotal),
 		tasks:   newTaskList(),
 		stop:    make(chan struct{}),

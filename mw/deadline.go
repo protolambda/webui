@@ -77,8 +77,11 @@ func BodyDeadline(timeout time.Duration) Middleware {
 // When the handler returns, WriteDeadline sets the deadline once more,
 // timeout from then, for what the server still writes (buffered data, the end
 // of a chunked body), also after a take-over: a stream's last per-event
-// deadline may have passed while it waited. It sets none after a hijack.
-// net/http clears the deadline of an HTTP/1 connection after each response.
+// deadline may have passed while it waited. It does so when the handler
+// panics as well, so that the error page of a recovering middleware outside
+// WriteDeadline (web.Errors.Recover) is bounded too. It sets none after a
+// hijack. net/http clears the deadline of an HTTP/1 connection after each
+// response.
 //
 // Use it instead of [http.Server.WriteTimeout], which counts from the request
 // and cannot be taken over by a stream. The wrapper implements Unwrap, Flush,
@@ -95,8 +98,10 @@ func WriteDeadline(timeout time.Duration) Middleware {
 			if dw.http1 && expectsContinue(r) {
 				dw.set()
 			}
+			// Deferred: a panic of the handler sets the deadline too, before a
+			// recovering middleware outside writes its answer.
+			defer dw.end()
 			next.ServeHTTP(dw, r)
-			dw.end()
 		})
 	}
 }
@@ -171,11 +176,24 @@ func (w *deadlineWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-// ReadFrom starts the response and copies src to it, keeping the underlying
-// writer's ReadFrom (sendfile) when it has one.
+// ReadFrom copies src to the response, keeping the underlying writer's
+// ReadFrom (sendfile) when it has one. The response starts with the first
+// byte copied, not when the copy begins: a source that takes its time
+// before its first byte does not spend the timeout, and a copy of nothing
+// starts nothing, as for net/http itself.
 func (w *deadlineWriter) ReadFrom(src io.Reader) (int64, error) {
-	w.start()
-	return io.Copy(w.ResponseWriter, src)
+	if w.done.Load() {
+		return io.Copy(w.ResponseWriter, src)
+	}
+	// The first bytes go through Write, which starts the deadline; the
+	// LimitedReader hides a WriteTo of src, so that no empty write starts
+	// the response of net/http unseen.
+	n, err := io.Copy(writerOnly{w}, io.LimitReader(src, firstChunk))
+	if err != nil || n < firstChunk {
+		return n, err
+	}
+	m, err := io.Copy(w.ResponseWriter, src)
+	return n + m, err
 }
 
 // FlushError starts the response and flushes it.

@@ -49,7 +49,7 @@ func TestRun(gt *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, webuitest.NewLogs().Logger(), ln, nil) }()
+	go func() { done <- run(ctx, webuitest.NewLogs().Logger(), ln, nil, nil) }()
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	// get sends a GET request for path to the listener, naming host in

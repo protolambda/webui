@@ -29,8 +29,9 @@ const ContentType = "text/html; charset=utf-8"
 //
 // Render does not add Vary: use [Choose] when the content depends on
 // whether htmx made the request, or add the request headers it depends on
-// yourself, HX-Request and also HX-Boosted when [WantsFragment] chooses:
-// hx2.AddVaryHeaders(w.Header(), hx2.HeaderRequest, hx2.HeaderBoosted).
+// yourself: those of [IsHTMX] with hx2.AddVary(w.Header()), and also
+// HX-Boosted when [WantsFragment] chooses, with
+// hx2.AddVaryHeaders(w.Header(), hx2.HeaderBoosted).
 func Render(w http.ResponseWriter, r *http.Request, status int, node elem.Node) error {
 	var buf bytes.Buffer
 	if err := core.Render(r.Context(), node, &buf); err != nil {
@@ -46,8 +47,10 @@ func Render(w http.ResponseWriter, r *http.Request, status int, node elem.Node) 
 
 // Choose renders fragment for requests that swap the answer into an
 // element of the page ([WantsFragment]) and full otherwise, with [Render].
-// It adds HX-Request and HX-Boosted to the Vary header of both, so that
-// caches (the browser's own included) keep the representations apart.
+// It adds the headers that the choice reads, HX-Request,
+// HX-History-Restore-Request and HX-Boosted, to the Vary header of both,
+// so that caches (the browser's own included) keep the representations
+// apart.
 //
 // The fragment is usually the part of the page that the htmx request swaps,
 // and full the page that embeds the same fragment, so that the URL also
@@ -58,7 +61,8 @@ func Render(w http.ResponseWriter, r *http.Request, status int, node elem.Node) 
 // A boosted link inside an element with hx-target swaps into that target
 // instead; give it hx-select, which picks the part from the full page.
 func Choose(w http.ResponseWriter, r *http.Request, status int, fragment, full elem.Node) error {
-	hx2.AddVaryHeaders(w.Header(), hx2.HeaderRequest, hx2.HeaderBoosted)
+	hx2.AddVary(w.Header())
+	hx2.AddVaryHeaders(w.Header(), hx2.HeaderBoosted)
 	if WantsFragment(r) {
 		return Render(w, r, status, fragment)
 	}
@@ -89,8 +93,9 @@ func IsHTMX(r *http.Request) bool {
 // link or form inside an element with hx-boost, navigates: htmx swaps the
 // body of the answer into the page's body, so it needs the full page.
 //
-// Like IsHTMX, use it to choose a representation only, and add HX-Request
-// and HX-Boosted to Vary when the answer depends on it ([Choose] does).
+// Like IsHTMX, use it to choose a representation only, and add the headers
+// it reads to Vary when the answer depends on it, as [Choose] does
+// (hx2.AddVary, and HX-Boosted with hx2.AddVaryHeaders).
 func WantsFragment(r *http.Request) bool {
 	return IsHTMX(r) && !hx2.ParseRequestHeaders(r.Header).Boosted
 }

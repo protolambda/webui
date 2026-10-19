@@ -75,8 +75,8 @@ type PreAuthOptions struct {
 // login or sign-up form, against cross-site request forgery (a page of
 // another site signing the visitor in to an account of the attacker's),
 // without keeping any state per visitor. Create it with [NewPreAuth]. It is
-// safe for concurrent use. Formatting it with any verb prints only its
-// cookie name, never its key.
+// safe for concurrent use. Formatting a *PreAuth with any verb prints only
+// its cookie name. Formatting a copy of the value keeps the key hidden too.
 //
 // [PreAuth.Issue] sets a cookie that carries a random nonce, the time of
 // issue and an HMAC-SHA256 tag of both, and returns the form token: a second
@@ -133,7 +133,9 @@ type PreAuth struct {
 	skew   time.Duration
 	now    func() time.Time
 	rand   *lockedReader
-	key    [preAuthKeyBytes]byte
+	// key stays hidden even in fmt's unsupported-verb diagnostics for
+	// a PreAuth formatted by value (a copy).
+	key *hidden[[preAuthKeyBytes]byte]
 }
 
 // NewPreAuth returns a PreAuth with a fresh random key. It fails on invalid
@@ -153,6 +155,7 @@ func NewPreAuth(opts PreAuthOptions) (*PreAuth, error) {
 		skew:   opts.Skew,
 		now:    opts.Now,
 		rand:   newLockedReader(opts.Rand),
+		key:    hide([preAuthKeyBytes]byte{}),
 	}
 	if p.ttl == 0 {
 		p.ttl = DefaultPreAuthTTL
@@ -166,7 +169,7 @@ func NewPreAuth(opts PreAuthOptions) (*PreAuth, error) {
 	if p.now == nil {
 		p.now = time.Now
 	}
-	if err := p.rand.read(p.key[:]); err != nil {
+	if err := p.rand.read(p.key.value[:]); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -316,7 +319,7 @@ func (p *PreAuth) parse(value string, now time.Time) (body [preAuthBodyBytes]byt
 
 // mac returns the HMAC-SHA256 of body under p's key, with label.
 func (p *PreAuth) mac(label string, body *[preAuthBodyBytes]byte) []byte {
-	m := hmac.New(sha256.New, p.key[:])
+	m := hmac.New(sha256.New, p.key.value[:])
 	m.Write([]byte(label))
 	m.Write(body[:])
 	return m.Sum(nil)

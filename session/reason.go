@@ -12,7 +12,8 @@ const (
 	// EndLogout: the application ended the session itself, with
 	// [Store.End], [Store.EndSession] or [Session.End].
 	EndLogout EndReason = iota + 1
-	// EndRevoked: [Store.EndAll] or [Store.EndFunc] ended the session.
+	// EndRevoked: [Store.EndAll], [Store.EndFunc] or [Store.Replace] ended
+	// the session.
 	EndRevoked
 	// EndIdle: the session went unused for [Options.IdleTTL].
 	EndIdle

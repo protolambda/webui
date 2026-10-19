@@ -261,7 +261,14 @@ func checkPrefix(prefix string) error {
 	if !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") {
 		return fmt.Errorf("%w: prefix %q must start and end with \"/\"", ErrInvalid, prefix)
 	}
-	if prefix != "/" && !validPath(strings.Trim(prefix, "/")) {
+	if prefix == "/" {
+		return nil
+	}
+	// The path between the slashes is checked as written, so that an
+	// empty segment is refused: "//cdn.example/" would make URLs that
+	// browsers fetch from another host, and "/assets//" paths that the
+	// router cleans away.
+	if inner := prefix[1 : len(prefix)-1]; inner == "" || !validPath(inner) {
 		return fmt.Errorf("%w: prefix %q is not a clean path of letters, digits, '.', '-', '_'", ErrInvalid, prefix)
 	}
 	return nil

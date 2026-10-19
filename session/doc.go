@@ -12,8 +12,9 @@
 // store holds at most [Options.MaxSessions] sessions and ends the least
 // recently used to make room, so a client that can log in, even to a
 // single account, can push the other sessions out by logging in again and
-// again. Throttle logins, successful ones included, and bound the sessions
-// per account (see [Options.MaxSessions]).
+// again. Throttle logins, successful ones included ([Throttle], per client
+// and per account), and bound the sessions per account ([Store.Replace];
+// see [Options.MaxSessions]).
 //
 // The cookie carries a session token of 32 bytes from crypto/rand, encoded
 // as base64url. The store keys sessions by the SHA-256 digest of the token
@@ -22,11 +23,12 @@
 // derived from the digest, for logs.
 //
 // A session ends when the application ends it ([Store.EndSession],
-// [Store.End], [Session.End], [Store.EndAll], [Store.EndFunc]), after
-// [DefaultIdleTTL] without use, at [DefaultAbsoluteTTL] after its creation,
-// when [Store.New] creates a new session for the same browser (the session
-// ID rotates at login, which prevents session fixation), or when the store
-// is full and it is the least recently used. When it ends, the
+// [Store.End], [Session.End], [Store.EndAll], [Store.EndFunc],
+// [Store.Replace]), after [DefaultIdleTTL] without use, at
+// [DefaultAbsoluteTTL] after its creation, when [Store.New] creates a new
+// session for the same browser (the session ID rotates at login, which
+// prevents session fixation), or when the store is full and it is the
+// least recently used. When it ends, the
 // [Options.OnEnd] hook runs with its value (to clear secrets, for example),
 // its value and CSRF token are dropped, and then its [Session.Done] channel
 // closes (long requests such as event streams select on it).
@@ -106,6 +108,15 @@
 // empty expected token never matches. Keep the token out of URLs and GET
 // forms: it would leak through history, logs and the Referer header.
 //
+// A token is fixed for the life of its session (or pre-authentication
+// cookie) and is not masked per response. That is safe as long as HTML is
+// not compressed: behind a proxy that compresses pages, a page that shows
+// a form next to text the request chose (a search form with its query,
+// say) lets another site recover the token through the response sizes (a
+// BREACH attack). Leave compression off for HTML, as webui does (package
+// asset compresses the embedded assets only), or keep such pages free of
+// reflected text.
+//
 // Forms shown before a session exists, such as the login form, use
 // [PreAuth]: a signed cookie and a form token derived from it, which need no
 // state on the server. See [PreAuth] for the construction and its
@@ -148,5 +159,8 @@
 //
 // Formatting a [Store], [Session] or [PreAuth] with any verb of package fmt
 // prints a short description (a cookie name, a log ID) and never a token,
-// a key or a session's value.
+// a key or a session's value. A copy of one of them formatted by value
+// (fmt.Sprintf("%+v", *s), which go vet reports for a Store or Session,
+// as they hold a mutex) prints its fields, but secrets stay behind opaque
+// handles, including in diagnostic output for unsupported format verbs.
 package session

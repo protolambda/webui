@@ -39,9 +39,18 @@ type Session[T any] struct {
 	reason EndReason
 	// rotated is the session that [Store.Rotate] moved the value to.
 	rotated *Session[T]
-	csrf    []byte
-	data    T
-	done    chan struct{}
+	// sec holds the CSRF token and the value; guarded by mu.
+	sec  *hidden[secrets[T]]
+	done chan struct{}
+}
+
+// secrets holds the parts of a session that must never be printed. They
+// sit behind a hidden handle so that a Session formatted by value (a copy,
+// which go vet reports as well, since a session holds a mutex) cannot
+// expose them, including through fmt's unsupported-verb diagnostics.
+type secrets[T any] struct {
+	csrf []byte
+	data T
 }
 
 // NewDetached returns a live session that belongs to no store, with the
@@ -52,8 +61,7 @@ type Session[T any] struct {
 func NewDetached[T any](data T, csrf string) *Session[T] {
 	return &Session[T]{
 		id:   detachedID,
-		csrf: []byte(csrf),
-		data: data,
+		sec:  hide(secrets[T]{csrf: []byte(csrf), data: data}),
 		done: make(chan struct{}),
 	}
 }
@@ -114,7 +122,7 @@ func (s *Session[T]) End() {
 func (s *Session[T]) CSRF() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return string(s.csrf)
+	return string(s.sec.value.csrf)
 }
 
 // CheckCSRF checks a submitted CSRF token against the session's, in
@@ -123,7 +131,7 @@ func (s *Session[T]) CSRF() string {
 func (s *Session[T]) CheckCSRF(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.ended || len(s.csrf) == 0 || subtle.ConstantTimeCompare(s.csrf, []byte(token)) != 1 {
+	if s.ended || len(s.sec.value.csrf) == 0 || subtle.ConstantTimeCompare(s.sec.value.csrf, []byte(token)) != 1 {
 		return ErrCSRF
 	}
 	return nil
@@ -141,7 +149,7 @@ func (s *Session[T]) Data() (T, bool) {
 		var zero T
 		return zero, false
 	}
-	return s.data, true
+	return s.sec.value.data, true
 }
 
 // Update calls fn with a pointer to the session's value, while no other
@@ -156,7 +164,7 @@ func (s *Session[T]) Update(fn func(data *T)) error {
 	if s.ended {
 		return ErrEnded
 	}
-	fn(&s.data)
+	fn(&s.sec.value.data)
 	return nil
 }
 
@@ -191,13 +199,13 @@ func (s *Session[T]) finish(onEnd func(string, EndReason, *T), reason EndReason)
 	s.reason = reason
 	defer func() {
 		var zero T
-		s.data = zero
-		clear(s.csrf)
-		s.csrf = nil
+		s.sec.value.data = zero
+		clear(s.sec.value.csrf)
+		s.sec.value.csrf = nil
 		close(s.done)
 	}()
 	if onEnd != nil {
-		onEnd(s.id, reason, &s.data)
+		onEnd(s.id, reason, &s.sec.value.data)
 	}
 	return true
 }
@@ -220,7 +228,7 @@ func (s *Session[T]) matches(match func(T) bool) (bool, *Session[T]) {
 	if s.ended {
 		return false, s.rotated
 	}
-	return match(s.data), nil
+	return match(s.sec.value.data), nil
 }
 
 // contextKey is the context key of sessions with values of type T.

@@ -99,10 +99,11 @@ type Options[T any] struct {
 	// that logs in MaxSessions times without sending its session cookie,
 	// even to a single account, ends every other session. Size the bound
 	// above the expected number of concurrent sessions, throttle
-	// successful logins too (per account and per client), and bound the
-	// sessions of each account, for example by ending its earlier
-	// sessions with [Store.EndFunc] before [Store.New] (see the example of
-	// EndFunc). [EndEvicted] in the OnEndReason hook reveals evictions.
+	// successful logins too (per account and per client, see [Throttle]),
+	// and bound the sessions of each account, for example by creating the
+	// session of a login with [Store.Replace], which ends the account's
+	// earlier sessions in the same step (see its example). [EndEvicted] in
+	// the OnEndReason hook reveals evictions.
 	MaxSessions int
 
 	// Passive reports requests that do not count as use of their session,
@@ -212,8 +213,12 @@ func (st *Store[T]) CookieName() string {
 // cookie names (if any, with the reason [EndRotated] unless it had expired:
 // the session ID rotates, which defeats session fixation), and sets the new
 // session's cookie on w. Call it at login, before writing the response
-// body. r may be nil when there is no previous session to end. For a
-// change of privileges within a session, see [Store.Rotate].
+// body, and once the login is decided and nothing can fail any more: the
+// session is live from then on, and an error answer written afterwards
+// (the Errors policy of package web keeps Set-Cookie headers) would still
+// carry its cookie. r may be nil when there is no previous session to end.
+// For a change of privileges within a session, see [Store.Rotate]; to end
+// the earlier sessions of the account that logs in, see [Store.Replace].
 //
 // When the store is full, New first drops expired sessions, then ends the
 // least recently used ones ([EndEvicted]) of any account; see
@@ -236,6 +241,35 @@ func (st *Store[T]) CookieName() string {
 // way after a login), or attach the returned session before rendering:
 // r = r.WithContext(WithSession(r.Context(), s)).
 func (st *Store[T]) New(w http.ResponseWriter, r *http.Request, data T) (*Session[T], error) {
+	return st.create(w, r, data, nil)
+}
+
+// Replace is [Store.New] that also ends, in the same step, every other live
+// session whose value match reports true for, with the reason
+// [EndRevoked]: the earlier sessions of the account that logs in, say, so
+// that each account has one session at a time and logging in again and
+// again does not push the sessions of others out of the store (see
+// [Options.MaxSessions]). The step is atomic: concurrent calls see each
+// other's sessions, so two logins to one account that run at the same time
+// leave one session, where [Store.EndFunc] followed by New could leave
+// both. The session that r's cookie names ends as at New, with
+// [EndRotated], whether or not match reports it.
+//
+// match gets a copy of each value while the store and that session are
+// locked: it must be quick (a comparison of identifiers, say), and must
+// not call methods of the store or of any session. If match panics, the
+// panic goes on to the caller, the sessions ended so far stay ended, no
+// session is created, and w is untouched. Replace panics if match is nil;
+// otherwise it fails only as New does.
+func (st *Store[T]) Replace(w http.ResponseWriter, r *http.Request, data T, match func(data T) bool) (*Session[T], error) {
+	if match == nil {
+		panic("session: Replace needs a match function")
+	}
+	return st.create(w, r, data, match)
+}
+
+// create implements New (match nil) and Replace.
+func (st *Store[T]) create(w http.ResponseWriter, r *http.Request, data T, match func(T) bool) (*Session[T], error) {
 	token, k, csrf, err := st.newTokens()
 	if err != nil {
 		return nil, err
@@ -247,17 +281,24 @@ func (st *Store[T]) New(w http.ResponseWriter, r *http.Request, data T) (*Sessio
 		id:       logID(k),
 		created:  now,
 		lastUsed: now,
-		csrf:     csrf,
-		data:     data,
+		sec:      hide(secrets[T]{csrf: csrf, data: data}),
 		done:     make(chan struct{}),
 	}
 	prev, hasPrev := parseToken(st.cookie.value(r))
 
 	var ended []ending[T]
 	st.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			// An early return, or a panic of match: the store is unlocked,
+			// the sessions that left it end, and no session is created.
+			st.mu.Unlock()
+			clear(csrf)
+			st.finish(ended)
+		}
+	}()
 	if _, dup := st.sessions[k]; dup {
-		st.mu.Unlock()
-		clear(csrf)
 		return nil, errCollision
 	}
 	if hasPrev {
@@ -270,6 +311,9 @@ func (st *Store[T]) New(w http.ResponseWriter, r *http.Request, data T) (*Sessio
 			ended = append(ended, ending[T]{old, reason})
 		}
 	}
+	if match != nil {
+		st.endMatchingLocked(match, &ended)
+	}
 	if len(st.sessions) >= st.max {
 		ended = st.sweepLocked(now, ended)
 		for len(st.sessions) >= st.max {
@@ -279,11 +323,28 @@ func (st *Store[T]) New(w http.ResponseWriter, r *http.Request, data T) (*Sessio
 		}
 	}
 	st.pushFrontLocked(s)
+	locked = false
 	st.mu.Unlock()
 
 	st.finish(ended)
 	http.SetCookie(w, st.cookie.cookie(token, 0))
 	return s, nil
+}
+
+// endMatchingLocked removes every listed session whose value match reports
+// true for from the store and appends it to *ended, for the caller to
+// finish once st.mu is released. The caller holds st.mu. A panic of match
+// leaves the session it was checking in the store; the sessions removed
+// before it are in *ended all the same.
+func (st *Store[T]) endMatchingLocked(match func(T) bool, ended *[]ending[T]) {
+	for s := st.head; s != nil; {
+		next := s.next
+		if matched, _ := s.matches(match); matched {
+			st.unlinkLocked(s)
+			*ended = append(*ended, ending[T]{s, EndRevoked})
+		}
+		s = next
+	}
 }
 
 // Rotate moves the value of the live session that r's cookie names to a
@@ -349,21 +410,21 @@ func (st *Store[T]) Rotate(w http.ResponseWriter, r *http.Request) (*Session[T],
 		id:       logID(k),
 		created:  old.created,
 		lastUsed: now,
-		csrf:     csrf,
+		sec:      hide(secrets[T]{csrf: csrf}),
 		done:     make(chan struct{}),
 	}
 	// The value moves while the store is locked, so that every other
 	// operation of the store sees either the old session or the new one.
 	// old is listed, so it has not ended.
 	old.mu.Lock()
-	s.data = old.data
+	s.sec.value.data = old.sec.value.data
 	var zero T
-	old.data = zero
+	old.sec.value.data = zero
 	old.ended = true
 	old.reason = EndRotated
 	old.rotated = s
-	clear(old.csrf)
-	old.csrf = nil
+	clear(old.sec.value.csrf)
+	old.sec.value.csrf = nil
 	close(old.done)
 	old.mu.Unlock()
 	st.unlinkLocked(old)
@@ -455,6 +516,14 @@ func (st *Store[T]) Middleware(next http.Handler) http.Handler {
 // consult [Options.Passive] or the request context: a handler that holds
 // its session from [FromContext] (and a handler test, whose session comes
 // from [NewDetached] without a cookie) logs out with [Store.EndSession].
+//
+// Unlike EndSession, End does not follow a [Store.Rotate]: once Rotate
+// moved the cookie's session to a new one, the cookie names no session,
+// and End only clears it. A logout that races with a rotation in another
+// request of the same browser can then leave the new session live, with
+// the browser keeping whichever cookie arrives last. The logout recipe
+// (check the form's token against the session from the context, then
+// EndSession) ends the new session too.
 func (st *Store[T]) End(w http.ResponseWriter, r *http.Request) {
 	if k, ok := parseToken(st.cookie.value(r)); ok {
 		st.mu.Lock()
@@ -520,8 +589,11 @@ func (st *Store[T]) EndAll() int {
 // EndFunc ends every session whose value match reports true for, with the
 // reason [EndRevoked], for example the sessions of one account after its
 // password changed, and returns how many it ended. Sessions that
-// [Store.Rotate] moves meanwhile are checked under their new token.
-// Sessions that [Store.New] creates meanwhile may not be checked.
+// [Store.Rotate] moves meanwhile are checked under their new token, also
+// when the move comes between the check of the old session and its end.
+// Sessions that [Store.New] creates meanwhile may not be checked: to bound
+// the sessions of an account at its login, use [Store.Replace], which ends
+// and creates in one step.
 //
 // match gets a copy of each value while that session is locked; it must
 // not call methods of the session or the store. If match panics, the panic
@@ -538,8 +610,16 @@ func (st *Store[T]) EndFunc(match func(data T) bool) int {
 	for _, s := range all {
 		for s != nil {
 			matched, rotated := s.matches(match)
-			if matched && st.end(s, EndRevoked) {
-				n++
+			if matched {
+				if st.end(s, EndRevoked) {
+					n++
+				} else {
+					// Another operation ended s between the check and
+					// now. A Rotate moved the value to a successor,
+					// which is checked in its place; any other end leaves
+					// nothing to check.
+					rotated = s.successor()
+				}
 			}
 			s = rotated
 		}

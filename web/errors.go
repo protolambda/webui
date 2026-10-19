@@ -99,8 +99,8 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // the alerts region ([page.Layout] renders it): without it htmx reports a
 // target error and shows nothing. The element that made the request is
 // not swapped: a form keeps what was typed into it, and the focus stays
-// where it was. Both answers carry Vary: HX-Request and Cache-Control:
-// no-store.
+// where it was. Both answers add the headers of [IsHTMX] to Vary
+// (hx2.AddVary) and carry Cache-Control: no-store.
 //
 // With show:top, htmx scrolls the alerts region to the very top of the
 // window, also when it was in view already. A page whose navbar stays in

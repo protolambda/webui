@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -400,6 +401,25 @@ func TestPreAuthFormattingHidesTheKey(gt *testing.T) {
 	t.Must(be.Equal("session.PreAuth(__Host-preauth)", fmt.Sprint(p)))
 	t.Must(be.Equal("session.PreAuth(__Host-preauth)", fmt.Sprintf("%d", p)))
 	t.Must(be.Equal(p.String(), p.GoString()))
+
+	// A copy of the value (fmt.Sprintf("%+v", *p)) prints the fields, but
+	// the key stays behind an opaque handle. Check complete
+	// key representations: a pointer address can contain short sequences
+	// such as "171" or "abab" without revealing any key bytes.
+	copied := reflect.ValueOf(p).Elem().Interface()
+	forbidden := []string{string(key)}
+	for _, value := range []any{key, [32]byte(key)} {
+		for _, verb := range formatVerbs {
+			forbidden = append(forbidden, fmt.Sprintf(verb, value))
+		}
+	}
+	for _, verb := range formatVerbs {
+		out := fmt.Sprintf(verb, copied)
+		for _, secret := range forbidden {
+			t.Mustf(be.False(strings.Contains(out, secret)), "%s: %s", verb, out)
+		}
+	}
+	t.Must(be.True(strings.Contains(fmt.Sprintf("%+v", copied), "preauth")))
 }
 
 func TestPreAuthConcurrentUse(gt *testing.T) {

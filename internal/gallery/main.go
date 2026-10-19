@@ -4,12 +4,17 @@
 //	go run ./internal/gallery
 //	go run ./internal/gallery -addr 127.0.0.1:9090
 //	go run ./internal/gallery -addr 0.0.0.0:8080 -site https://gallery.example.com
+//	go run ./internal/gallery -site https://gallery.example.com -trusted-proxy 127.0.0.1/32
 //
 // Without -site, a loopback listen address serves the sites http://HOST:PORT
 // and http://localhost:PORT, with cookies for plain http. A listener that
 // the network reaches needs -site: the origin that browsers use, usually an
 // https URL of a reverse proxy, as loopback sites must stay on loopback
 // listeners.
+//
+// Behind a reverse proxy, set -trusted-proxy to its peer IP range and have
+// it overwrite X-Real-IP with each verified client address. This keeps
+// login and public-stream limits separate for clients behind that proxy.
 package main
 
 import (
@@ -19,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -41,6 +47,15 @@ func main() {
 		sites = append(sites, v)
 		return nil
 	})
+	var proxies []netip.Prefix
+	flag.Func("trusted-proxy", "trusted proxy peer CIDR; must overwrite X-Real-IP with one verified client IP (repeatable; default: none)", func(v string) error {
+		prefix, err := netip.ParsePrefix(v)
+		if err != nil {
+			return fmt.Errorf("invalid proxy CIDR: %w", err)
+		}
+		proxies = append(proxies, prefix.Masked())
+		return nil
+	})
 	debug := flag.Bool("debug", false, "log at debug level")
 	flag.Parse()
 
@@ -53,7 +68,15 @@ func main() {
 	defer stop()
 	ln, err := net.Listen("tcp", *addr)
 	if err == nil {
-		err = run(mw.WithLogger(ctx, logger), logger, ln, sites)
+		trustedProxy := func(peer netip.Addr) bool {
+			for _, prefix := range proxies {
+				if prefix.Contains(peer) {
+					return true
+				}
+			}
+			return false
+		}
+		err = run(mw.WithLogger(ctx, logger), logger, ln, sites, trustedProxy)
 	}
 	if err != nil {
 		logger.Error("gallery failed", "err", err)
@@ -69,7 +92,7 @@ func main() {
 // run owns the goroutine that sweeps expired sessions, and registers the
 // gallery's Shutdown with the server, so that live streams end when the
 // server shuts down instead of holding it up until the shutdown timeout.
-func run(ctx context.Context, logger *slog.Logger, ln net.Listener, siteURLs []string) error {
+func run(ctx context.Context, logger *slog.Logger, ln net.Listener, siteURLs []string, trustedProxy func(netip.Addr) bool) error {
 	sites, err := gallerySites(ln.Addr(), siteURLs)
 	if err == nil {
 		err = server.CheckLoopback(ln.Addr(), sites...)
@@ -83,7 +106,7 @@ func run(ctx context.Context, logger *slog.Logger, ln net.Listener, siteURLs []s
 	}
 	var gallery *app.App
 	if err == nil {
-		gallery, err = app.New(app.Options{Sites: sites, InsecureCookies: insecure, Logger: logger})
+		gallery, err = app.New(app.Options{Sites: sites, InsecureCookies: insecure, Logger: logger, TrustedProxy: trustedProxy})
 	}
 	if err != nil {
 		return errors.Join(err, ln.Close())

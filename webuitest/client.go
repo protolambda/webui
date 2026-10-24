@@ -270,7 +270,7 @@ func CSRFToken(t TB, page *ct.Subject) string {
 		return ""
 	}
 	token, n := "", 0
-	for e := range Elements(doc.Root(), "input") {
+	for e := range elementsByTag(doc.Root(), "input") {
 		if !AttrIs(e, "name", csrfFieldName) || inputType(e) != "hidden" {
 			continue
 		}

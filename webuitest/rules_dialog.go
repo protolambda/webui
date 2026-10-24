@@ -41,7 +41,7 @@ func ModalDialogs() ct.Rule {
 		ids := idIndex(root)
 		var out []string
 		var dialogs []ct.Node
-		for d := range Elements(root, "dialog") {
+		for d := range elementsByTag(root, "dialog") {
 			dialogs = append(dialogs, d)
 			where := "dialog at " + loc(d)
 			if id, _ := attrOf(d, "id"); id == "" {
@@ -65,7 +65,7 @@ func ModalDialogs() ct.Rule {
 				out = append(out, where+" is inside a form")
 			}
 			focus := false
-			for c := range Elements(d, "") {
+			for c := range ct.Elements(d) {
 				if hasAttr(c, "autofocus") {
 					focus = true
 					break
@@ -77,7 +77,7 @@ func ModalDialogs() ct.Rule {
 		}
 		openers := make(map[string]bool)
 		closers := make(map[string]bool)
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			target, hasCommand := attrOf(e, "commandfor")
 			popover, hasPopover := attrOf(e, "popovertarget")
 			if !hasCommand {
@@ -155,7 +155,7 @@ func ModalDialogs() ct.Rule {
 func NoBootstrapJSHooks() ct.Rule {
 	return ct.CustomRule("noBootstrapJSHooks()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			for key := range e.Attrs() {
 				lk := strings.ToLower(key)
 				if strings.HasPrefix(lk, "data-bs-") && lk != "data-bs-theme" {

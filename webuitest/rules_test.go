@@ -686,32 +686,16 @@ func TestNodeHelpers(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	doc, err := cthtml.PageString(htmlPage(`<div id="a" class="x y"><p>one</p><p>two</p></div>`)).Load(t.Context())
 	t.Must(be.NoError(err))
-	root := doc.Root()
-	var tags []string
-	for e := range webuitest.Elements(root, "P") {
-		tags = append(tags, e.Tag())
-	}
-	t.Must(be.DeepEqual([]string{"p", "p"}, tags))
-	count := 0
-	for range webuitest.Descendants(root) {
-		count++
-		if count == 3 {
+	var p ct.Node
+	for e := range ct.Elements(doc.Root()) {
+		if e.Tag() == "p" {
+			p = e
 			break
 		}
 	}
-	t.Must(be.Equal(3, count))
-	var p ct.Node
-	for e := range webuitest.Elements(root, "p") {
-		p = e
-		break
-	}
-	div := webuitest.Closest(p, func(n ct.Node) bool { return webuitest.HasClass(n, "y") })
+	div := ct.Closest(p, func(n ct.Node) bool { return webuitest.HasClass(n, "y") })
 	t.Must(be.True(div != nil && webuitest.AttrIs(div, "ID", "a")))
 	t.Must(be.False(webuitest.HasClass(div, "z")))
-	t.Must(be.True(webuitest.Closest(nil, func(ct.Node) bool { return true }) == nil))
-	for range webuitest.Descendants(nil) {
-		t.Fatal("nil has no descendants")
-	}
 }
 
 // FuzzRules checks that no rule, contract or form computation panics on

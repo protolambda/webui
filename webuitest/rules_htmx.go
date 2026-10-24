@@ -48,7 +48,7 @@ func HXTargets(documentTargets ...string) ct.Rule {
 		frag := isFragment(root)
 		ids := idIndex(root)
 		var elems []ct.Node
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			elems = append(elems, e)
 		}
 		var out []string
@@ -130,7 +130,7 @@ func resolveTarget(elems []ct.Node, i int, part string, ids map[string]ct.Node, 
 	}
 	if rest, ok := cutKeyword(p, "closest"); ok {
 		s, ok := parseSimple(unwrapSelector(rest))
-		if !ok || frag || Closest(e, s.match) != nil {
+		if !ok || frag || ct.Closest(e, s.match) != nil {
 			return ""
 		}
 		return fmt.Sprintf("finds no %q ancestor", rest)
@@ -140,7 +140,7 @@ func resolveTarget(elems []ct.Node, i int, part string, ids map[string]ct.Node, 
 		if !ok {
 			return ""
 		}
-		for d := range Elements(e, "") {
+		for d := range ct.Elements(e) {
 			if s.match(d) {
 				return ""
 			}
@@ -395,7 +395,7 @@ func SSEWiring() ct.Rule {
 			return ok
 		}
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			if v, attr, ok := hxAttrOf(e, "sse-swap"); ok {
 				for name := range strings.SplitSeq(v, ",") {
 					if strings.TrimSpace(name) == "" {
@@ -403,11 +403,11 @@ func SSEWiring() ct.Rule {
 						break
 					}
 				}
-				if !frag && Closest(e, connect) == nil {
+				if !frag && ct.Closest(e, connect) == nil {
 					out = append(out, fmt.Sprintf("%s at %s is outside every sse-connect element", attr, loc(e)))
 				}
 			}
-			if v, attr, ok := hxAttrOf(e, "hx-trigger"); ok && triggersSSE(v) && !frag && Closest(e, connect) == nil {
+			if v, attr, ok := hxAttrOf(e, "hx-trigger"); ok && triggersSSE(v) && !frag && ct.Closest(e, connect) == nil {
 				out = append(out, fmt.Sprintf("%s at %s waits for an SSE event outside every sse-connect element", attr, loc(e)))
 			}
 			if v, attr, ok := hxAttrOf(e, "sse-connect"); ok {

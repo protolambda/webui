@@ -492,7 +492,7 @@ func numberAttr(c ct.Node, name string, def float64) float64 {
 // selectEntries returns the entries of a select element.
 func selectEntries(sel ct.Node, name string) []Part {
 	var options []ct.Node
-	for o := range Elements(sel, "option") {
+	for o := range elementsByTag(sel, "option") {
 		options = append(options, o)
 	}
 	disabled := func(o ct.Node) bool {

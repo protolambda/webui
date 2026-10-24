@@ -17,7 +17,7 @@ import (
 func NoInlineScripts() ct.Rule {
 	return ct.CustomRule("noInlineScripts()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			switch e.Tag() {
 			case "script":
 				if hasAttr(e, "src") || jsonDataBlock(e) {
@@ -51,7 +51,7 @@ func jsonDataBlock(e ct.Node) bool {
 func NoInlineStyles() ct.Rule {
 	return ct.CustomRule("noInlineStyles()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			if e.Tag() == "style" {
 				out = append(out, "style element at "+loc(e))
 			}
@@ -69,7 +69,8 @@ func NoInlineStyles() ct.Rule {
 // hx-vals, hx-headers and hx-request (which htmx reads with one evaluator),
 // and event filters in square brackets in hx-trigger, each also with a
 // data- prefix. [ct.NoInlineHandlers] does not catch them, as their names
-// do not start with "on". webui's htmx
+// do not start with "on"; [ct.NoHxOn] catches only the hx-on attributes,
+// which this rule includes. webui's htmx
 // configuration (allowEval false) makes htmx ignore them, and a strict
 // script-src would block them, so they would only fail silently. Square
 // brackets in an hx-trigger value are reported even inside a from: or
@@ -77,7 +78,7 @@ func NoInlineStyles() ct.Rule {
 func NoHTMXScripting() ct.Rule {
 	return ct.CustomRule("noHTMXScripting()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			for key, v := range e.Attrs() {
 				name := hxName(key)
 				switch {
@@ -118,7 +119,7 @@ func scriptValue(v string) bool {
 func SafeURLs() ct.Rule {
 	return ct.CustomRule("safeURLs()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			for _, u := range urlAttrs(e) {
 				ref := parseRef(u.url)
 				switch ref.scheme {
@@ -146,7 +147,7 @@ func SafeURLs() ct.Rule {
 func LocalResources() ct.Rule {
 	return ct.CustomRule("localResources()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			for _, u := range urlAttrs(e) {
 				if !u.resource {
 					continue
@@ -176,7 +177,7 @@ func LocalResources() ct.Rule {
 func SubresourceIntegrity() ct.Rule {
 	return ct.CustomRule("subresourceIntegrity()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			switch e.Tag() {
 			case "script":
 				if src, ok := attrOf(e, "src"); !ok || src == "" {

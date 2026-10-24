@@ -62,8 +62,9 @@
 // when [CrawlOptions.ContractFor] is set. [Logs] captures log records,
 // and [Logs.NotLogged] checks that no secret reached them.
 //
-// [Descendants], [Elements], [AttrIs], [HasClass] and [Closest] walk ct
-// nodes, for custom rules ([ct.CustomRule]).
+// [AttrIs] and [HasClass] read ct nodes, for custom rules
+// ([ct.CustomRule]) next to [ct.Elements], [ct.Descendants] and
+// [ct.Closest].
 //
 // # Event streams
 //

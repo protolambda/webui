@@ -20,11 +20,11 @@ import (
 func IconsHidden() ct.Rule {
 	return ct.CustomRule("iconsHidden()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			if !HasClass(e, "bi") {
 				continue
 			}
-			hidden := Closest(e, func(n ct.Node) bool { return AttrIs(n, "aria-hidden", "true") }) != nil
+			hidden := ct.Closest(e, func(n ct.Node) bool { return AttrIs(n, "aria-hidden", "true") }) != nil
 			if hidden || namedImage(e) {
 				continue
 			}
@@ -64,7 +64,7 @@ var controlRoles = map[string]bool{
 func ControlsNamed() ct.Rule {
 	return ct.CustomRule("controlsNamed()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			if !control(e) {
 				continue
 			}
@@ -126,11 +126,11 @@ func interactive(e ct.Node) bool {
 func NoNestedInteractive() ct.Rule {
 	return ct.CustomRule("noNestedInteractive()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			if !interactive(e) {
 				continue
 			}
-			outer := Closest(e.Parent(), func(n ct.Node) bool {
+			outer := ct.Closest(e.Parent(), func(n ct.Node) bool {
 				return n.Tag() == "button" || (n.Tag() == "a" && hasAttr(n, "href"))
 			})
 			if outer != nil {
@@ -150,7 +150,7 @@ func NoNestedInteractive() ct.Rule {
 func RectangularTables() ct.Rule {
 	return ct.CustomRule("rectangularTables()", func(root ct.Node) []string {
 		var out []string
-		for t := range Elements(root, "table") {
+		for t := range elementsByTag(root, "table") {
 			out = append(out, tableProblems(t)...)
 		}
 		return out
@@ -300,7 +300,7 @@ func spanAttr(cell ct.Node, name string, def, max int) int {
 func ExternalLinksSafe() ct.Rule {
 	return ct.CustomRule("externalLinksSafe()", func(root ct.Node) []string {
 		var out []string
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			switch e.Tag() {
 			case "a", "area", "form":
 			default:
@@ -383,7 +383,7 @@ func LayoutRegions() ct.Rule {
 				out = append(out, fmt.Sprintf("%q region at %s is inside a form", page.DialogsID, loc(dialogs)))
 			}
 		}
-		for d := range Elements(root, "dialog") {
+		for d := range elementsByTag(root, "dialog") {
 			if dialogs == nil || !isAncestor(dialogs, d) {
 				out = append(out, fmt.Sprintf("dialog at %s is outside the %q region", loc(d), page.DialogsID))
 			}

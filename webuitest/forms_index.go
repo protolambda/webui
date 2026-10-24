@@ -33,7 +33,7 @@ func indexForms(root ct.Node) formIndex {
 		controls: make(map[ct.Node][]ct.Node),
 		owner:    make(map[ct.Node]ct.Node),
 	}
-	for e := range Elements(root, "") {
+	for e := range ct.Elements(root) {
 		if e.Tag() == "form" {
 			idx.forms = append(idx.forms, e)
 		}
@@ -85,7 +85,7 @@ func sameTree(a, b ct.Node) bool {
 // document.getElementById finds them.
 func documentIDs(root ct.Node) map[string]ct.Node {
 	out := make(map[string]ct.Node)
-	for e := range Elements(root, "") {
+	for e := range ct.Elements(root) {
 		if id, ok := attrOf(e, "id"); ok && id != "" && inside(e, "template") == nil {
 			if _, dup := out[id]; !dup {
 				out[id] = e

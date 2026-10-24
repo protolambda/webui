@@ -238,6 +238,15 @@ func TestServeStreamWriter(gt *testing.T) {
 		t.Must(be.ErrorContains(err, "is 1 values"))
 		t.Must(be.False(strings.Contains(err.Error(), cookieValue)))
 	})
+	t.Run("secret-looking header values are hidden", func(t devtest.T) {
+		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-CSRF-Token", cookieValue)
+		})
+		st := webuitest.ServeStream(t, h, webuitest.Get(t, "/"))
+		err := st.Header("X-CSRF-Token", ct.Exact("x")).Check(t.Context())
+		t.Must(be.ErrorContains(err, "is 1 values"))
+		t.Must(be.False(strings.Contains(err.Error(), cookieValue)))
+	})
 	t.Run("header is sent with the body", func(t devtest.T) {
 		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")

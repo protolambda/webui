@@ -461,7 +461,7 @@ type pageTarget struct {
 func pageTargets(root ct.Node) []pageTarget {
 	idx := indexForms(root)
 	var out []pageTarget
-	for e := range Elements(root, "") {
+	for e := range ct.Elements(root) {
 		switch e.Tag() {
 		case "a", "area":
 			if href, ok := attrOf(e, "href"); ok && !strings.HasPrefix(strings.TrimSpace(href), "#") {

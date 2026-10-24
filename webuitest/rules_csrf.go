@@ -73,7 +73,7 @@ func PostFormsCarryCSRF(token string) ct.Rule {
 				out = append(out, fmt.Sprintf("post form at %s %s", loc(f), p))
 			}
 		}
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			if submitButton(e) {
 				if m, ok := attrOf(e, "formmethod"); ok && normMethod(m) == "post" {
 					if f := idx.owner[e]; f != nil && formMethod(f) != "post" {
@@ -149,7 +149,7 @@ func carriesCSRF(e ct.Node, idx formIndex, token string) bool {
 		return csrfMatches(v, token)
 	}
 	var fields []ct.Node
-	for d := range Elements(e, "input") {
+	for d := range elementsByTag(e, "input") {
 		if csrfField(d) && sameTree(d, e) {
 			fields = append(fields, d)
 		}
@@ -322,7 +322,7 @@ func htmxURLMethods(root ct.Node, fragment map[string]bool) map[string]bool {
 		}
 		return fragment
 	}
-	for m := range Elements(root, "meta") {
+	for m := range elementsByTag(root, "meta") {
 		if n, _ := attrOf(m, "name"); !strings.EqualFold(n, "htmx-config") {
 			continue
 		}
@@ -397,7 +397,7 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 	for _, part := range splitSelectors(v) {
 		switch {
 		case part == "closest form":
-			if f := Closest(e, func(n ct.Node) bool { return n.Tag() == "form" }); f != nil {
+			if f := ct.Closest(e, func(n ct.Node) bool { return n.Tag() == "form" }); f != nil {
 				out = append(out, f)
 			}
 		case simpleIDSelector(part):
@@ -477,7 +477,7 @@ func noTokenLeaks(token string, fragmentMethods map[string]bool) ct.Rule {
 				}
 			}
 		}
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			for _, name := range htmxRequestAttrs {
 				_, attr, ok := hxAttrOf(e, name)
 				if !ok || !urlMethods[strings.TrimPrefix(name, "hx-")] || !paramsKeepCSRF(e) {
@@ -497,7 +497,7 @@ func noTokenLeaks(token string, fragmentMethods map[string]bool) ct.Rule {
 		if token == "" {
 			return out
 		}
-		for d := range Descendants(root) {
+		for d := range ct.Descendants(root) {
 			switch d.Kind() {
 			case ct.KindElement:
 				urls := make(map[string]bool)
@@ -621,7 +621,7 @@ func SecretsHidden(values ...string) ct.Rule {
 				}
 			}
 		}
-		for d := range Descendants(root) {
+		for d := range ct.Descendants(root) {
 			switch d.Kind() {
 			case ct.KindElement:
 				for key, v := range d.Attrs() {
@@ -697,7 +697,7 @@ func notInURLs(fragmentMethods map[string]bool, values ...string) ct.Rule {
 	return ct.CustomRule(fmt.Sprintf("notInURLs(%d values)", len(values)), func(root ct.Node) []string {
 		var out []string
 		urlMethods := htmxURLMethods(root, fragmentMethods)
-		for e := range Elements(root, "") {
+		for e := range ct.Elements(root) {
 			for _, u := range urlAttrs(e) {
 				for i, vs := range variants {
 					if containsAny(u.url, vs) {
@@ -772,7 +772,7 @@ func controlValues(c ct.Node) []string {
 		return []string{rawText(c)}
 	case "select":
 		var out []string
-		for o := range Elements(c, "option") {
+		for o := range elementsByTag(c, "option") {
 			v, ok := attrOf(o, "value")
 			if !ok {
 				v = collapse(rawText(o))

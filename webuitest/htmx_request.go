@@ -324,7 +324,7 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 		if n.Tag() == "form" {
 			continue
 		}
-		for d := range Elements(n, "") {
+		for d := range ct.Elements(n) {
 			switch d.Tag() {
 			case "input", "textarea", "select":
 				if sameTree(d, n) {
@@ -355,7 +355,7 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 // underHXDisable reports whether n is inside hx-disable (also with a data-
 // prefix), where htmx processes no element.
 func underHXDisable(n ct.Node) bool {
-	return Closest(n, func(p ct.Node) bool { _, _, ok := hxAttrOf(p, "hx-disable"); return ok }) != nil
+	return ct.Closest(n, func(p ct.Node) bool { _, _, ok := hxAttrOf(p, "hx-disable"); return ok }) != nil
 }
 
 // htmxHandlesClick reports whether htmx handles a click of n, an element
@@ -531,7 +531,7 @@ func htmxIncluded(n ct.Node, c *paramCollector) bool {
 	if n.Tag() != "output" && hasAttr(n, "disabled") {
 		return false
 	}
-	if Closest(n, func(p ct.Node) bool { return p.Tag() == "fieldset" && hasAttr(p, "disabled") }) != nil {
+	if ct.Closest(n, func(p ct.Node) bool { return p.Tag() == "fieldset" && hasAttr(p, "disabled") }) != nil {
 		return false
 	}
 	switch n.Tag() {
@@ -563,7 +563,7 @@ func (c *paramCollector) radioChecked(n ct.Node) bool {
 		return checkedRadios(c.idx.controls[f])[name] == n
 	}
 	var group []ct.Node
-	for r := range Elements(c.root, "input") {
+	for r := range elementsByTag(c.root, "input") {
 		if inputType(r) == "radio" && c.idx.owner[r] == nil && sameTree(r, n) {
 			group = append(group, r)
 		}
@@ -607,7 +607,7 @@ func htmxValue(n ct.Node, c *paramCollector) []string {
 // multiple select) have them, disabled options included.
 func selectedValues(sel ct.Node) []string {
 	var options, selected []ct.Node
-	for o := range Elements(sel, "option") {
+	for o := range elementsByTag(sel, "option") {
 		options = append(options, o)
 		if hasAttr(o, "selected") {
 			selected = append(selected, o)
@@ -1296,7 +1296,7 @@ type htmxScope struct {
 
 func newHTMXScope(root ct.Node) *htmxScope {
 	sc := &htmxScope{root: root, frag: isFragment(root), pos: make(map[ct.Node]int), ids: documentIDs(root)}
-	for e := range Elements(root, "") {
+	for e := range ct.Elements(root) {
 		if inside(e, "template") == nil {
 			sc.pos[e] = len(sc.elems)
 			sc.elems = append(sc.elems, e)
@@ -1380,7 +1380,7 @@ func (sc *htmxScope) selectAll(e ct.Node, v string) (nodes []ct.Node, known bool
 			}
 			switch kw {
 			case "closest":
-				if !add(Closest(e, s.match)) {
+				if !add(ct.Closest(e, s.match)) {
 					return nil, false
 				}
 			case "find":

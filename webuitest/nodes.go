@@ -7,33 +7,13 @@ import (
 	"github.com/protolambda/chord/ct"
 )
 
-// Descendants iterates over the descendants of n in document order,
-// excluding n itself. A nil n yields nothing. The iterator is restartable.
-func Descendants(n ct.Node) iter.Seq[ct.Node] {
-	return func(yield func(ct.Node) bool) {
-		if n != nil {
-			descend(n, yield)
-		}
-	}
-}
-
-func descend(n ct.Node, yield func(ct.Node) bool) bool {
-	for c := range n.Children() {
-		if !yield(c) || !descend(c, yield) {
-			return false
-		}
-	}
-	return true
-}
-
-// Elements iterates over the element descendants of root in document order
-// whose tag is tag (case-insensitively), or over all element descendants
-// when tag is "". The iterator is restartable.
-func Elements(root ct.Node, tag string) iter.Seq[ct.Node] {
+// elementsByTag iterates over the element descendants of root in document
+// order whose tag is tag, compared case-insensitively.
+func elementsByTag(root ct.Node, tag string) iter.Seq[ct.Node] {
 	tag = strings.ToLower(tag)
 	return func(yield func(ct.Node) bool) {
-		for d := range Descendants(root) {
-			if d.Kind() == ct.KindElement && (tag == "" || d.Tag() == tag) && !yield(d) {
+		for e := range ct.Elements(root) {
+			if e.Tag() == tag && !yield(e) {
 				return
 			}
 		}
@@ -53,17 +33,6 @@ func AttrIs(n ct.Node, name, value string) bool {
 func HasClass(n ct.Node, class string) bool {
 	v, ok := attrOf(n, "class")
 	return ok && hasField(v, class)
-}
-
-// Closest returns the nearest element among n and its ancestors for which
-// match reports true, or nil when there is none. A nil n returns nil.
-func Closest(n ct.Node, match func(ct.Node) bool) ct.Node {
-	for cur := n; cur != nil; cur = cur.Parent() {
-		if cur.Kind() == ct.KindElement && match(cur) {
-			return cur
-		}
-	}
-	return nil
 }
 
 // attrOf returns the value of the attribute name of n, matching the name
@@ -162,7 +131,7 @@ func rootOf(n ct.Node) ct.Node {
 // element with each.
 func idIndex(root ct.Node) map[string]ct.Node {
 	out := make(map[string]ct.Node)
-	for e := range Elements(root, "") {
+	for e := range ct.Elements(root) {
 		if id, ok := attrOf(e, "id"); ok && id != "" {
 			if _, dup := out[id]; !dup {
 				out[id] = e
@@ -178,14 +147,14 @@ func inside(n ct.Node, tag string) ct.Node {
 	if n == nil {
 		return nil
 	}
-	return Closest(n.Parent(), func(p ct.Node) bool { return p.Tag() == tag })
+	return ct.Closest(n.Parent(), func(p ct.Node) bool { return p.Tag() == tag })
 }
 
 // rawText returns the text of the descendants of n, without collapsing
 // whitespace.
 func rawText(n ct.Node) string {
 	var b strings.Builder
-	for d := range Descendants(n) {
+	for d := range ct.Descendants(n) {
 		if d.Kind() == ct.KindText {
 			b.WriteString(d.Data())
 		}

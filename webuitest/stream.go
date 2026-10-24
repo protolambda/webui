@@ -304,7 +304,8 @@ func (s *Stream) Status(code int) assertion.Assertion {
 }
 
 // Header asserts that a value of the response header name matches want.
-// Values of Set-Cookie are not shown in the failure.
+// The values of a header whose name looks secret ([ct.LooksSecret], such
+// as Set-Cookie) are not shown in the failure.
 func (s *Stream) Header(name string, want ct.ValueMatch) assertion.Assertion {
 	return streamCheck{desc: fmt.Sprintf("header(%s, %q, %s)", s.desc, name, want), check: func() error {
 		values := s.resp.Header.Values(name)
@@ -314,7 +315,7 @@ func (s *Stream) Header(name string, want ct.ValueMatch) assertion.Assertion {
 			}
 		}
 		shown := fmt.Sprintf("%q", values)
-		if http.CanonicalHeaderKey(name) == "Set-Cookie" {
+		if ct.LooksSecret(name) {
 			shown = fmt.Sprintf("%d values", len(values))
 		}
 		return fmt.Errorf("%w: header %s of %s is %s, want %s", ct.ErrMismatch, name, s.desc, shown, want)

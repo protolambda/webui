@@ -206,7 +206,7 @@ func (s Shell) check(root ct.Node) []string {
 	}
 	metas := func(name string) []ct.Node {
 		var found []ct.Node
-		for m := range Elements(root, "meta") {
+		for m := range elementsByTag(root, "meta") {
 			if n, _ := attrOf(m, "name"); strings.EqualFold(n, name) {
 				found = append(found, m)
 			}
@@ -219,7 +219,7 @@ func (s Shell) check(root ct.Node) []string {
 		out = append(out, "viewport meta element at "+loc(vp[0])+" lacks width=device-width")
 	}
 	var titles []ct.Node
-	for t := range Elements(root, "title") {
+	for t := range elementsByTag(root, "title") {
 		if inside(t, "svg") == nil {
 			titles = append(titles, t)
 		}
@@ -237,7 +237,7 @@ func (s Shell) check(root ct.Node) []string {
 		out = append(out, fmt.Sprintf("color-scheme meta element at %s does not list %q", loc(cs[0]), s.colorMode()))
 	}
 	var icons []ct.Node
-	for l := range Elements(root, "link") {
+	for l := range elementsByTag(root, "link") {
 		if rel, _ := attrOf(l, "rel"); hasFieldFold(rel, "icon") {
 			icons = append(icons, l)
 		}
@@ -253,7 +253,7 @@ func (s Shell) check(root ct.Node) []string {
 			out = append(out, fmt.Sprintf("icon link at %s has href %q, want a data: URL", loc(icons[0]), href))
 		}
 	}
-	for b := range Elements(root, "base") {
+	for b := range elementsByTag(root, "base") {
 		out = append(out, "base element at "+loc(b)+" changes how relative URLs resolve")
 	}
 	if hc := metas("htmx-config"); len(hc) != 1 {
@@ -266,7 +266,7 @@ func (s Shell) check(root ct.Node) []string {
 		out = append(out, configDiff(got, s.htmxConfig())...)
 	}
 	var sheets, scripts []ct.Node
-	for e := range Elements(root, "") {
+	for e := range ct.Elements(root) {
 		switch e.Tag() {
 		case "link":
 			if rel, _ := attrOf(e, "rel"); hasFieldFold(rel, "stylesheet") {
@@ -296,7 +296,7 @@ func (s Shell) check(root ct.Node) []string {
 		}
 	}
 	mains := 0
-	for e := range Elements(root, "") {
+	for e := range ct.Elements(root) {
 		if roleOf(e) == "main" {
 			mains++
 		}
@@ -449,7 +449,7 @@ func FragmentContract(fragment *ct.Subject, rules ...ct.Rule) assertion.Assertio
 func FragmentRule() ct.Rule {
 	return ct.CustomRule("fragment()", func(root ct.Node) []string {
 		var out []string
-		for d := range Descendants(root) {
+		for d := range ct.Descendants(root) {
 			switch d.Kind() {
 			case ct.KindDoctype:
 				out = append(out, "doctype at "+loc(d)+" in a fragment")

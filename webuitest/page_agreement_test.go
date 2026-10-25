@@ -215,9 +215,8 @@ func TestWebErrorsAgreement(gt *testing.T) {
 	mux.Handle("GET /boom", errs.Recover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	})))
-	mux.Handle("/", errs.NotFound())
 	logs := webuitest.NewLogs()
-	c := &webuitest.Client{Handler: mux, Options: []webuitest.ReqOption{webuitest.LogTo(logs.Logger())}}
+	c := &webuitest.Client{Handler: errs.Mux(mux), Options: []webuitest.ReqOption{webuitest.LogTo(logs.Logger())}}
 
 	t.Run("htmx fragment", func(t devtest.T) {
 		res := c.Get(t, "/tasks/7", webuitest.HTMX(), webuitest.HXTarget("list"))

@@ -376,10 +376,79 @@ func (e Errors) Recover(next http.Handler) http.Handler {
 }
 
 // NotFound returns a handler that answers every request with a 404 error
-// page, without naming the path. Register it for the patterns that no
-// other route matches, e.g. mux.Handle("/", errs.NotFound()).
+// page, without naming the path, such as for a prefix of pages that are
+// gone. For the requests that no route of a mux matches, prefer
+// [Errors.Mux] to a catch-all route (mux.Handle("/", errs.NotFound())):
+// the catch-all matches every method, so the mux answers a request with
+// the wrong method for a route with this 404 instead of a 405.
 func (e Errors) NotFound() http.Handler {
 	return e.Answer(&Error{Status: http.StatusNotFound})
+}
+
+// Mux returns a handler that serves requests with mux and answers those
+// that no route of mux matches through the policy, as [Errors.Write]
+// answers an [*Error] of their status: 404 when no route matches the
+// path, and 405 with the Allow header that mux sets when routes match the
+// path but not the method. The paths and methods are not named. The other
+// answers of mux, such as its redirects to a cleaned path or to the path
+// with a trailing slash, pass unchanged.
+//
+// Use it around the application's mux, in place of a catch-all route:
+//
+//	handler := mw.Chain(errs.Mux(mux),
+//		mw.LogRequests(mw.RequestLog{Routes: mux}),
+//		errs.Recover,
+//		// ...
+//	)
+//
+// Mux panics if mux is nil.
+func (e Errors) Mux(mux *http.ServeMux) http.Handler {
+	if mux == nil {
+		panic("web: Mux of a nil ServeMux")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An unmatched request has no pattern. Its handler is the mux's
+		// own (404, 405 or a redirect), which writes nothing else: probe
+		// its status.
+		if h, pattern := mux.Handler(r); pattern == "" && r.RequestURI != "*" {
+			p := probe{header: make(http.Header)}
+			h.ServeHTTP(&p, r)
+			switch p.status {
+			case http.StatusNotFound:
+				e.Write(w, r, &Error{Status: http.StatusNotFound})
+				return
+			case http.StatusMethodNotAllowed:
+				if allow := p.header.Values("Allow"); len(allow) > 0 {
+					w.Header()["Allow"] = allow
+				}
+				e.Write(w, r, &Error{Status: http.StatusMethodNotAllowed})
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// probe is the response writer of [Errors.Mux] that records the status and
+// the headers of the mux's own answers, and drops their bodies.
+type probe struct {
+	header http.Header
+	status int
+}
+
+func (p *probe) Header() http.Header { return p.header }
+
+func (p *probe) WriteHeader(status int) {
+	if p.status == 0 {
+		p.status = status
+	}
+}
+
+func (p *probe) Write(b []byte) (int, error) {
+	if p.status == 0 {
+		p.status = http.StatusOK
+	}
+	return len(b), nil
 }
 
 // Answer returns a handler that answers every request with err, through

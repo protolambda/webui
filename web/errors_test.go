@@ -760,6 +760,59 @@ func TestNotFoundAnswers(gt *testing.T) {
 	t.Must(htmx.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(web.DefaultMessage(http.StatusNotFound)))
 }
 
+func TestMux(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	errs := web.Errors{}
+	mux := http.NewServeMux()
+	mux.Handle("GET /tasks/{id}", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Render(w, r, http.StatusOK, text.Text("task "+r.PathValue("id")))
+	}))
+	mux.Handle("POST /tasks", errs.Handle(failWith(web.Conflict("", nil))))
+	mux.Handle("GET /docs/", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Render(w, r, http.StatusOK, text.Text("docs"))
+	}))
+	h := errs.Mux(mux)
+
+	// Routes are served by the mux, with their path values.
+	res := cthttp.Serve(h, request(t, nil, http.MethodGet, "/tasks/7", nil))
+	t.Must(res.Status(http.StatusOK))
+	t.Must(res.Body(ct.Exact("task 7")))
+	t.Must(cthttp.Serve(h, request(t, nil, http.MethodPost, "/tasks", nil)).Status(http.StatusConflict))
+
+	// No route: the policy's 404 page, which does not name the path.
+	res = cthttp.Serve(h, request(t, nil, http.MethodGet, "/PATH-VALUE", nil))
+	t.Must(res.Status(http.StatusNotFound))
+	t.Must(res.Header("Content-Type", ct.Exact(web.ContentType)))
+	t.Must(res.HTML().Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusNotFound)))
+	t.Must(be.False(strings.Contains(res.BodyString(), "PATH-VALUE")))
+
+	// The wrong method: the policy's 405, with the mux's Allow.
+	res = cthttp.Serve(h, request(t, nil, http.MethodDelete, "/tasks/7", nil))
+	t.Must(res.Status(http.StatusMethodNotAllowed))
+	t.Must(res.Header("Allow", ct.Exact("GET, HEAD")))
+	t.Must(res.HTML().Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusMethodNotAllowed)))
+	res = cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPut, "/tasks", nil), ""))
+	t.Must(res.Status(http.StatusMethodNotAllowed))
+	t.Must(res.Header("Allow", ct.Exact("POST")))
+	t.Must(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
+	t.Must(res.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(web.DefaultMessage(http.StatusMethodNotAllowed)))
+
+	// The mux's redirects pass, also to a cleaned path without a route.
+	for target, location := range map[string]string{"/docs": "/docs/", "/a/../nope": "/nope"} {
+		want := httptest.NewRecorder()
+		mux.ServeHTTP(want, request(t, nil, http.MethodGet, target, nil))
+		res = cthttp.Serve(h, request(t, nil, http.MethodGet, target, nil))
+		t.Must(be.True(want.Code >= 300 && want.Code < 400))
+		t.Must(res.Status(want.Code))
+		t.Must(res.Header("Location", ct.Exact(location)))
+	}
+
+	// The request for the whole server is the mux's.
+	r := request(t, nil, http.MethodOptions, "/", nil)
+	r.RequestURI = "*"
+	t.Must(cthttp.Serve(h, r).Status(http.StatusBadRequest))
+}
+
 func TestWriteNilError(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	w := newFakeWriter()
@@ -891,6 +944,7 @@ func TestPanicsOnMisuse(gt *testing.T) {
 	t.Must(be.Panic(func() { web.Errors{}.Recover(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.Intercept(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.Answer(nil) }))
+	t.Must(be.Panic(func() { web.Errors{}.Mux(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.RequireAuth("/login", nil) }))
 	t.Must(be.Panic(func() {
 		web.Errors{}.RequireAuth("https://idp.example/login", func(*http.Request) bool { return true })

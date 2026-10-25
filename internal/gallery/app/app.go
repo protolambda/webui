@@ -233,11 +233,12 @@ func New(opts Options) (*App, error) {
 	a.errs = web.Errors{Document: a.errorPage, Home: "/", TargetFor: dialogAlertsTarget}
 	a.mux = a.routes()
 	// The recommended stack: Recover and Intercept right inside the request
-	// log, the refusals of the host check and the same-origin policy
-	// answered through the error policy, and the sessions innermost, so
-	// that refused requests never count as use of a session. HSTS is sent
-	// only when every site is https and none is a loopback host.
-	a.handler = mw.Chain(a.mux,
+	// log, the refusals of the host check and the same-origin policy and
+	// the requests that no route matches (Mux) answered through the error
+	// policy, and the sessions innermost, so that refused requests never
+	// count as use of a session. HSTS is sent only when every site is https
+	// and none is a loopback host.
+	a.handler = mw.Chain(a.errs.Mux(a.mux),
 		mw.LogRequests(mw.RequestLog{Logger: logger, Routes: a.mux}),
 		a.errs.Recover,
 		a.errs.Intercept,
@@ -330,8 +331,6 @@ func (a *App) routes() *http.ServeMux {
 	handle("POST /logout", a.logout)
 
 	handle("GET /bootstrap-js", a.bootstrapJS)
-
-	mux.Handle("/", a.errs.NotFound())
 	return mux
 }
 

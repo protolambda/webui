@@ -55,14 +55,14 @@ func home(w http.ResponseWriter, r *http.Request) error {
 ```
 
 Register the assets and handler with a standard router. `web.Errors` turns returned errors into error pages or
-htmx alerts.
+htmx alerts, including the 404 and 405 answers for requests that no route matches.
 
 ```go
 errs := web.Errors{Assets: []*asset.Set{assets}}
 mux := http.NewServeMux()
 mux.Handle(assets.Pattern(), assets)
 mux.Handle("GET /{$}", errs.Handle(home))
-mux.Handle("/", errs.NotFound())
+handler := errs.Mux(mux)
 ```
 
 The [application example](./example_test.go) shows the complete handler setup, including the recommended

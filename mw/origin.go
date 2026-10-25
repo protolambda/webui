@@ -62,7 +62,11 @@ func (h Headerless) String() string {
 	return "Headerless(" + strconv.Itoa(int(h)) + ")"
 }
 
-// OriginPolicy configures [SameOrigin]. The zero value is the strict policy.
+// OriginPolicy configures [SameOrigin]. The zero value refuses the requests
+// from another origin that [OriginPolicy.Check] checks (all but a plain
+// GET or HEAD), and accepts those without any origin header on loopback
+// sites only ([HeaderlessLoopback]); [HeaderlessDeny] refuses them there
+// too.
 type OriginPolicy struct {
 	// Headerless decides about requests without any origin header. The zero
 	// value accepts them on loopback sites only; unknown values refuse them.

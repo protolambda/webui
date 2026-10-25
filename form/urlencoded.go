@@ -139,7 +139,7 @@ func (p *urlParser) finish() error {
 			return err
 		}
 	}
-	p.rd.values.add(p.name, p.rd.own(p.rd.scratch))
+	p.rd.values.Add(p.name, p.rd.own(p.rd.scratch))
 	p.rd.resetScratch()
 	*p = urlParser{rd: p.rd}
 	return nil

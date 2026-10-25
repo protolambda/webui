@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +74,63 @@ func ExampleValues_Take() {
 	fmt.Println(len(password), v.Has("password"))
 	// Output:
 	// 13 false
+}
+
+// A reader of its own, here one that sends the file parts of a multipart
+// form elsewhere as it reads them, hands the other fields over as a
+// Values. Add keeps the slices it is given, so that Zero clears them. The
+// reader refuses an over-long field, as Read does, and reads each field
+// into one buffer that it clears, so that it leaves no copies behind. A
+// real one also bounds the body and the number of parts, as Read does.
+func ExampleValues_Add() {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("title", "Scans")
+	fw, _ := mw.CreateFormFile("upload", "scan.pdf")
+	_, _ = fw.Write([]byte("%PDF-1.7 ..."))
+	_ = mw.Close()
+	r := httptest.NewRequest(http.MethodPost, "/uploads", &body)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+
+	mr, err := r.MultipartReader()
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fields := new(form.Values)
+	defer fields.Zero()
+	buf := make([]byte, form.DefaultField+1) // one byte over the limit
+	defer clear(buf)
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		if p.FileName() != "" {
+			n, _ := io.Copy(io.Discard, p) // e.g. into storage
+			fmt.Println("file of", n, "bytes")
+			continue
+		}
+		n, err := io.ReadFull(p, buf)
+		switch {
+		case err == nil:
+			fmt.Println("error: field too large")
+			return
+		case err != io.EOF && err != io.ErrUnexpectedEOF:
+			fmt.Println("error:", err)
+			return
+		}
+		fields.Add(p.FormName(), bytes.Clone(buf[:n]))
+		clear(buf[:n])
+	}
+	fmt.Println(fields.String("title"), fields.Len())
+	// Output:
+	// file of 12 bytes
+	// Scans 1
 }
 
 // Printing or logging a form shows only its number of values, never a name

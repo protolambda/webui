@@ -127,7 +127,9 @@ func (l Limits) withDefaults() Limits {
 // A Values is not safe for concurrent use. Slices returned by [Values.Bytes]
 // are borrowed: they stay valid until the value is taken or the form is
 // zeroed, and the caller must not keep them longer. The zero Values is an
-// empty form, and a nil *Values behaves as one.
+// empty form, and a nil *Values behaves as one. [Read] fills a Values; a
+// reader of its own, such as one that streams the file parts of a
+// multipart form elsewhere, fills one with [Values.Add].
 //
 // Formatting or logging a Values never shows its names or values: see
 // [Values.Format] and [Values.LogValue].
@@ -269,12 +271,21 @@ func (v *Values) Zero() {
 	}
 }
 
-// add stores an owned value under name.
-func (v *Values) add(name string, value []byte) {
+// Add appends value to the values of the named field and takes ownership
+// of its bytes: v keeps the slice itself, not a copy, so that
+// [Values.Zero] clears it and [Values.Take] hands it back. The caller must
+// not use or change those bytes afterwards; the capacity past the length
+// of value stays the caller's, as v keeps value with its capacity cut to
+// its length. A nil value is stored as an empty one. Add panics on a nil
+// *Values.
+func (v *Values) Add(name string, value []byte) {
+	if value == nil {
+		value = []byte{}
+	}
 	if v.m == nil {
 		v.m = make(map[string][][]byte)
 	}
-	v.m[name] = append(v.m[name], value)
+	v.m[name] = append(v.m[name], slices.Clip(value))
 }
 
 // Read reads the form in the body of r, which must be [Multipart] or

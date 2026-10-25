@@ -62,7 +62,7 @@ func (rd *reader) readMultipart(src *bodyReader, boundary string) error {
 		if err := rd.readPart(part); err != nil {
 			return err
 		}
-		rd.values.add(name, rd.own(rd.scratch))
+		rd.values.Add(name, rd.own(rd.scratch))
 		rd.resetScratch()
 	}
 }

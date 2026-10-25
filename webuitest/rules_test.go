@@ -231,10 +231,15 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 		{name: "params not other", body: `<form method="post" hx-post="/tasks" hx-params="not title">` + csrf + `</form>`},
 		{name: "params all", body: `<form method="post" hx-post="/tasks" hx-params="*">` + csrf + `</form>`},
 		{name: "params unset", body: `<div hx-params="none"><form method="post" hx-post="/tasks" hx-params="unset">` + csrf + `</form></div>`},
+		{name: "params disinherited", body: `<div hx-params="none"><form method="post" hx-post="/tasks" hx-disinherit="hx-params">` + csrf + `</form></div>`, want: []string{"hx-post at"}},
+		{name: "params disinherited above", body: `<div hx-params="none"><div hx-disinherit="hx-params"><form method="post" hx-post="/tasks">` + csrf + `</form></div></div>`},
+		{name: "params empty inherits", body: `<div hx-params="none"><form method="post" hx-post="/tasks" hx-params="">` + csrf + `</form></div>`, want: []string{"hx-post at"}},
 		// "this" is the element that declares hx-include, as a whole value.
 		{name: "inherited include this", body: `<div hx-include="this">` + csrf + `<button type="button" hx-post="/tasks/1/done">Done</button></div>`},
 		{name: "inherited data include this", body: `<div data-hx-include="this">` + csrf + `<button type="button" hx-post="/tasks/1/done">Done</button></div>`},
 		{name: "this in a list", body: `<div hx-include="this, #nope">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
+		{name: "this with a space", body: `<div hx-include=" this">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
+		{name: "include disinherited", body: `<div hx-include="this" hx-disinherit="hx-include">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
 	}
 	checkRule(gt, webuitest.PostFormsCarryCSRF(testToken), cases)
 	gt.Run("no token", func(gt *testing.T) {
@@ -282,6 +287,10 @@ func TestNoTokenLeaks(gt *testing.T) {
 		{name: "vals unset", body: `<div hx-vals='{"csrf":"` + testToken + `"}'><div hx-vals="unset"><button type="button" hx-get="/search">x</button></div></div>`},
 		{name: "params drop the field", body: `<form method="post">` + csrf + `<button type="button" hx-delete="/tasks/1" hx-params="none">x</button></form>`},
 		{name: "include this", body: `<div hx-include="this">` + csrf + `<button type="button" hx-get="/x">x</button></div>`, want: []string{`hx-get at html[1]/body[1]/div[0]/button[1] sends the "csrf" field in the URL`}},
+		// hx-include and hx-params inherit as in htmx.
+		{name: "include disinherited", body: `<div hx-include="this" hx-disinherit="hx-include">` + csrf + `<button type="button" hx-get="/x">x</button></div>`},
+		{name: "include unset", body: `<div hx-include="this">` + csrf + `<button type="button" hx-get="/x" hx-include="unset">x</button></div>`},
+		{name: "params disinherited", body: `<div id="d">` + csrf + `</div><div hx-params="none"><div hx-disinherit="hx-params"><button type="button" hx-get="/x" hx-include="#d">x</button></div></div>`, want: []string{`hx-get at html[1]/body[1]/div[1]/div[0]/button[0]`}},
 		{name: "template field in get form", body: `<form action="/search"><template>` + csrf + `</template></form>`},
 	}
 	checkRule(gt, webuitest.NoTokenLeaks(testToken), cases)
@@ -423,7 +432,7 @@ func TestNotInURLs(gt *testing.T) {
 
 func TestHXTargets(gt *testing.T) {
 	checkRule(gt, webuitest.HXTargets(webuitest.DocumentTargets()...), []ruleCase{
-		{name: "valid", body: `<div id="out"></div><form><input name="q"><button type="button" hx-get="/x" hx-target="#out" hx-include="closest form, [name=q], this" hx-indicator="find .spin" hx-disabled-elt="this, next .after"><span class="spin"></span></button></form><p class="after"></p><table><tr><td><button type="button" hx-delete="/r" hx-target="closest tr" hx-swap="outerHTML">x</button></td></tr></table><div hx-target="body" hx-include="previous #out"></div><div hx-target="<#out/>"></div><div hx-target="div > p"></div><div hx-target=".after"></div>`},
+		{name: "valid", body: `<div id="out"></div><form><input name="q"><button type="button" hx-get="/x" hx-target="#out" hx-include="closest form, [name=q]" hx-indicator="find .spin" hx-disabled-elt="next .after"><span class="spin"></span></button><button type="button" hx-get="/y" hx-target="this" hx-disabled-elt="this">y</button></form><p class="after"></p><table><tr><td><button type="button" hx-delete="/r" hx-target="closest tr" hx-swap="outerHTML">x</button></td></tr></table><div hx-target="body" hx-include="previous #out"></div><div hx-target="<#out/>"></div><div hx-target="div > p"></div><div hx-target=".after"></div>`},
 		{name: "missing id", body: `<button type="button" hx-get="/x" hx-target="#nope">x</button>`, want: []string{`hx-target at html[1]/body[1]/button[0] targets missing id "nope"`}},
 		{name: "document target in a document", body: `<button type="button" hx-get="/x" hx-target="#main">x</button>`, want: []string{`targets missing id "main"`}},
 		{name: "closest", body: `<button type="button" hx-post="/x" hx-include="closest form">x</button>`, want: []string{`hx-include at html[1]/body[1]/button[0] finds no "form" ancestor`}},
@@ -432,7 +441,8 @@ func TestHXTargets(gt *testing.T) {
 		{name: "next excludes descendants", body: `<button type="button" hx-get="/x" hx-target="next .a"><span class="a"></span></button>`, want: []string{`finds no following ".a"`}},
 		{name: "previous", body: `<button type="button" hx-get="/x" hx-target="previous .a">x</button><p class="a"></p>`, want: []string{`finds no preceding ".a"`}},
 		{name: "selector", body: `<button type="button" hx-get="/x" hx-target=".results">x</button>`, want: []string{`selects no element with ".results"`}},
-		{name: "list part", body: `<button id="b" type="button" hx-get="/x" hx-disabled-elt="this, #b, #c">x</button>`, want: []string{`hx-disabled-elt at html[1]/body[1]/button#b[0] targets missing id "c"`}},
+		{name: "this in a list", body: `<p class="after"></p><button type="button" hx-get="/x" hx-disabled-elt="this, previous .after">x</button>`, want: []string{`hx-disabled-elt at html[1]/body[1]/button[1] selects no element with "this"`}},
+		{name: "list part", body: `<button id="b" type="button" hx-get="/x" hx-disabled-elt="#b, #c">x</button>`, want: []string{`hx-disabled-elt at html[1]/body[1]/button#b[0] targets missing id "c"`}},
 		{name: "data prefix", body: `<div data-hx-target="#gone"></div>`, want: []string{"data-hx-target at"}},
 		{name: "attribute selector", body: `<div hx-include="[name='q']"></div>`, want: []string{`selects no element with "[name='q']"`}},
 		{name: "fragment document target", fragment: true, body: `<button type="button" hx-get="/x" hx-target="#main" hx-include="closest form">x</button>`},
@@ -446,6 +456,15 @@ func TestHXTargets(gt *testing.T) {
 		{name: "inherited closest missing", body: `<div hx-target="closest section"><button type="button" hx-get="/x">x</button></div>`, want: []string{`inherited by html[1]/body[1]/div[0]/button[0], finds no "section" ancestor`}},
 		{name: "nearer attribute wins", body: `<div hx-target="closest section"><p hx-target="#out"><button type="button" hx-get="/x">x</button></p></div><div id="out"></div>`},
 		{name: "sse swap target", body: `<div hx-target="closest li"><p sse-swap="tick">x</p></div>`, want: []string{"inherited by html[1]/body[1]/div[0]/p[0]"}},
+		// "unset" and hx-disinherit stop the inheritance, as in htmx.
+		{name: "unset", body: `<form hx-post="/f" hx-disabled-elt="find button"><button type="submit">Save</button><button type="button" hx-get="/pick" hx-target="unset" hx-include="unset" hx-indicator="unset" hx-disabled-elt="unset">Pick</button></form><div hx-include="unset"></div>`},
+		{name: "unset stops inheritance", body: `<div hx-target="closest section"><p hx-target="unset"><button type="button" hx-get="/x">x</button></p></div>`},
+		{name: "unset in a list", body: `<input id="q" name="q"><button type="button" hx-get="/x" hx-include="unset, #q">x</button>`, want: []string{`hx-include at html[1]/body[1]/button[1] selects no element with "unset"`}},
+		{name: "empty inherits", body: `<div hx-target="closest section"><button type="button" hx-get="/x" hx-target="">x</button></div>`, want: []string{`hx-target at html[1]/body[1]/div[0], inherited by html[1]/body[1]/div[0]/button[0], finds no "section" ancestor`}},
+		{name: "disinherit", body: `<div hx-target="closest section" hx-disinherit="hx-target"><button type="button" hx-get="/x">x</button></div>`},
+		{name: "disinherit all", body: `<div hx-indicator="find .spin" data-hx-disinherit="*"><p><button type="button" hx-get="/x">x</button></p></div>`},
+		{name: "disinherit others", body: `<div hx-target="closest section" hx-disinherit="hx-include hx-select"><button type="button" hx-get="/x">x</button></div>`, want: []string{`inherited by html[1]/body[1]/div[0]/button[0], finds no "section" ancestor`}},
+		{name: "disinherit on the requester", body: `<div hx-get="/x" hx-target="closest section" hx-disinherit="hx-target"></div>`, want: []string{`hx-target at html[1]/body[1]/div[0] finds no "section" ancestor`}},
 	})
 	gt.Run("description", func(gt *testing.T) {
 		t := devtest.ParallelT(gt)

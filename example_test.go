@@ -90,9 +90,10 @@ func newHandler(site mw.Site, logger *slog.Logger) (http.Handler, error) {
 		web.Redirect(w, r, "/")
 		return nil
 	}))
-	mux.Handle("/", errs.NotFound())
 
-	return mw.Chain(mux,
+	// errs.Mux answers the requests that no route matches: 404, or 405
+	// for a route asked with another method.
+	return mw.Chain(errs.Mux(mux),
 		mw.LogRequests(mw.RequestLog{Logger: logger, Routes: mux}),
 		errs.Recover,
 		errs.Intercept, // plain-text errors of other code reach htmx as alerts

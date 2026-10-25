@@ -11,8 +11,7 @@
 //
 //	errs := web.Errors{Document: appErrorPage}
 //	mux.Handle("GET /tasks/{id}", errs.Handle(showTask))
-//	mux.Handle("/", errs.NotFound())
-//	handler := mw.Chain(mux, mw.LogRequests(mw.RequestLog{Routes: mux}), errs.Recover, errs.Intercept, ...)
+//	handler := mw.Chain(errs.Mux(mux), mw.LogRequests(mw.RequestLog{Routes: mux}), errs.Recover, errs.Intercept, ...)
 //
 // A handler returns an [*Error] (see [NotFound], [BadRequest] and the
 // other constructors) for an answer with a public message, or any other
@@ -34,6 +33,8 @@
 // deadline of a timeout middleware, still gets its answer (503 for the
 // context error).
 //
+// [Errors.Mux] answers the requests that no route of the mux matches with
+// the policy's 404, or 405 for a route asked with another method.
 // [Errors.Recover] answers panics. [Errors.Intercept] answers, for htmx
 // requests, the error responses not declared as HTML which code outside
 // the policy writes (http.Error, the refusals of mw.HostCheck and

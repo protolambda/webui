@@ -54,8 +54,14 @@ type Client struct {
 	// [Client.SubmitHTMX] send what the page sends and never add it. It
 	// is also the token of the default contracts.
 	CSRF string
+	// Shell is the page shell of the default contract; nil means
+	// [DefaultShell](), the shell of pages that load the default theme
+	// set. An application that loads other sets, such as a theme without
+	// icons, sets it to their shell and keeps the default rules:
+	// new(webuitest.DefaultShell(sets...)).
+	Shell *Shell
 	// Contract checks the pages that [Client.Page] returns; nil means
-	// [PageContract] with [DefaultShell]() and [Rules]([WithCSRF](CSRF)).
+	// [PageContract] with Shell and [Rules]([WithCSRF](CSRF)).
 	Contract Contract
 	// FragmentContract checks the fragments that [Client.Fragment]
 	// returns; nil means [FragmentContract] with
@@ -168,7 +174,7 @@ func (c *Client) Page(t TB, res *cthttp.Result, status int) *ct.Subject {
 	contract := c.Contract
 	if contract == nil {
 		contract = func(p *ct.Subject) assertion.Assertion {
-			return PageContract(p, DefaultShell(), Rules(WithCSRF(c.CSRF))...)
+			return PageContract(p, shellOrDefault(c.Shell), Rules(WithCSRF(c.CSRF))...)
 		}
 	}
 	mustbe.Must(t, contract(page))

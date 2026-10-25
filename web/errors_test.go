@@ -185,6 +185,114 @@ func TestClassifyHook(gt *testing.T) {
 	}
 }
 
+func TestFallbackHook(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	errStale := errors.New("stale revision")
+	var fallbackSaw []error
+	errs := web.Errors{
+		Classify: func(err error) *web.Error {
+			if errors.Is(err, errStale) {
+				return web.Conflict("The task changed meanwhile.", err)
+			}
+			return nil
+		},
+		Fallback: func(err error) *web.Error {
+			fallbackSaw = append(fallbackSaw, err)
+			if errors.Is(err, errKeep) {
+				return nil
+			}
+			return web.BadRequest("The request was not understood.", err)
+		},
+	}
+	unknown := errors.New("parse revision")
+	cases := []struct {
+		err     error
+		status  int
+		message string
+	}{
+		{unknown, 400, "The request was not understood."},
+		{errKeep, 500, web.DefaultMessage(500)},
+		// Classify, an *Error and webui's own classes come first.
+		{errStale, 409, "The task changed meanwhile."},
+		{web.Internal(unknown), 500, web.DefaultMessage(500)},
+		{form.ErrTooLarge, 413, web.DefaultMessage(413)},
+		{fmt.Errorf("read: %w", form.ErrMalformed), 400, web.MessageForm},
+		{session.ErrCSRF, 403, web.MessageForged},
+		{mw.ErrCrossOrigin, 403, web.MessageForged},
+		{context.DeadlineExceeded, 503, web.MessageInterrupted},
+	}
+	for _, c := range cases {
+		res := cthttp.Serve(errs.Handle(failWith(c.err)), request(t, nil, http.MethodPost, "/", nil))
+		t.Must(res.Status(c.status))
+		t.Must(res.HTML().Find(ct.Role("alert")).Texts(c.message))
+	}
+	t.Must(be.DeepEqual([]error{unknown, errKeep}, fallbackSaw))
+
+	// sse.ErrWrite stays silent: nothing is written.
+	w := newFakeWriter()
+	errs.Write(w, request(t, nil, http.MethodGet, "/events", nil), fmt.Errorf("tick: %w", sse.ErrWrite))
+	t.Must(be.Equal(0, w.status))
+	t.Must(be.Len(fallbackSaw, 2))
+}
+
+// errKeep is an error that the Fallback of TestFallbackHook leaves to the
+// default 500.
+var errKeep = errors.New("store closed")
+
+// archived is an application error that the error page renders an answer
+// of its own for.
+type archived struct{ project string }
+
+func (e *archived) Error() string { return "project " + e.project + " is archived" }
+
+func TestErrorViewErr(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	var seen []error
+	errs := web.Errors{
+		Classify: func(err error) *web.Error {
+			if a := (*archived)(nil); errors.As(err, &a) {
+				return web.Conflict("The project is archived.", err)
+			}
+			return nil
+		},
+		Document: func(r *http.Request, v web.ErrorView) elem.Node {
+			seen = append(seen, v.Err)
+			l := v.Layout()
+			if a := (*archived)(nil); errors.As(v.Err, &a) {
+				l.Main = text.P()(text.A(text.Href("/archive"))(text.Text("Open the archive")))
+			}
+			return page.Document{Title: v.Title, Body: l}
+		},
+		Fragment: func(r *http.Request, v web.ErrorView) elem.Node {
+			seen = append(seen, v.Err)
+			return v.Alert()
+		},
+	}
+	err := fmt.Errorf("rename: %w", &archived{project: "PRIVATE-NAME"})
+	h := errs.Handle(failWith(err))
+
+	res := cthttp.Serve(h, request(t, nil, http.MethodGet, "/projects/7", nil))
+	t.Must(res.Status(http.StatusConflict))
+	doc := res.HTML()
+	t.Must(doc.Find(ct.Role("alert")).Texts("The project is archived."))
+	t.Must(doc.Find(ct.Role("link", ct.Named("Open the archive"))))
+	t.Must(be.False(strings.Contains(res.BodyString(), "PRIVATE-NAME")))
+
+	t.Must(cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPost, "/projects/7", nil), "")).Status(http.StatusConflict))
+	t.Must(be.DeepEqual([]error{err, err}, seen))
+
+	// Other errors do not match, and a panic and the replies of Intercept
+	// have no error.
+	seen = nil
+	cthttp.Serve(errs.Handle(failWith(errors.New("disk full"))), request(t, nil, http.MethodGet, "/", nil))
+	cthttp.Serve(errs.Recover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("broken") })), request(t, nil, http.MethodGet, "/", nil))
+	cthttp.Serve(errs.Intercept(http.NotFoundHandler()), asHTMX(request(t, nil, http.MethodGet, "/", nil), ""))
+	t.Must(be.Len(seen, 3))
+	t.Must(be.Equal(errors.New("disk full").Error(), seen[0].Error()))
+	t.Must(be.Nil(seen[1]))
+	t.Must(be.Nil(seen[2]))
+}
+
 func TestStreamWriteErrorIsSilent(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, wrote := range []bool{false, true} {
@@ -470,7 +578,8 @@ func TestErrorHooks(gt *testing.T) {
 			return page.ErrorAlert(text.Text(v.Title), text.Text(": "), text.Text(v.Message))
 		},
 	}
-	h := errs.Handle(failWith(web.Forbidden("Only the owner can do this.", nil)))
+	forbidden := web.Forbidden("Only the owner can do this.", nil)
+	h := errs.Handle(failWith(forbidden))
 
 	doc := cthttp.Serve(h, request(t, nil, http.MethodGet, "/tasks/7/edit", nil)).HTML()
 	t.Must(doc.Find(ct.Tag("title")).Texts("403 Forbidden · Tasks"))
@@ -482,7 +591,7 @@ func TestErrorHooks(gt *testing.T) {
 	t.Must(res.Header("HX-Reswap", ct.Exact("afterbegin")))
 	t.Must(res.Body(ct.Exact(`<div class="alert alert-danger">403 Forbidden: Only the owner can do this.</div>`)))
 
-	want := web.ErrorView{Status: 403, Title: "403 Forbidden", Message: "Only the owner can do this.", Home: "/app/"}
+	want := web.ErrorView{Status: 403, Title: "403 Forbidden", Message: "Only the owner can do this.", Home: "/app/", Err: forbidden}
 	t.Must(be.DeepEqual([]web.ErrorView{want, want}, seen))
 }
 
@@ -651,6 +760,59 @@ func TestNotFoundAnswers(gt *testing.T) {
 	t.Must(htmx.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(web.DefaultMessage(http.StatusNotFound)))
 }
 
+func TestMux(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	errs := web.Errors{}
+	mux := http.NewServeMux()
+	mux.Handle("GET /tasks/{id}", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Render(w, r, http.StatusOK, text.Text("task "+r.PathValue("id")))
+	}))
+	mux.Handle("POST /tasks", errs.Handle(failWith(web.Conflict("", nil))))
+	mux.Handle("GET /docs/", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Render(w, r, http.StatusOK, text.Text("docs"))
+	}))
+	h := errs.Mux(mux)
+
+	// Routes are served by the mux, with their path values.
+	res := cthttp.Serve(h, request(t, nil, http.MethodGet, "/tasks/7", nil))
+	t.Must(res.Status(http.StatusOK))
+	t.Must(res.Body(ct.Exact("task 7")))
+	t.Must(cthttp.Serve(h, request(t, nil, http.MethodPost, "/tasks", nil)).Status(http.StatusConflict))
+
+	// No route: the policy's 404 page, which does not name the path.
+	res = cthttp.Serve(h, request(t, nil, http.MethodGet, "/PATH-VALUE", nil))
+	t.Must(res.Status(http.StatusNotFound))
+	t.Must(res.Header("Content-Type", ct.Exact(web.ContentType)))
+	t.Must(res.HTML().Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusNotFound)))
+	t.Must(be.False(strings.Contains(res.BodyString(), "PATH-VALUE")))
+
+	// The wrong method: the policy's 405, with the mux's Allow.
+	res = cthttp.Serve(h, request(t, nil, http.MethodDelete, "/tasks/7", nil))
+	t.Must(res.Status(http.StatusMethodNotAllowed))
+	t.Must(res.Header("Allow", ct.Exact("GET, HEAD")))
+	t.Must(res.HTML().Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusMethodNotAllowed)))
+	res = cthttp.Serve(h, asHTMX(request(t, nil, http.MethodPut, "/tasks", nil), ""))
+	t.Must(res.Status(http.StatusMethodNotAllowed))
+	t.Must(res.Header("Allow", ct.Exact("POST")))
+	t.Must(res.Header("HX-Retarget", ct.Exact("#"+page.AlertsID)))
+	t.Must(res.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(web.DefaultMessage(http.StatusMethodNotAllowed)))
+
+	// The mux's redirects pass, also to a cleaned path without a route.
+	for target, location := range map[string]string{"/docs": "/docs/", "/a/../nope": "/nope"} {
+		want := httptest.NewRecorder()
+		mux.ServeHTTP(want, request(t, nil, http.MethodGet, target, nil))
+		res = cthttp.Serve(h, request(t, nil, http.MethodGet, target, nil))
+		t.Must(be.True(want.Code >= 300 && want.Code < 400))
+		t.Must(res.Status(want.Code))
+		t.Must(res.Header("Location", ct.Exact(location)))
+	}
+
+	// The request for the whole server is the mux's.
+	r := request(t, nil, http.MethodOptions, "/", nil)
+	r.RequestURI = "*"
+	t.Must(cthttp.Serve(h, r).Status(http.StatusBadRequest))
+}
+
 func TestWriteNilError(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	w := newFakeWriter()
@@ -782,6 +944,7 @@ func TestPanicsOnMisuse(gt *testing.T) {
 	t.Must(be.Panic(func() { web.Errors{}.Recover(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.Intercept(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.Answer(nil) }))
+	t.Must(be.Panic(func() { web.Errors{}.Mux(nil) }))
 	t.Must(be.Panic(func() { web.Errors{}.RequireAuth("/login", nil) }))
 	t.Must(be.Panic(func() {
 		web.Errors{}.RequireAuth("https://idp.example/login", func(*http.Request) bool { return true })

@@ -186,13 +186,13 @@ func ExampleErrors_Recover() {
 	// <main id="main" class="flex-grow-1"><div class="container py-3"><header id="page-header" class="mb-3"><h1 class="h4 mb-0">500 Internal Server Error</h1></header><div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">The request failed. The server log has details.</div></div><p><a href="/">Go to the start page</a></p></div></main>
 }
 
-// NotFound answers the requests that no other route matches, without
-// naming the path; a boosted link to a missing page shows the alert on the
-// page it was clicked on.
+// NotFound answers the pages under a retired prefix, without naming the
+// path; a boosted link to one shows the alert on the page it was clicked
+// on.
 func ExampleErrors_NotFound() {
 	errs := web.Errors{}
 	mux := http.NewServeMux()
-	mux.Handle("/", errs.NotFound())
+	mux.Handle("/projects/", errs.NotFound())
 	serve(mux, httptest.NewRequest(http.MethodGet, "/projects/7", nil), "Cache-Control")
 	boosted := htmxRequest(http.MethodGet, "/projects/7", "https://app.example/tasks")
 	boosted.Header.Set("HX-Boosted", "true")
@@ -205,6 +205,30 @@ func ExampleErrors_NotFound() {
 	// HX-Retarget: #alerts
 	// HX-Push-Url: false
 	// <div class="alert alert-danger">Nothing was found here.</div>
+}
+
+// Mux answers the requests that no route matches through the policy: 404
+// for an unknown path, and 405 with Allow for a route asked with another
+// method.
+func ExampleErrors_Mux() {
+	errs := web.Errors{}
+	mux := http.NewServeMux()
+	mux.Handle("GET /tasks/{id}", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Render(w, r, http.StatusOK, text.Text("task "+r.PathValue("id")))
+	}))
+	h := errs.Mux(mux)
+	serve(h, httptest.NewRequest(http.MethodGet, "/tasks/7", nil))
+	serve(h, httptest.NewRequest(http.MethodGet, "/projects/7", nil))
+	serve(h, htmxRequest(http.MethodPost, "/tasks/7", "https://app.example/tasks/7"), "Allow", "HX-Retarget")
+	// Output:
+	// 200
+	// task 7
+	// 404
+	// <main id="main" class="flex-grow-1"><div class="container py-3"><header id="page-header" class="mb-3"><h1 class="h4 mb-0">404 Not Found</h1></header><div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">Nothing was found here.</div></div><p><a href="/">Go to the start page</a></p></div></main>
+	// 405
+	// Allow: GET, HEAD
+	// HX-Retarget: #alerts
+	// <div class="alert alert-danger">This action is not available here.</div>
 }
 
 // Intercept keeps the plain-text errors of other code out of htmx swaps:

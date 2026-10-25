@@ -678,6 +678,37 @@ func TestValuesAccessors(gt *testing.T) {
 	clear(second)
 }
 
+func TestValuesAdd(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	v := new(form.Values)
+	buf := []byte("hunter2 and more")
+	secret := buf[:7]
+	v.Add("secret", secret)
+	v.Add("tag", []byte("a"))
+	v.Add("tag", []byte("b"))
+	v.Add("empty", nil)
+
+	t.Must(be.DeepEqual([]string{"empty", "secret", "tag"}, v.Names()))
+	t.Must(be.Equal(4, v.Len()))
+	t.Must(be.DeepEqual([]string{"a", "b"}, v.Strings("tag")))
+	t.Must(be.True(v.Has("empty")))
+	t.Must(be.NonNil(v.Bytes("empty")))
+	t.Must(be.Equal(0, len(v.Bytes("empty"))))
+
+	// v holds the slice itself, with its capacity cut to its length.
+	t.Must(be.True(&v.Bytes("secret")[0] == &secret[0]))
+	t.Must(be.Equal(7, cap(v.Bytes("secret"))))
+	v.Zero()
+	t.Must(be.DeepEqual([]byte{0, 0, 0, 0, 0, 0, 0}, secret))
+	t.Must(be.Equal(" and more", string(buf[7:])))
+
+	v.Add("secret", []byte("again"))
+	taken := v.Take("secret")
+	t.Must(be.Equal("again", string(taken)))
+	t.Must(be.Equal(len(taken), cap(taken)))
+	t.Must(be.Panic(func() { (*form.Values)(nil).Add("x", nil) }))
+}
+
 func TestValuesZero(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	v, err := readString(t, multipartType, multipartBody(field("pass", "hunter2"), field("pass", "again"), field("note", "x")), form.Limits{})

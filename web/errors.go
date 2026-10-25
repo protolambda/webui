@@ -73,8 +73,13 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 //     form.ErrUnsupportedType gives 415, and the other form errors 400 with
 //     [MessageForm];
 //   - session.ErrCSRF and mw.ErrCrossOrigin give 403 with [MessageForged];
+//   - Fallback, when set, maps what is left;
 //   - anything else gives 500 with the [DefaultMessage], which never
 //     reveals the error.
+//
+// The hooks that render the answer see the error too ([ErrorView.Err]),
+// so a Document can render a page of its own for one of the
+// application's errors.
 //
 // mw.SameOrigin refuses with a plain-text 403 of its own unless its Deny
 // handler answers through the policy, as
@@ -177,10 +182,19 @@ type Errors struct {
 	// classification. It returns nil for an error it does not know. Its
 	// Message must not contain request data.
 	Classify func(err error) *Error
+	// Fallback maps an error that neither Classify nor the default
+	// classification knows, which is otherwise answered with 500 and the
+	// [DefaultMessage], and leaves webui's own errors to webui. It returns
+	// nil to keep the 500. Client errors (4xx) are logged at debug level
+	// only, so map only errors known to be the client's: a 4xx for every
+	// unknown error would hide the failures of storage and other
+	// dependencies. Its Message must not contain request data.
+	Fallback func(err error) *Error
 	// Document renders the full error page of a plain request, usually the
 	// application's [page.Document] around v.Layout() with the
-	// application's navbar. Nil means a page.Document with the Assets and
-	// HTMX fields below.
+	// application's navbar, or a page of its own for an error that v.Err
+	// matches. Nil means a page.Document with the Assets and HTMX fields
+	// below.
 	Document func(r *http.Request, v ErrorView) elem.Node
 	// Fragment renders the content swapped into Target for an htmx
 	// request; htmx swaps all of it, without the hx-select of the page.
@@ -232,6 +246,14 @@ type ErrorView struct {
 	Message string
 	// Home is the href of the link back.
 	Home string
+	// Err is the error being answered, as the handler returned it or
+	// [Errors.Write] received it, for hooks that render an answer of their
+	// own for one of the application's errors (found with errors.As or
+	// errors.Is), such as a page with other actions than the link back.
+	// It is nil in the answer to a panic ([Errors.Recover]) and in the
+	// answers of [Errors.Intercept]. Its text may carry request data or
+	// secrets: render Message, never the error.
+	Err error
 }
 
 // Header returns the page header of the error page, with the title as h1.
@@ -292,6 +314,7 @@ func (e Errors) Write(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	a := e.classify(err)
+	a.err = err
 	gone := clientGone(r.Context())
 	level := a.level
 	if a.silent || (gone && a.interrupted) {
@@ -353,10 +376,79 @@ func (e Errors) Recover(next http.Handler) http.Handler {
 }
 
 // NotFound returns a handler that answers every request with a 404 error
-// page, without naming the path. Register it for the patterns that no
-// other route matches, e.g. mux.Handle("/", errs.NotFound()).
+// page, without naming the path, such as for a prefix of pages that are
+// gone. For the requests that no route of a mux matches, prefer
+// [Errors.Mux] to a catch-all route (mux.Handle("/", errs.NotFound())):
+// the catch-all matches every method, so the mux answers a request with
+// the wrong method for a route with this 404 instead of a 405.
 func (e Errors) NotFound() http.Handler {
 	return e.Answer(&Error{Status: http.StatusNotFound})
+}
+
+// Mux returns a handler that serves requests with mux and answers those
+// that no route of mux matches through the policy, as [Errors.Write]
+// answers an [*Error] of their status: 404 when no route matches the
+// path, and 405 with the Allow header that mux sets when routes match the
+// path but not the method. The paths and methods are not named. The other
+// answers of mux, such as its redirects to a cleaned path or to the path
+// with a trailing slash, pass unchanged.
+//
+// Use it around the application's mux, in place of a catch-all route:
+//
+//	handler := mw.Chain(errs.Mux(mux),
+//		mw.LogRequests(mw.RequestLog{Routes: mux}),
+//		errs.Recover,
+//		// ...
+//	)
+//
+// Mux panics if mux is nil.
+func (e Errors) Mux(mux *http.ServeMux) http.Handler {
+	if mux == nil {
+		panic("web: Mux of a nil ServeMux")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An unmatched request has no pattern. Its handler is the mux's
+		// own (404, 405 or a redirect), which writes nothing else: probe
+		// its status.
+		if h, pattern := mux.Handler(r); pattern == "" && r.RequestURI != "*" {
+			p := probe{header: make(http.Header)}
+			h.ServeHTTP(&p, r)
+			switch p.status {
+			case http.StatusNotFound:
+				e.Write(w, r, &Error{Status: http.StatusNotFound})
+				return
+			case http.StatusMethodNotAllowed:
+				if allow := p.header.Values("Allow"); len(allow) > 0 {
+					w.Header()["Allow"] = allow
+				}
+				e.Write(w, r, &Error{Status: http.StatusMethodNotAllowed})
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// probe is the response writer of [Errors.Mux] that records the status and
+// the headers of the mux's own answers, and drops their bodies.
+type probe struct {
+	header http.Header
+	status int
+}
+
+func (p *probe) Header() http.Header { return p.header }
+
+func (p *probe) WriteHeader(status int) {
+	if p.status == 0 {
+		p.status = status
+	}
+}
+
+func (p *probe) Write(b []byte) (int, error) {
+	if p.status == 0 {
+		p.status = http.StatusOK
+	}
+	return len(b), nil
 }
 
 // Answer returns a handler that answers every request with err, through
@@ -381,7 +473,10 @@ func (e Errors) Answer(err error) http.Handler {
 type answer struct {
 	status  int
 	message string
-	level   slog.Level
+	// err is the error answered, for the hooks; nil for a panic and for
+	// the answers of Intercept.
+	err   error
+	level slog.Level
 	// silent means nothing is written: the client of a stream went away.
 	silent bool
 	// interrupted means the error is a context error.
@@ -434,6 +529,11 @@ func (e Errors) classify(err error) answer {
 		return clientAnswer(http.StatusBadRequest, MessageForm)
 	case errors.Is(err, session.ErrCSRF), errors.Is(err, mw.ErrCrossOrigin):
 		return clientAnswer(http.StatusForbidden, MessageForged)
+	}
+	if e.Fallback != nil {
+		if pe := e.Fallback(err); pe != nil {
+			return errorAnswer(pe)
+		}
 	}
 	return internalAnswer()
 }
@@ -488,7 +588,7 @@ func (e Errors) answer(w http.ResponseWriter, r *http.Request, a answer) {
 	if home == "" {
 		home = "/"
 	}
-	v := ErrorView{Status: a.status, Title: StatusTitle(a.status), Message: a.message, Home: home}
+	v := ErrorView{Status: a.status, Title: StatusTitle(a.status), Message: a.message, Home: home, Err: a.err}
 	h := w.Header()
 	resetHeaders(h)
 	hx2.AddVary(h)

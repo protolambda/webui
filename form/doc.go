@@ -36,7 +36,8 @@
 // and cleared ([Values.Take], [Values.Zero]) instead of lingering as an
 // immutable string until the garbage collector reuses its memory. Read
 // clears its scratch buffers before it returns, and on every error path it
-// also clears the values read so far.
+// also clears the values read so far. A reader of the application's own
+// hands its values over with [Values.Add], under the same ownership.
 //
 // Zeroing is best effort within Go's runtime model: the network stack, TLS
 // and the multipart reader keep parts of the body in buffers that this

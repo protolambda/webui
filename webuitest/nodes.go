@@ -70,6 +70,20 @@ func hxAttrOf(n ct.Node, name string) (value, attrName string, ok bool) {
 	return "", "", false
 }
 
+// hxValue returns the value of an htmx attribute as htmx's getAttributeValue
+// reads it: the hx- attribute when it is not empty, else the data- one. An
+// empty value means none. The name of the attribute read is returned for
+// messages.
+func hxValue(n ct.Node, name string) (value, attrName string) {
+	if v, _ := attrOf(n, name); v != "" {
+		return v, name
+	}
+	if v, _ := attrOf(n, "data-"+name); v != "" {
+		return v, "data-" + name
+	}
+	return "", ""
+}
+
 // hxName returns an attribute name without a data- prefix, lower-cased.
 func hxName(key string) string {
 	key = strings.ToLower(key)

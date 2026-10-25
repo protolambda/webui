@@ -104,6 +104,11 @@ type NavItem struct {
 	// BadgeVariant is the color of the badge. Empty means
 	// bs.VariantSecondary.
 	BadgeVariant bs.Variant
+	// Attrs are extra attributes of the link, such as an id, or a class
+	// for a style of the application's own. Classes add to those of the
+	// link; the attributes that the item sets (href, and aria-current for
+	// a current item) fail the render when set again.
+	Attrs attr.Node
 }
 
 // Eval builds the navbar. It fails with [ErrNoName] for an item or a brand
@@ -201,6 +206,7 @@ func (it NavItem) link(component string, style linkStyle) (elem.Node, error) {
 	if style.class != "" {
 		attrs = append(attrs, attr.Class(style.class))
 	}
+	attrs = append(attrs, optionalAttrs(it.Attrs)...)
 	var label elem.Node = text.Text(it.Label)
 	if style.labelClass != "" {
 		label = text.Span(attr.Class(style.labelClass))(label)

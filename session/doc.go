@@ -86,6 +86,17 @@
 // that a sibling subdomain cannot plant or shadow it. Insecure is meant for
 // development over plain http on localhost only.
 //
+// Cookies do not tell ports apart: the applications on one host, such as
+// several on localhost or 127.0.0.1 with a port each, share its cookies.
+// With the default names ("session" and "preauth"), each one overwrites
+// the cookies of the others, which signs their users out and expires
+// their forms. Give each application on a shared host names of its own
+// ([Options.CookieName], [PreAuthOptions.CookieName]). Distinct names end
+// the overwriting, not the sharing: each application still receives the
+// cookies of the others and can set them (the __Host- prefix does not
+// tell ports apart either), so a host should serve only applications
+// that trust each other.
+//
 // Cookies are SameSite=Lax by default. Lax sends the cookie with top-level
 // navigations from other sites (a link in a mail or another application
 // opens the page signed in), but not with cross-site POST requests,

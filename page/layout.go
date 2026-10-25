@@ -49,6 +49,10 @@ const DefaultSkipLabel = "Skip to main content"
 //	  </div>
 //	</div>
 //
+// SidebarColumn and MainColumn replace the grid classes of the columns
+// (col-md-3 col-xl-2 and col-md-9 col-xl-10), and MainAttrs adds
+// attributes to the main element in both forms.
+//
 // The layout needs no script. The column wrapper keeps the footer at the
 // bottom of short pages. From md up, the columns fill the height down to
 // the footer and a vertical rule (an empty, decorative .vr) separates them
@@ -85,6 +89,21 @@ type Layout struct {
 	// Dialogs are the dialogs of the page (e.g. bs.Dialog), in the dialogs
 	// region.
 	Dialogs []elem.Node
+	// SidebarColumn and MainColumn are the Bootstrap grid classes of the
+	// sidebar column and of the main column of a layout with a Sidebar.
+	// Empty means "col-md-3 col-xl-2" and "col-md-9 col-xl-10". Set both
+	// together, with classes of the md breakpoint and up: the columns stack
+	// below md, as the rule between them and the stretching of the columns
+	// do. For example "col-md-auto" and "col-md" give the sidebar the width
+	// of its content, or of a class of the application's stylesheet, and
+	// the main column the rest.
+	SidebarColumn string
+	MainColumn    string
+	// MainAttrs are extra attributes of the main element, such as a class
+	// that lets wide content scroll inside the main column
+	// ("overflow-x-auto"). Classes add to those of the layout. The element
+	// has the id [MainID], so another id fails the render.
+	MainAttrs attr.Node
 	// Fluid makes the containers full width (container-fluid) instead of
 	// Bootstrap's responsive fixed widths. With a Sidebar the layout is
 	// always full width.
@@ -117,11 +136,19 @@ func (l Layout) Eval(ctx context.Context) (elem.Obj, error) {
 		column = append(column, text.A(attr.Class("visually-hidden-focusable p-2"), text.Href("#"+MainID))(text.Text(label)))
 	}
 	column = append(column, optional(l.Navbar))
+	mainAttrs := optionalAttrs(l.MainAttrs)
 	if l.Sidebar == nil {
-		column = append(column, section.Main(attr.ID(MainID), attr.Class("flex-grow-1"))(
+		column = append(column, section.Main(append([]attr.Node{attr.ID(MainID), attr.Class("flex-grow-1")}, mainAttrs...)...)(
 			div.Div(attr.Class(container+" py-3"))(content...),
 		))
 	} else {
+		sidebarColumn, mainColumn := l.SidebarColumn, l.MainColumn
+		if sidebarColumn == "" {
+			sidebarColumn = "col-md-3 col-xl-2"
+		}
+		if mainColumn == "" {
+			mainColumn = "col-md-9 col-xl-10"
+		}
 		// The row fills the wrapper down to the footer. Stacked (below md)
 		// its lines keep their content height; side by side the columns
 		// stretch, so that the rule between them reaches the footer.
@@ -130,11 +157,11 @@ func (l Layout) Eval(ctx context.Context) (elem.Obj, error) {
 		// stacked columns draw no line at the edge of the screen.
 		column = append(column, div.Div(attr.Class("container-fluid flex-grow-1 d-flex flex-column"))(
 			div.Div(attr.Class("row flex-grow-1 align-content-start align-content-md-stretch"))(
-				div.Div(attr.Class("col-md-3 col-xl-2 py-3 position-relative"))(
+				div.Div(attr.Class(sidebarColumn+" py-3 position-relative"))(
 					l.Sidebar,
 					div.Div(attr.Class("vr d-none d-md-block position-absolute top-0 end-0 h-100"))(),
 				),
-				section.Main(attr.ID(MainID), attr.Class("col-md-9 col-xl-10 py-3"))(content...),
+				section.Main(append([]attr.Node{attr.ID(MainID), attr.Class(mainColumn + " py-3")}, mainAttrs...)...)(content...),
 			),
 		))
 	}

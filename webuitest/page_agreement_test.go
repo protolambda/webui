@@ -215,9 +215,8 @@ func TestWebErrorsAgreement(gt *testing.T) {
 	mux.Handle("GET /boom", errs.Recover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	})))
-	mux.Handle("/", errs.NotFound())
 	logs := webuitest.NewLogs()
-	c := &webuitest.Client{Handler: mux, Options: []webuitest.ReqOption{webuitest.LogTo(logs.Logger())}}
+	c := &webuitest.Client{Handler: errs.Mux(mux), Options: []webuitest.ReqOption{webuitest.LogTo(logs.Logger())}}
 
 	t.Run("htmx fragment", func(t devtest.T) {
 		res := c.Get(t, "/tasks/7", webuitest.HTMX(), webuitest.HXTarget("list"))
@@ -275,4 +274,42 @@ func TestWebRecoverStream(gt *testing.T) {
 	t.Must(be.True(r.failed))
 	t.Must(be.Substring(r.output(), "GET /live: want the end of the stream: the handler aborted the response"))
 	t.Must(be.Substring(logs.String(), "handler panic"))
+}
+
+// TestShellOption checks that the default contracts of Client and Crawl
+// take the shell of an application with other asset sets than the default
+// theme set, here a theme without icons.
+func TestShellOption(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	set := theme.MustAssets(theme.Options{WithoutIcons: true})
+	errs := web.Errors{Assets: []*asset.Set{set}}
+	mux := http.NewServeMux()
+	mux.Handle(set.Pattern(), set)
+	mux.Handle("GET /{$}", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Render(w, r, http.StatusOK, page.Document{Title: "Home", Assets: []*asset.Set{set}, Body: page.Layout{
+			Header: page.Header{Title: text.Text("Home")},
+			Main:   text.P()(text.A(text.Href("/about"))(text.Text("About"))),
+		}})
+	}))
+	mux.Handle("GET /about", errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Render(w, r, http.StatusOK, page.Document{Title: "About", Assets: []*asset.Set{set}, Body: page.Layout{
+			Header: page.Header{Title: text.Text("About")},
+		}})
+	}))
+
+	// The default shell expects the icons of the default theme set.
+	c := &webuitest.Client{Handler: mux}
+	r := newRecordT(t.Context())
+	c.Page(r, c.Get(t, "/"), http.StatusOK)
+	t.Must(be.True(r.failed))
+	t.Must(be.Substring(r.output(), "shell()"))
+	report := webuitest.Crawl(t, c, webuitest.CrawlOptions{})
+	t.Must(be.Len(report.Problems, 2))
+
+	shell := new(webuitest.DefaultShell(set))
+	c = &webuitest.Client{Handler: mux, Shell: shell}
+	c.Page(t, c.Get(t, "/"), http.StatusOK)
+	report = webuitest.Crawl(t, c, webuitest.CrawlOptions{Shell: shell, Assets: true})
+	t.Must(report)
+	t.Must(be.DeepEqual([]string{"/", "/about"}, report.Pages))
 }

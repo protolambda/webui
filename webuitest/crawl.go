@@ -114,8 +114,12 @@ type CrawlOptions struct {
 	Start []string
 	// Routes, when set, must route every target that the crawl finds.
 	Routes RouteChecker
+	// Shell is the page shell of the default contract, as for
+	// [Client.Shell]; nil means [DefaultShell](). The crawl does not read
+	// the Shell (or the Contract) of the Client that it sends through.
+	Shell *Shell
 	// Contract checks every crawled page; nil means [PageContract] with
-	// [DefaultShell]() and [Rules]().
+	// Shell and [Rules]().
 	Contract Contract
 	// ContractFor, when set, picks the contract of each crawled page by
 	// the page's URL, for applications whose pages differ in what they
@@ -283,7 +287,8 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 	}
 	contract := o.Contract
 	if contract == nil {
-		contract = func(p *ct.Subject) assertion.Assertion { return PageContract(p, DefaultShell()) }
+		shell := shellOrDefault(o.Shell)
+		contract = func(p *ct.Subject) assertion.Assertion { return PageContract(p, shell) }
 	}
 	fragContract := o.FragmentContract
 	if fragContract == nil {

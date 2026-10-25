@@ -70,7 +70,8 @@ type Options[T any] struct {
 	// CookieName is the name of the session cookie, without prefix; ""
 	// means [DefaultCookieName]. It must be a valid cookie name, and must
 	// not start with "__Host-" or "__Secure-": the prefix follows from
-	// Insecure.
+	// Insecure. Applications that share a host, also on different ports,
+	// need distinct names (see "Cookies" in the package documentation).
 	CookieName string
 	// Insecure drops the Secure attribute and the __Host- prefix of the
 	// cookie. Use it only to develop over plain http on localhost.

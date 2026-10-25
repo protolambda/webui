@@ -49,7 +49,8 @@ const (
 // defaults.
 type PreAuthOptions struct {
 	// CookieName is the name of the cookie, without prefix; "" means
-	// [DefaultPreAuthCookieName]. The rules of [Options.CookieName] apply.
+	// [DefaultPreAuthCookieName]. The rules of [Options.CookieName] apply,
+	// distinct names for applications that share a host included.
 	CookieName string
 	// Insecure drops the Secure attribute and the __Host- prefix of the
 	// cookie. Use it only to develop over plain http on localhost.

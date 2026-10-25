@@ -33,11 +33,14 @@ var htmxUnsafeAttrs = []string{"hx-post", "hx-put", "hx-patch", "hx-delete"}
 //     owns it (htmx includes the related form in such requests), the
 //     hx-vals of the element and its ancestors, merged as htmx merges them
 //     (nearer keys win; "unset" on any of them drops them all), have the
-//     field, or the nearest hx-include names the field, an element
+//     field, or the hx-include of the element names the field, an element
 //     containing it, "this" (the element that declares the hx-include), or
-//     "closest form" that owns it; and the nearest hx-params does not drop
-//     it ("none", a "not" list that names it, or a list without it).
+//     "closest form" that owns it; and its hx-params does not drop it
+//     ("none", a "not" list that names it, or a list without it).
 //
+// hx-include and hx-params are inherited as htmx inherits them: from the
+// nearest element with a non-empty value, unless an "unset" value or an
+// hx-disinherit that names them stops the inheritance on the way.
 // Fields in the content of a template element are not part of the
 // document, and fields in a datalist are never submitted: neither counts.
 //
@@ -193,27 +196,6 @@ func relatedForm(e ct.Node, idx formIndex) ct.Node {
 	return nearestForm(e)
 }
 
-// inherited returns the value of an inherited htmx attribute: from the
-// element or its nearest ancestor that has it.
-func inherited(e ct.Node, name string) (string, bool) {
-	v, _, ok := inheritedFrom(e, name)
-	return v, ok
-}
-
-// inheritedFrom is [inherited] that also returns the element that declares
-// the attribute.
-func inheritedFrom(e ct.Node, name string) (string, ct.Node, bool) {
-	for p := e; p != nil; p = p.Parent() {
-		if p.Kind() != ct.KindElement {
-			continue
-		}
-		if v, _, ok := hxAttrOf(p, name); ok {
-			return v, p, true
-		}
-	}
-	return "", nil, false
-}
-
 // htmxVals returns the values that htmx adds to a request of e from
 // hx-vals: the objects of e and its ancestors merged, nearer keys winning
 // (a null value counts as absent), as htmx's getValuesForElement does.
@@ -277,15 +259,16 @@ func valsHave(vals map[string]any, variants []string) bool {
 	return false
 }
 
-// paramsKeepCSRF reports whether the nearest hx-params of e lets htmx send
-// the CSRF field: htmx sends no parameters for "none", drops the names of
-// a "not a, b" list, and sends only the names of any other list; "*",
-// "unset" and an empty value filter nothing. The comparisons are exact,
-// as in htmx: "None" is a list of one name.
+// paramsKeepCSRF reports whether the hx-params of e, inherited as htmx
+// inherits it ([closestHX]), lets htmx send the CSRF field: htmx sends no
+// parameters for "none", drops the names of a "not a, b" list, and sends
+// only the names of any other list; "*", and no value ("unset", empty or
+// disinherited), filter nothing. The comparisons are exact, as in htmx:
+// "None" is a list of one name.
 func paramsKeepCSRF(e ct.Node) bool {
-	v, ok := inherited(e, "hx-params")
+	v, _, ok := closestHX(e, "hx-params")
 	switch {
-	case !ok, v == "", v == "*", v == "unset":
+	case !ok, v == "*":
 		return true
 	case v == "none":
 		return false
@@ -380,17 +363,17 @@ func parseURLMethods(content string) (map[string]bool, bool) {
 	return out, true
 }
 
-// includeTargets resolves the elements of the nearest hx-include of e that
-// this package can resolve: "this", "closest form" and "#id" selectors.
-// htmx resolves "this" only as the whole value, to the element that
-// declares the hx-include; in a list it is a CSS type selector, which
-// matches nothing.
+// includeTargets resolves the elements of the hx-include of e, inherited as
+// htmx inherits it ([closestHX]), that this package can resolve: "this",
+// "closest form" and "#id" selectors. htmx resolves "this" only as the
+// whole value, compared exactly, to the element that declares the
+// hx-include; in a list it is a CSS type selector, which matches nothing.
 func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
-	v, from, ok := inheritedFrom(e, "hx-include")
+	v, from, ok := closestHX(e, "hx-include")
 	if !ok {
 		return nil
 	}
-	if strings.TrimSpace(v) == "this" {
+	if v == "this" {
 		return []ct.Node{from}
 	}
 	var out []ct.Node
@@ -419,10 +402,11 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 //   - an htmx request that puts its parameters in the URL (also with a
 //     data- prefix) and sends the field: the element is such a form or the
 //     field, its related form owns it (htmx includes it for every method
-//     but GET), the nearest hx-include names the field or an element
-//     containing it, or the merged hx-vals of the element and its
-//     ancestors have it (or, when token is not "", the token anywhere),
-//     unless the nearest hx-params drops it. The methods that put their
+//     but GET), its hx-include names the field or an element containing
+//     it, or the merged hx-vals of the element and its ancestors have it
+//     (or, when token is not "", the token anywhere), unless its hx-params
+//     drops it; hx-include and hx-params are inherited as for
+//     [PostFormsCarryCSRF]. The methods that put their
 //     parameters in the URL are the methodsThatUseUrlParams of the htmx
 //     configuration, compared case-sensitively as htmx does ("GET" does
 //     not name hx-get): in a complete document, of its first htmx-config

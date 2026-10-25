@@ -193,11 +193,13 @@ func firstRequestAttr(e ct.Node) (verb, attr, path string, ok bool) {
 //
 // HTMXData does not run what needs a user, script or an extension:
 // hx-confirm, hx-prompt, hx-vars, js: values, hx-on, constraint
-// validation, hx-boost, hx-request and extensions; hx-disinherit and
-// hx-inherit are ignored. An element in template content or inside
-// hx-disable makes no request, and a disabled one cannot be used: both
-// are errors. Errors wrap [ErrFormData], or the load or query error of
-// the selections.
+// validation, hx-boost, hx-request and extensions. hx-disinherit and an
+// "unset" value stop the inheritance of hx-target, hx-include, hx-params
+// and hx-encoding, as in htmx; hx-inherit, which htmx reads only with
+// htmx.config.disableInheritance (off in webui's configuration), is
+// ignored. An element in template content or inside hx-disable makes no
+// request, and a disabled one cannot be used: both are errors. Errors
+// wrap [ErrFormData], or the load or query error of the selections.
 func HTMXData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selection, edits url.Values) (HTMXRequest, error) {
 	return htmxData(ctx, page, elt, submitter, edits, nil)
 }
@@ -419,17 +421,20 @@ func requestAttrCount(e ct.Node) int {
 // closestHX returns the value of an inherited htmx attribute as htmx's
 // getClosestAttributeValue reads it: from the nearest of e and its
 // ancestors with a non-empty value (an empty hx- attribute falls back to
-// the data- one), with the element that declares it. "unset" there means
-// none.
+// the data- one, see [hxValue]), with the element that declares it. Both
+// "unset" there and an ancestor whose hx-disinherit is "*" or lists name
+// mean none: the search stops. hx-inherit is not read: htmx reads it only
+// with htmx.config.disableInheritance, which webui's configuration leaves
+// off.
 func closestHX(e ct.Node, name string) (string, ct.Node, bool) {
 	for p := e; p != nil; p = p.Parent() {
 		if p.Kind() != ct.KindElement {
 			continue
 		}
-		v, _ := attrOf(p, name)
-		if v == "" {
-			v, _ = attrOf(p, "data-"+name)
+		if p != e && disinherits(p, name) {
+			return "", nil, false
 		}
+		v, _ := hxValue(p, name)
 		if v == "" {
 			continue
 		}
@@ -439,6 +444,15 @@ func closestHX(e ct.Node, name string) (string, ct.Node, bool) {
 		return v, p, true
 	}
 	return "", nil, false
+}
+
+// disinherits reports whether the hx-disinherit of e keeps its descendants
+// from inheriting the attribute name: it is "*" or a list of names
+// separated by single spaces that has name, compared exactly, as htmx
+// compares them.
+func disinherits(e ct.Node, name string) bool {
+	v, _ := hxValue(e, "hx-disinherit")
+	return v == "*" || slices.Contains(strings.Split(v, " "), name)
 }
 
 // htmxMultipart reports whether htmx sends the request of e as

@@ -263,7 +263,8 @@ func TestSubmitHTMX(gt *testing.T) {
 		t.Must(be.Equal("main", rr.seen().header.Get("HX-Target")))
 
 		page := cthtml.PageString(webuiPage(`<button type="button" id="gone" hx-get="/x" hx-target="#nope">x</button><div id="out"><button type="button" id="self" hx-get="/x" hx-target="this">x</button></div>` +
-			`<button type="button" id="next" hx-get="/x" hx-target="next .r, #out">x</button><p class="r" id="r1"></p><section hx-target="this" id="sec"><button type="button" id="inh" hx-get="/x">x</button></section>`))
+			`<button type="button" id="next" hx-get="/x" hx-target="next .r, #out">x</button><p class="r" id="r1"></p><section hx-target="this" id="sec"><button type="button" id="inh" hx-get="/x">x</button>` +
+			`<div hx-disinherit="hx-target"><button type="button" id="dis" hx-get="/x">x</button></div><button type="button" id="unset" hx-get="/x" hx-target="unset">x</button></section>`))
 		_, err := webuitest.HTMXData(t.Context(), page, page.Find(ct.ID("gone")), nil, nil)
 		t.Must(be.ErrorContains(err, `the hx-target "#nope" selects no element, so htmx sends no request`))
 		target := func(id string) string {
@@ -274,6 +275,8 @@ func TestSubmitHTMX(gt *testing.T) {
 		t.Must(be.Equal("self", target("self")))
 		t.Must(be.Equal("r1", target("next")))
 		t.Must(be.Equal("sec", target("inh")))
+		t.Must(be.Equal("dis", target("dis")))
+		t.Must(be.Equal("unset", target("unset")))
 	})
 	t.Run("headers", func(t devtest.T) {
 		c, rr := htmxClient()

@@ -31,12 +31,20 @@ var htmxTargetAttrs = []string{"hx-target", "hx-include", "hx-indicator", "hx-di
 //   - another selector matches some element of a document.
 //
 // Selectors are checked when they are simple: a tag, an id, classes and
-// [attr] or [attr=value] tests, with htmx's <S/> wrapping. Keywords such as
-// "this", "next", "previous", "body", "document" and "window" always
-// resolve, and other selectors (descendant combinators, pseudo-classes)
-// are not checked. Each comma-separated part must resolve. hx-swap-oob ids
+// [attr] or [attr=value] tests, with htmx's <S/> wrapping. "this" as the
+// whole value and keywords such as "next", "previous", "body", "document"
+// and "window" always resolve, and other selectors (descendant
+// combinators, pseudo-classes) are not checked. Each comma-separated part
+// must resolve: in a list, htmx reads "this" as a CSS type selector, which
+// matches no element. hx-swap-oob ids
 // are not checked: they name elements of the page the fragment is swapped
 // into.
+//
+// Inheritance follows htmx: an empty attribute counts as absent, and the
+// value "unset" (as the whole value) means none, as if no element had the
+// attribute, for the element and the elements inside it. An ancestor
+// whose hx-disinherit is "*" or names the attribute stops the inheritance
+// too.
 func HXTargets(documentTargets ...string) ct.Rule {
 	allowed := make(map[string]bool, len(documentTargets))
 	quoted := make([]string, len(documentTargets))
@@ -55,7 +63,10 @@ func HXTargets(documentTargets ...string) ct.Rule {
 		for i, e := range elems {
 			for _, name := range htmxTargetAttrs {
 				req := makesRequest(e, name)
-				if v, attr, ok := hxAttrOf(e, name); ok {
+				if v, attr := hxValue(e, name); v != "" {
+					if v == "unset" || v == "this" {
+						continue
+					}
 					for _, part := range splitSelectors(v) {
 						if relativeSelector(part) && !req {
 							// htmx resolves it from the requesting elements.
@@ -70,11 +81,11 @@ func HXTargets(documentTargets ...string) ct.Rule {
 				if !req {
 					continue
 				}
-				v, from, ok := inheritedFrom(e.Parent(), name)
+				v, from, ok := closestHX(e, name)
 				if !ok {
 					continue
 				}
-				_, attr, _ := hxAttrOf(from, name)
+				_, attr := hxValue(from, name)
 				for _, part := range splitSelectors(v) {
 					if !relativeSelector(part) {
 						// Checked where it is written.
@@ -125,7 +136,7 @@ func resolveTarget(elems []ct.Node, i int, part string, ids map[string]ct.Node, 
 	e := elems[i]
 	p := unwrapSelector(part)
 	switch p {
-	case "", "this", "body", "document", "window", "next", "previous", "inherit", "root":
+	case "", "body", "document", "window", "next", "previous", "inherit", "root":
 		return ""
 	}
 	if rest, ok := cutKeyword(p, "closest"); ok {

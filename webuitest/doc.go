@@ -26,10 +26,13 @@
 // document head that webui's page.Document renders (charset, viewport,
 // title, color scheme, icon, the htmx-config meta element, stylesheets,
 // and deferred scripts and modules with integrity) and a main landmark.
-// [DefaultShell] builds it from asset sets. [ShellContract],
-// [PageContract] and [FragmentContract] apply shell and rules to a
-// subject; [LayoutRegions] checks the regions of page.Layout, whose ids
-// (page.MainID and the others) [DocumentTargets] lists for fragments.
+// [DefaultShell] builds it from asset sets; the default contracts of
+// [Client] and [Crawl] take it as [Client.Shell] and [CrawlOptions.Shell],
+// for an application that loads other sets than the default theme's.
+// [ShellContract], [PageContract] and [FragmentContract] apply shell and
+// rules to a subject; [LayoutRegions] checks the regions of page.Layout,
+// whose ids (page.MainID and the others) [DocumentTargets] lists for
+// fragments.
 //
 // # Requests, clients and responses
 //

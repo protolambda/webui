@@ -127,6 +127,14 @@ func DefaultShell(sets ...*asset.Set) Shell {
 	return s
 }
 
+// shellOrDefault returns *s, or [DefaultShell]() when s is nil.
+func shellOrDefault(s *Shell) Shell {
+	if s != nil {
+		return *s
+	}
+	return DefaultShell()
+}
+
 // Rule returns the shell expectation as a document rule, "shell()", which
 // [ShellContract] and [PageContract] apply. The page must have:
 //

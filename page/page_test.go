@@ -12,6 +12,7 @@ import (
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthtml"
+	"github.com/protolambda/chord/html/aria"
 	"github.com/protolambda/chord/html/form"
 	"github.com/protolambda/chord/html/form/button"
 	"github.com/protolambda/chord/html/group/div"
@@ -221,6 +222,16 @@ func TestLayoutVariants(gt *testing.T) {
 		t.Must(be.NoError(err))
 		t.Must(be.Substring(out, `<div class="col-md-3 col-xl-2 py-3 position-relative">S<div class="vr d-none d-md-block position-absolute top-0 end-0 h-100"></div></div>`))
 	})
+	t.Run("columns", func(t devtest.T) {
+		out, err := render(page.Layout{NoSkipLink: true, Sidebar: text.Text("S"), SidebarColumn: "col-md-auto", MainColumn: "col-md", MainAttrs: attr.Class("overflow-x-auto")})
+		t.Must(be.NoError(err))
+		t.Must(be.Substring(out, `<div class="col-md-auto py-3 position-relative">S<div class="vr d-none d-md-block position-absolute top-0 end-0 h-100"></div></div>`))
+		t.Must(be.Substring(out, `<main id="main" class="col-md py-3 overflow-x-auto">`))
+		view := ct.View(page.Layout{MainAttrs: attr.Bundle{attr.Class("overflow-x-auto"), attr.Data("view", "list")}})
+		t.Must(view.Find(ct.Role("main")).Matches(ct.ID(page.MainID), ct.Class("flex-grow-1"), ct.Class("overflow-x-auto"), ct.Attr("data-view", "list")))
+		_, err = render(page.Layout{MainAttrs: attr.ID("content")})
+		t.Must(be.ErrorContains(err, `duplicate attribute "id"`))
+	})
 	t.Run("skip link", func(t devtest.T) {
 		t.Must(ct.View(page.Layout{SkipLabel: "Zum Inhalt"}).Find(ct.Role("link", ct.Named("Zum Inhalt"))))
 		t.Must(ct.View(page.Layout{NoSkipLink: true}).Find(ct.Role("link")).None())
@@ -352,6 +363,25 @@ func TestNavbarOptions(gt *testing.T) {
 	out, err := render(page.Navbar{})
 	t.Must(be.NoError(err))
 	t.Must(be.Equal(`<nav id="navbar" class="navbar navbar-expand bg-body-tertiary border-bottom" aria-label="Main"><div class="container-fluid flex-wrap gap-2"></div></nav>`, out))
+}
+
+func TestNavItemAttrs(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	items := []page.NavItem{
+		{Label: "Root", Href: "/r", Attrs: attr.Bundle{attr.ID("nav-root"), attr.Class("font-monospace")}},
+		{Label: "Here", Href: "/h", Current: true, Attrs: attr.Class("fw-bold")},
+	}
+	navbar := ct.View(page.Navbar{Items: items})
+	t.Must(navbar.Find(ct.Role("link", ct.Named("Root"))).Matches(ct.ID("nav-root"), ct.Class("nav-link"), ct.Class("font-monospace"), ct.Attr("href", "/r")))
+	t.Must(navbar.Find(ct.Role("link", ct.Named("Here"))).Matches(ct.Class("active"), ct.Class("fw-bold"), ct.Attr("aria-current", "page")))
+	sidebar := ct.View(page.Sidebar{Sections: []page.SideSection{{Items: items[1:]}}})
+	t.Must(sidebar.Find(ct.Role("link", ct.Named("Here"))).Matches(ct.Class("nav-link"), ct.Class("fw-bold")))
+
+	// The item's own attributes cannot be set twice.
+	_, err := render(page.Navbar{Items: []page.NavItem{{Label: "A", Href: "/a", Attrs: text.Href("/b")}}})
+	t.Must(be.ErrorContains(err, `duplicate attribute "href"`))
+	_, err = render(page.Navbar{Items: []page.NavItem{{Label: "A", Href: "/a", CurrentSection: true, Attrs: aria.Current("page")}}})
+	t.Must(be.ErrorContains(err, `duplicate attribute "aria-current"`))
 }
 
 // TestCurrentSection checks the marking of the section that holds the

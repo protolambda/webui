@@ -498,7 +498,11 @@ func PageContract(page *ct.Subject, s Shell, rules ...ct.Rule) assertion.Asserti
 
 // FragmentContract asserts that fragment, a response that htmx swaps into a
 // page or the data of a server-sent event, is a fragment ([FragmentRule])
-// and satisfies rules, or [Rules]() when no rules are given.
+// and satisfies rules, or [Rules]() when no rules are given. Parse a
+// response with [cthttp.Result.HTMLFragment] ([Client.Fragment] does), and
+// an event with [Event.Fragment]: [cthttp.Result.HTML] parses a complete
+// document, which always has html, head and body elements, so the
+// contract fails, and the rules check the subject as a document.
 func FragmentContract(fragment *ct.Subject, rules ...ct.Rule) assertion.Assertion {
 	if len(rules) == 0 {
 		rules = Rules()

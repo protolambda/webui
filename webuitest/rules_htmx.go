@@ -17,7 +17,9 @@ var htmxTargetAttrs = []string{"hx-target", "hx-include", "hx-indicator", "hx-di
 //
 //   - "#id" names an element of the document; in a fragment (a subject
 //     without an html element), also one of documentTargets, the ids the
-//     page around the fragment provides (see [DocumentTargets]);
+//     page around the fragment provides (see [DocumentTargets]), which
+//     needs a fragment answer parsed with [cthttp.Result.HTMLFragment]:
+//     Result.HTML always makes the subject a document (see [Rules]);
 //   - "closest S", "find S", "next S" and "previous S" find an element
 //     matching S among the ancestors, descendants, following or preceding
 //     elements of each element that makes a request with the attribute,
@@ -455,7 +457,9 @@ func cssIdent(s string) bool {
 // an sse-close event, without which the browser reconnects forever when
 // the stream ends; sse-swap names no empty event. In a fragment (a subject
 // without an html element), the connect element and hx-ext may be in the
-// page around it, so missing ancestors are not reported there.
+// page around it, so missing ancestors are not reported there. Parse a
+// fragment answer with [cthttp.Result.HTMLFragment] for that: Result.HTML
+// always makes the subject a document (see [Rules]).
 func SSEWiring() ct.Rule {
 	return ct.CustomRule("sseWiring()", func(root ct.Node) []string {
 		frag := isFragment(root)

@@ -496,7 +496,10 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 //     not name hx-get): in a complete document, of its first htmx-config
 //     meta element, else htmx's default (hx-get and hx-delete); in a
 //     fragment, of the page it is swapped into, which is the zero
-//     hx2.Config here (hx-get only) and [WithHTMXConfig] in [Rules];
+//     hx2.Config here (hx-get only) and [WithHTMXConfig] in [Rules]. A
+//     fragment answer parsed with [cthttp.Result.HTML] is a document
+//     without that meta element, under htmx's default: parse it with
+//     [cthttp.Result.HTMLFragment] (see [Rules]);
 //   - a control of that name other than a hidden input: an input of
 //     another type, a select, a textarea or a button, which shows the
 //     token or sends a value of its own in its place;

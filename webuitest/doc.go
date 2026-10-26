@@ -16,12 +16,15 @@
 // CSRF fields and token leaks, htmx targets, preserved elements and SSE
 // wiring, the no-JS dialog markup, and accessibility (icons hidden,
 // controls named, no nested controls, rectangular tables, hidden text
-// that its scroller clips, safe external links). Each rule is
-// also available alone. A fragment is checked as htmx runs it, under the
-// htmx configuration of the page around it: webui's, the zero hx2.Config,
-// unless [WithHTMXConfig] names another. Rules are pure values: they never
-// call the test, and their messages name locations and attribute names,
-// never secret values.
+// that its scroller clips, safe external links). Each rule is also
+// available alone. A fragment is checked as htmx runs it, under the htmx
+// configuration of the page around it: webui's, the zero hx2.Config,
+// unless [WithHTMXConfig] names another. A subject with an html element is
+// a document, any other a fragment: parse fragment answers with
+// [cthttp.Result.HTMLFragment], as [Client.Fragment] and [Crawl] do, since
+// [cthttp.Result.HTML] parses a complete document and always adds one.
+// Rules are pure values: they never call the test, and their messages
+// name locations and attribute names, never secret values.
 //
 // [Shell] describes what every page of an application has in common: the
 // document head that webui's page.Document renders (charset, viewport,

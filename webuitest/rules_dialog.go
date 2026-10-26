@@ -34,9 +34,11 @@ import (
 // In a fragment (a subject without an html element) dialogs and their
 // openers may be in different responses, so a commandfor or popovertarget
 // whose dialog is missing, and a dialog without an opener, are not
-// reported there. On a complete page, the dialogs whose ids are among
-// shared need no opener either: dialogs that the document renders on
-// every page for the openers that later fragments bring (see
+// reported there; parse a fragment answer with
+// [cthttp.Result.HTMLFragment] for that, as Result.HTML always makes the
+// subject a document (see [Rules]). On a complete page, the dialogs whose
+// ids are among shared need no opener either: dialogs that the document
+// renders on every page for the openers that later fragments bring (see
 // [WithSharedDialogs]). Every other check applies to them.
 func ModalDialogs(shared ...string) ct.Rule {
 	isShared := make(map[string]bool, len(shared))

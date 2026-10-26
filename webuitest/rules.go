@@ -54,10 +54,14 @@ func WithSecrets(values ...string) RuleOption {
 // zero hx2.Config, whose DELETE requests carry their parameters in the
 // body; only hx2.Config.DeleteURLParams changes what the rules check, and
 // hx2.Config{DeleteURLParams: true} checks fragments under htmx's own
-// default (GET and DELETE parameters in the URL). Complete documents always use their own htmx-config meta element, or
-// htmx's defaults without one. It is the rule counterpart of
-// [Shell.HTMXConfig] and [PageHTMXConfig]. A config that does not encode
-// (hx2.Config.JSON fails) is a programming error: WithHTMXConfig panics.
+// default (GET and DELETE parameters in the URL). Complete documents
+// always use their own htmx-config meta element, or htmx's defaults
+// without one, and so does a fragment answer parsed with
+// [cthttp.Result.HTML], which makes it a complete document: parse
+// fragments with [cthttp.Result.HTMLFragment] (see [Rules]). It is the rule
+// counterpart of [Shell.HTMXConfig] and [PageHTMXConfig]. A config that
+// does not encode (hx2.Config.JSON fails) is a programming error:
+// WithHTMXConfig panics.
 func WithHTMXConfig(c hx2.Config) RuleOption {
 	methods := configURLMethods("webuitest.WithHTMXConfig", c)
 	return func(rc *ruleConfig) { rc.urlMethods = methods }
@@ -128,6 +132,18 @@ func RuleName(r ct.Rule) string {
 //     [NoNestedInteractive], [RectangularTables],
 //     [ScrollersClipHiddenText] and [ExternalLinksSafe];
 //   - with [WithSecrets]: [SecretsHidden] and [NotInURLs].
+//
+// The rules tell a fragment from a complete document by its html element:
+// a subject with one is a document. [cthttp.Result.HTML] parses a body as
+// a complete document, which always gets html, head and body elements, so
+// parse an htmx fragment answer with [cthttp.Result.HTMLFragment], as
+// [Client.Fragment] does. Parsed with HTML, a fragment is checked as a
+// page: its references to the regions of the page around it ([HXTargets],
+// [WithDocumentTargets]), its dialogs and openers whose counterparts are
+// in other responses ([ModalDialogs]), its SSE elements outside their
+// connect element ([SSEWiring]), and the htmx configuration of its
+// requests ([NoTokenLeaks], [WithHTMXConfig]) are checked as if the
+// fragment were the whole page.
 //
 // [Without] drops rules by name. Each call returns a new slice.
 func Rules(opts ...RuleOption) []ct.Rule {

@@ -179,7 +179,9 @@ func refererOrigin(ref string) (string, bool) {
 // the origin layer of CSRF protection. The site comes from the request
 // context, so SameOrigin must run inside [HostCheck]; without a site, every
 // such request is refused. Refusals are logged at debug level to [Logger]
-// with their reason, and answered by [OriginPolicy.Deny].
+// with their reason and the method (unless the logger is the
+// request-scoped one of [LogRequests], which carries the method already),
+// and answered by [OriginPolicy.Deny].
 //
 // GET and HEAD pass, so they must never change state. OPTIONS is checked like
 // any other method (no CORS preflight passes).
@@ -231,10 +233,16 @@ func SameOrigin(p OriginPolicy) Middleware {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			site, _ := SiteFrom(r.Context())
+			ctx := r.Context()
+			site, _ := SiteFrom(ctx)
 			if err := p.Check(r, site); err != nil {
-				Logger(r.Context()).LogAttrs(r.Context(), slog.LevelDebug, "refused a cross-origin request",
-					slog.String("method", sanitizeMethod(r.Method)), slog.String("reason", err.Error()))
+				l := Logger(ctx)
+				attrs := make([]slog.Attr, 0, 2)
+				if !carriesMethod(ctx, l) {
+					attrs = append(attrs, slog.String("method", sanitizeMethod(r.Method)))
+				}
+				attrs = append(attrs, slog.String("reason", err.Error()))
+				l.LogAttrs(ctx, slog.LevelDebug, "refused a cross-origin request", attrs...)
 				deny.ServeHTTP(w, r)
 				return
 			}

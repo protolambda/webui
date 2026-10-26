@@ -491,6 +491,12 @@ func TestInvalidOptionsFailTheRender(gt *testing.T) {
 		"Field password bundle":    bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: attr.Bundle{input.Minlength("8"), input.Value("x")}},
 		"Field password lazy":      bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: lazyValue},
 		"Field input mode":         bs.Field{ID: "f", Label: text.Text("F"), InputMode: "phone"},
+		"Field plaintext color":    bs.Field{ID: "f", Label: text.Text("F"), Type: input.Color, Plaintext: true},
+		"Field plaintext file":     bs.Field{ID: "f", Label: text.Text("F"), Type: input.File, Plaintext: true},
+		"Field plaintext range":    bs.Field{ID: "f", Label: text.Text("F"), Type: input.Range, Plaintext: true},
+		"Field plaintext password": bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Plaintext: true},
+		"Field plaintext before":   bs.Field{ID: "f", Label: text.Text("F"), Plaintext: true, Before: []elem.Node{bs.InputGroupText()(text.Text("@"))}},
+		"Field plaintext after":    bs.Field{ID: "f", Label: text.Text("F"), Plaintext: true, After: []elem.Node{bs.BtnSecondary()(text.Text("Copy"))}},
 		"Textarea rows":            bs.Textarea{ID: "t", Label: text.Text("T"), Rows: -1},
 		"Select two selected":      bs.Select{ID: "s", Label: text.Text("S"), Options: []bs.SelectOption{{Selected: true}, {Selected: true}}},
 		"DetailsAccordion two":     bs.DetailsAccordion{ID: "a", Items: []bs.AccordionItem{{Show: true}, {Show: true}}},
@@ -527,6 +533,8 @@ func TestInvalidOptionsFailTheRender(gt *testing.T) {
 		"fullscreen":        bs.Dialog{ID: "d", Title: text.Text("T"), Size: bs.ModalFullscreen},
 		"textarea 0 rows":   bs.Textarea{ID: "t", Label: text.Text("T")},
 		"password attrs":    bs.Field{ID: "f", Label: text.Text("F"), Type: input.Password, Attrs: input.Minlength("8")},
+		"plaintext email":   bs.Field{ID: "f", Label: text.Text("F"), Type: input.Email, Plaintext: true},
+		"plaintext date":    bs.Field{ID: "f", Label: text.Text("F"), Type: input.Date, Plaintext: true},
 		"header id":         bs.DataTable{Columns: []bs.Column{{HeaderAttrs: attr.ID("h")}}},
 	} {
 		t.Run("valid "+name, func(t devtest.T) {
@@ -687,7 +695,7 @@ func TestSimpleConstructors(gt *testing.T) {
 		{bs.TableStriped(), `<table class="table table-striped"></table>`},
 		{bs.TableBordered(), `<table class="table table-bordered"></table>`},
 		{bs.TableHover(), `<table class="table table-hover"></table>`},
-		{bs.TableResponsive(), `<div class="table-responsive"></div>`},
+		{bs.TableResponsive(x), `<div class="table-responsive position-relative" id="x"></div>`},
 		{bs.ListGroupItem(), `<li class="list-group-item"></li>`},
 		{bs.NavbarNav(), `<ul class="navbar-nav"></ul>`},
 		{bs.NavbarCollapse(x), `<div class="collapse navbar-collapse" id="x"></div>`},
@@ -753,6 +761,72 @@ func TestFieldTypesAndStates(gt *testing.T) {
 	t.Must(be.Equal(
 		`<div class="mb-3"><label class="form-label" for="b">B</label><input class="form-control" type="text" id="b"/></div>`,
 		render(t, bs.Field{ID: "b", Label: text.Text("B"), Attrs: attr.Name("aria-describedby").Bool()})))
+}
+
+// WrapperClass replaces the mb-3 of the field wrappers, and the classes of
+// Wrapper add to it; the label and ARIA wiring stay.
+func TestFieldWrapperClass(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	opts := []bs.SelectOption{{Value: "a", Label: "A"}}
+	for name, c := range map[string]struct {
+		node elem.Node
+		want string
+	}{
+		"field default":    {bs.Field{ID: "f", Label: text.Text("F")}, "mb-3"},
+		"field":            {bs.Field{ID: "f", Label: text.Text("F"), WrapperClass: "mb-0"}, "mb-0"},
+		"field wrapper":    {bs.Field{ID: "f", Label: text.Text("F"), WrapperClass: "col-auto", Wrapper: attr.Class("flex-grow-1")}, "col-auto flex-grow-1"},
+		"textarea default": {bs.Textarea{ID: "t", Label: text.Text("T")}, "mb-3"},
+		"textarea":         {bs.Textarea{ID: "t", Label: text.Text("T"), WrapperClass: "col"}, "col"},
+		"select default":   {bs.Select{ID: "s", Label: text.Text("S"), Options: opts}, "mb-3"},
+		"select":           {bs.Select{ID: "s", Label: text.Text("S"), Options: opts, WrapperClass: "col-md-4 mb-2"}, "col-md-4 mb-2"},
+	} {
+		t.Run(name, func(t devtest.T) {
+			out := render(t, c.node)
+			t.Must(be.True(strings.HasPrefix(out, `<div class="`+c.want+`">`)))
+		})
+	}
+
+	// The wiring of a field with an error and help stays the same.
+	page := ct.View(bs.Field{ID: "q", Label: text.Text("Search"), Error: text.Text("Too short."), Help: text.Text("Two letters or more."),
+		WrapperClass: "col-auto"})
+	t.Must(page.Find(ct.Tag("div")).First().Matches(ct.Class("col-auto"), ct.Class("mb-3").Not()))
+	t.Must(page.Find(ct.Role("textbox", ct.Named("Search"))).
+		Matches(ct.Attr("aria-invalid", "true"), ct.Attr("aria-describedby", "q-error q-help")))
+
+	// The class is escaped, as attr.Class escapes it.
+	page = ct.View(bs.Field{ID: "f", Label: text.Text("F"), WrapperClass: `x" onclick="alert(1)`})
+	t.Must(page.Find(ct.HasAttr("onclick")).None())
+	t.Must(page.Find(ct.Tag("div")).First().Matches(ct.Attr("class", `x" onclick="alert(1)`)))
+}
+
+// Plaintext replaces form-control with form-control-plaintext, not adding
+// to it, and makes the control read-only, also without ReadOnly.
+func TestPlaintext(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal(
+		`<div class="mb-3"><label class="form-label" for="f">Task</label><input class="form-control-plaintext" type="text" id="f" name="task" value="T-1024" readonly/></div>`,
+		render(t, bs.Field{ID: "f", Name: "task", Label: text.Text("Task"), Value: "T-1024", Plaintext: true})))
+	t.Must(be.Equal(
+		`<div class="mb-3"><label class="form-label" for="f">Due</label><input class="form-control-plaintext" type="date" id="f" value="2026-11-02" readonly/></div>`,
+		render(t, bs.Field{ID: "f", Label: text.Text("Due"), Type: input.Date, Value: "2026-11-02", Plaintext: true, ReadOnly: true})))
+	t.Must(be.Equal(
+		`<div class="mb-3"><label class="form-label" for="t">Note</label><textarea class="form-control-plaintext" id="t" rows="2" readonly>First line`+"\n"+`second line</textarea></div>`,
+		render(t, bs.Textarea{ID: "t", Label: text.Text("Note"), Rows: 2, Value: "First line\nsecond line", Plaintext: true})))
+
+	// The wiring stays: the label names the control, and an error marks
+	// it invalid.
+	for name, node := range map[string]elem.Node{
+		"field":    bs.Field{ID: "p", Label: text.Text("Project"), Value: "x", Plaintext: true, Error: text.Text("Archived."), Help: text.Text("Moved with the task.")},
+		"textarea": bs.Textarea{ID: "p", Label: text.Text("Project"), Value: "x", Plaintext: true, Error: text.Text("Archived."), Help: text.Text("Moved with the task.")},
+	} {
+		t.Run(name, func(t devtest.T) {
+			page := ct.View(node)
+			control := page.Find(ct.Role("textbox", ct.Named("Project")))
+			t.Must(control.Matches(ct.Class("form-control-plaintext"), ct.Class("is-invalid"), ct.Class("form-control").Not(),
+				ct.HasAttr("readonly"), ct.Attr("aria-invalid", "true"), ct.Attr("aria-describedby", "p-error p-help")))
+			t.Must(page.Find(ct.HasAttr("readonly")).Count(1))
+		})
+	}
 }
 
 func TestCardImage(gt *testing.T) {
@@ -851,6 +925,18 @@ func TestDataTableOptions(gt *testing.T) {
 			`<thead><tr><th scope="col"></th></tr></thead><tbody><tr id="row-1"><td></td></tr></tbody></table></div>`,
 		render(t, bs.DataTable{Striped: true, Bordered: true, Attrs: aria.Labelledby("h"), Wrapper: attr.Class("mb-0"),
 			Columns: []bs.Column{{}}, Rows: []bs.TableRow{{Cells: []elem.Node{nil}, Attrs: attr.ID("row-1")}}})))
+}
+
+// TableResponsive is positioned, as the wrapper of DataTable is, so that
+// visually hidden text in the table stays inside the scroller; a caller's
+// classes add to it.
+func TestTableResponsivePositioned(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal(`<div class="table-responsive position-relative mb-0"><table class="table"></table></div>`,
+		render(t, bs.TableResponsive(attr.Class("mb-0"))(bs.Table()()))))
+	page := ct.View(bs.DataTable{Columns: []bs.Column{{Header: text.Text("Actions"), HeaderHidden: true}}, Wrapper: attr.Class("mb-0")})
+	t.Must(page.Find(ct.Class("table-responsive")).Matches(
+		ct.Class("position-relative"), ct.Class("mb-0"), ct.HasDescendant(ct.Class("visually-hidden"))))
 }
 
 func TestHeadingLevels(gt *testing.T) {

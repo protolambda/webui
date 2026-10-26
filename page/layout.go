@@ -79,7 +79,12 @@ type Layout struct {
 	// Header is the page header, usually a [Header]. Nil leaves it out.
 	Header elem.Node
 	// Alerts are the alerts shown with the page, such as the notice of a
-	// completed action, inside the alerts region.
+	// completed action, inside the alerts region. The region's content is
+	// transient: the error answers to htmx requests (web.Errors) and
+	// out-of-band notices ([AlertsOOB]) replace all of it, so an alert
+	// placed here disappears with the first failed htmx request or notice.
+	// Put a warning that must stay, such as one about the state of the
+	// page's item, in Header or Main.
 	Alerts []elem.Node
 	// Main is the page content.
 	Main elem.Node
@@ -99,10 +104,14 @@ type Layout struct {
 	// the main column the rest.
 	SidebarColumn string
 	MainColumn    string
-	// MainAttrs are extra attributes of the main element, such as a class
-	// that lets wide content scroll inside the main column
-	// ("overflow-x-auto"). Classes add to those of the layout. The element
-	// has the id [MainID], so another id fails the render.
+	// MainAttrs are extra attributes of the main element, such as classes
+	// that let wide content scroll inside the main column
+	// ("overflow-x-auto position-relative": a scroller must be positioned
+	// to keep visually-hidden text, which Bootstrap positions absolutely,
+	// from escaping it and widening the page; see
+	// [github.com/protolambda/webui/webuitest.ScrollersClipHiddenText]).
+	// Classes add to those of the layout. The element has the id
+	// [MainID], so another id fails the render.
 	MainAttrs attr.Node
 	// Fluid makes the containers full width (container-fluid) instead of
 	// Bootstrap's responsive fixed widths. With a Sidebar the layout is
@@ -185,6 +194,12 @@ func (l Layout) Eval(ctx context.Context) (elem.Obj, error) {
 // announce as the page loads, while a polite region does not announce the
 // content it loads with). Alerts that htmx swaps into the region later go
 // through [AlertsOOB] or [AlertsContent], and the region announces them.
+//
+// The region's content is transient: the error answers of the web package
+// (innerHTML, web.ErrorReswap) and [AlertsOOB] replace all of it, so the
+// alerts that come with the page disappear with the first failed htmx
+// request or out-of-band notice. A warning that must stay with the page
+// belongs in its header or main content.
 func AlertsRegion(alerts ...elem.Node) elem.Node {
 	return div.Div(attr.ID(AlertsID), aria.Live("polite"))(alerts...)
 }

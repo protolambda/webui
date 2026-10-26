@@ -211,9 +211,12 @@ func (s Submission) Request(t TB, opts ...ReqOption) *http.Request {
 // option when none is selected; textareas their raw text, as a parser
 // reads it from the rendered page; file inputs a file field without a
 // file; range and color inputs their default values; _charset_ hidden
-// inputs "UTF-8"; dirname adds "ltr". Controls in the content of a
-// template element belong to no form outside it. The submitter's
-// formaction, formmethod and formenctype override the form's.
+// inputs "UTF-8"; a non-empty dirname adds an entry of that name with
+// "ltr" after the value of a textarea, of an input of type hidden, text,
+// search, tel, url, email or password, and of a submit input that is the
+// submitter, the controls that the HTML standard gives one. Controls in
+// the content of a template element belong to no form outside it. The
+// submitter's formaction, formmethod and formenctype override the form's.
 //
 // Errors wrap [ErrFormData], or the load or query error of the
 // selections.
@@ -394,11 +397,7 @@ func entries(c ct.Node, submitter ct.Node, radios map[string]ct.Node) []Part {
 		// The text is the value: the parser drops a line break right after
 		// <textarea>, and chord's renderer writes an extra one before text
 		// that starts with a line break, so that the parser keeps it.
-		out := []Part{{Name: name, Value: rawText(c)}}
-		if dir, ok := attrOf(c, "dirname"); ok && dir != "" {
-			out = append(out, Part{Name: dir, Value: "ltr"})
-		}
-		return out
+		return withDirname(c, []Part{{Name: name, Value: rawText(c)}})
 	default:
 		return nil
 	}
@@ -407,7 +406,7 @@ func entries(c ct.Node, submitter ct.Node, radios map[string]ct.Node) []Part {
 		if c != submitter || name == "" {
 			return nil
 		}
-		return []Part{{Name: name, Value: value}}
+		return withDirname(c, []Part{{Name: name, Value: value}})
 	case "image":
 		if c != submitter {
 			return nil
@@ -437,18 +436,33 @@ func entries(c ct.Node, submitter ct.Node, radios map[string]ct.Node) []Part {
 		if strings.EqualFold(name, "_charset_") {
 			value = "UTF-8"
 		}
-		return []Part{{Name: name, Value: value}}
+		return withDirname(c, []Part{{Name: name, Value: value}})
 	default:
 		if name == "" {
 			return nil
 		}
-		value = sanitizeValue(c, t, value)
-		out := []Part{{Name: name, Value: value}}
-		if dir, ok := attrOf(c, "dirname"); ok && dir != "" && (t == "text" || t == "search") {
-			out = append(out, Part{Name: dir, Value: "ltr"})
-		}
-		return out
+		return withDirname(c, []Part{{Name: name, Value: sanitizeValue(c, t, value)}})
 	}
+}
+
+// dirnameTypes are the input types of the auto-directionality
+// form-associated elements of the HTML standard, whose dirname adds an
+// entry. Of the button types, only a submit input that is the submitter
+// has entries.
+var dirnameTypes = map[string]bool{
+	"hidden": true, "text": true, "search": true, "tel": true, "url": true, "email": true, "password": true,
+	"submit": true, "reset": true, "button": true,
+}
+
+// withDirname returns out, the entries of the control c, with the entry
+// of its non-empty dirname after them for a textarea and the input types
+// of dirnameTypes. The direction is always "ltr": the direction of the
+// text is not modelled.
+func withDirname(c ct.Node, out []Part) []Part {
+	if dir, ok := attrOf(c, "dirname"); ok && dir != "" && (c.Tag() == "textarea" || dirnameTypes[inputType(c)]) {
+		out = append(out, Part{Name: dir, Value: "ltr"})
+	}
+	return out
 }
 
 // sanitizeValue applies the value sanitization of HTML input types that

@@ -81,6 +81,9 @@
 // A writer that cannot flush would hold every event back, so the stream
 // refuses it: the first write fails, before anything is written, with an
 // error wrapping [http.ErrNotSupported] (not [ErrWrite], so it gets logged).
+// The stream finds such a writer behind the writers of web and mw too,
+// which pass flushes on; behind a wrapper of another package with a flush
+// method, only the first flush fails, after the header (see [Stream]).
 // A writer without deadlines is tolerated, since recorders and CGI have
 // none, but the deadlines are then lost silently: behind a wrapper that
 // flushes but lacks Unwrap, a stalled client is not cut off by the stream,

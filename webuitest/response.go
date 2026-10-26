@@ -60,15 +60,24 @@ func HXRefresh(res *cthttp.Result) assertion.Assertion {
 
 // CookieWant is what [Cookie] expects of a cookie. Boolean fields that are
 // false and zero fields are not checked, except that a cookie that clears
-// itself fails unless Cleared is set.
+// itself fails unless Cleared is set. The Not fields require that an
+// attribute is absent; a want that requires an attribute and its absence
+// fails.
 type CookieWant struct {
 	// HostPrefix requires the __Host- prefix and what it implies: Secure,
 	// Path=/ and no Domain, so the cookie stays with exactly this origin.
 	HostPrefix bool
 	// Secure requires the Secure attribute.
 	Secure bool
+	// NotSecure requires a cookie without the Secure attribute, as an
+	// application sets them for a plain http site (such as a loopback site
+	// with session.Options.Insecure).
+	NotSecure bool
 	// HttpOnly requires the HttpOnly attribute.
 	HttpOnly bool
+	// NotHttpOnly requires a cookie without the HttpOnly attribute, one
+	// that the page's scripts can read.
+	NotHttpOnly bool
 	// SameSite, when not zero, requires that SameSite mode. (A cookie
 	// without the attribute has the zero mode; http.SameSiteDefaultMode is
 	// an attribute without a valid value.)
@@ -161,11 +170,21 @@ func (a cookieAssertion) Check(ctx context.Context) error {
 			problems = append(problems, "a __Host- cookie must not have a Domain")
 		}
 	}
-	if w.Secure && !c.Secure && !w.HostPrefix {
+	switch {
+	case w.NotSecure && (w.Secure || w.HostPrefix):
+		problems = append(problems, "the want requires Secure (or HostPrefix) and NotSecure")
+	case w.Secure && !c.Secure && !w.HostPrefix:
 		problems = append(problems, "not Secure")
+	case w.NotSecure && c.Secure:
+		problems = append(problems, "Secure, want no Secure attribute")
 	}
-	if w.HttpOnly && !c.HttpOnly {
+	switch {
+	case w.HttpOnly && w.NotHttpOnly:
+		problems = append(problems, "the want requires HttpOnly and NotHttpOnly")
+	case w.HttpOnly && !c.HttpOnly:
 		problems = append(problems, "not HttpOnly")
+	case w.NotHttpOnly && c.HttpOnly:
+		problems = append(problems, "HttpOnly, want no HttpOnly attribute")
 	}
 	if w.SameSite != 0 && c.SameSite != w.SameSite {
 		problems = append(problems, fmt.Sprintf("SameSite is %s, want %s", sameSiteName(c.SameSite), sameSiteName(w.SameSite)))
@@ -177,9 +196,7 @@ func (a cookieAssertion) Check(ctx context.Context) error {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	// http.ParseSetCookie reports a Max-Age of zero or less as -1, and a
-	// missing (or invalid, so ignored) one as 0.
-	cleared := c.MaxAge < 0 || (c.MaxAge == 0 && !c.Expires.IsZero() && !c.Expires.After(now))
+	cleared := cookieCleared(c, now)
 	switch {
 	case w.Cleared && !cleared:
 		problems = append(problems, "not cleared (no Max-Age<=0, or no Max-Age and a past Expires)")
@@ -196,6 +213,60 @@ func (a cookieAssertion) Check(ctx context.Context) error {
 		return fmt.Errorf("%w: cookie %q of %s: %s", ct.ErrMismatch, a.name, a.res.Describe(), strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// CookieValue returns the value of the cookie called name that the
+// response sets, for a [Client], which keeps no cookies, to send a
+// cookie of the server back ([SendCookie]; [SendCookies] sends all of
+// them). As [Cookie], it requires exactly one such cookie: it fails the
+// test when the response was not captured, sets no cookie or several
+// cookies of that name, or has a Set-Cookie header for the name that
+// does not parse. A cookie that clears itself has a value too, usually
+// empty; check the attributes with Cookie. Messages never show the
+// value.
+func CookieValue(t TB, res *cthttp.Result, name string) string {
+	t.Helper()
+	if res == nil {
+		fatalf(t, "webuitest.CookieValue: no response")
+		return ""
+	}
+	if err := res.Captured().Check(t.Context()); err != nil {
+		fatalf(t, "webuitest.CookieValue: %v", err)
+		return ""
+	}
+	var found []*http.Cookie
+	var names []string
+	bad := 0
+	for _, line := range res.Headers().Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		switch {
+		case err != nil && rawCookieName(line) == name:
+			fatalf(t, "webuitest.CookieValue: %s has a Set-Cookie header for %q that does not parse", res.Describe(), name)
+			return ""
+		case err != nil:
+			bad++
+		case c.Name == name:
+			found = append(found, c)
+		default:
+			names = append(names, c.Name)
+		}
+	}
+	switch {
+	case len(found) == 0:
+		msg := fmt.Sprintf("%s sets no cookie %q", res.Describe(), name)
+		if len(names) > 0 {
+			msg += " (it sets " + strings.Join(names, ", ") + ")"
+		}
+		if bad > 0 {
+			msg += fmt.Sprintf("; %d Set-Cookie headers do not parse", bad)
+		}
+		fatalf(t, "webuitest.CookieValue: %s", msg)
+		return ""
+	case len(found) > 1:
+		fatalf(t, "webuitest.CookieValue: %s sets cookie %q %d times", res.Describe(), name, len(found))
+		return ""
+	}
+	return found[0].Value
 }
 
 func sameSiteName(s http.SameSite) string {
@@ -232,19 +303,83 @@ func (a noCookies) Check(ctx context.Context) error {
 	if len(lines) == 0 {
 		return nil
 	}
-	cookies, bad := setCookies(a.res)
+	return fmt.Errorf("%w: %s sets %d cookies%s", ct.ErrMismatch, a.res.Describe(), len(lines), cookieNames(a.res))
+}
+
+// cookieNames lists the names of the cookies that res sets for a message,
+// as ": "a", "b"", with the number of Set-Cookie headers that do not
+// parse; "" when it sets none.
+func cookieNames(res *cthttp.Result) string {
+	cookies, bad := setCookies(res)
 	names := make([]string, 0, len(cookies))
 	for _, c := range cookies {
 		names = append(names, fmt.Sprintf("%q", c.Name))
 	}
-	msg := fmt.Sprintf("%s sets %d cookies", a.res.Describe(), len(lines))
+	msg := ""
 	if len(names) > 0 {
 		msg += ": " + strings.Join(names, ", ")
 	}
 	if bad > 0 {
 		msg += fmt.Sprintf(" (%d do not parse)", bad)
 	}
-	return fmt.Errorf("%w: %s", ct.ErrMismatch, msg)
+	return msg
+}
+
+// NoCookie asserts that the response sets no cookie called name, while it
+// may set others: a refused login sets no session cookie, but may renew
+// the cookie of its form. A Set-Cookie header that clears the cookie sets
+// it too (assert a clearing with [Cookie] and Cleared), and so does one
+// that does not parse but names it. A failure names the cookie, never its
+// value.
+func NoCookie(res *cthttp.Result, name string) assertion.Assertion {
+	return noCookie{res: res, name: name}
+}
+
+type noCookie struct {
+	res  *cthttp.Result
+	name string
+}
+
+func (a noCookie) String() string {
+	return fmt.Sprintf("noCookie(%s, %q)", a.res.Describe(), a.name)
+}
+
+func (a noCookie) Check(ctx context.Context) error {
+	if err := a.res.Captured().Check(ctx); err != nil {
+		return err
+	}
+	n, bad := 0, 0
+	for _, line := range a.res.Headers().Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		switch {
+		case err == nil && c.Name == a.name:
+			n++
+		case err != nil && rawCookieName(line) == a.name:
+			bad++
+		}
+	}
+	switch {
+	case n+bad == 0:
+		return nil
+	case bad > 0:
+		return fmt.Errorf("%w: %s sets cookie %q in %d Set-Cookie headers, %d of which do not parse", ct.ErrMismatch, a.res.Describe(), a.name, n+bad, bad)
+	case n > 1:
+		return fmt.Errorf("%w: %s sets cookie %q %d times", ct.ErrMismatch, a.res.Describe(), a.name, n)
+	}
+	return fmt.Errorf("%w: %s sets cookie %q", ct.ErrMismatch, a.res.Describe(), a.name)
+}
+
+// rawCookieName returns the name of a Set-Cookie header as browsers split
+// it (RFC 6265bis, section 5.6): the text before the first "=" of the part
+// before the first ";", without surrounding white space, and "" without a
+// "=".
+func rawCookieName(line string) string {
+	pair, _, _ := strings.Cut(line, ";")
+	name, _, ok := strings.Cut(pair, "=")
+	if !ok {
+		return ""
+	}
+	return strings.Trim(name, " \t")
 }
 
 // Policy is what [SecurityHeaders] expects of a response: the security
@@ -342,8 +477,17 @@ func (a securityHeaders) Check(ctx context.Context) error {
 	if err := a.res.Captured().Check(ctx); err != nil {
 		return err
 	}
-	h := a.res.Headers()
-	cfg := a.p.Headers
+	problems := headerProblems(a.res.Headers(), a.p)
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: security headers of %s:\n  %s", ct.ErrMismatch, a.res.Describe(), strings.Join(problems, "\n  "))
+}
+
+// headerProblems describes every difference between the security headers
+// h and those of p, see [SecurityHeaders].
+func headerProblems(h http.Header, p Policy) []string {
+	cfg := p.Headers
 	var problems []string
 	single := func(name, want string) {
 		values := h.Values(name)
@@ -363,7 +507,7 @@ func (a securityHeaders) Check(ctx context.Context) error {
 	if want.IsZero() {
 		want = mw.StrictCSP()
 	}
-	problems = append(problems, a.cspProblems(h.Values("Content-Security-Policy"), want)...)
+	problems = append(problems, cspProblems(h.Values("Content-Security-Policy"), want, p.AllowUnsafe)...)
 	single("X-Frame-Options", frameOptions(want))
 	single("X-Content-Type-Options", "nosniff")
 	single("Referrer-Policy", or(cfg.ReferrerPolicy, "same-origin"))
@@ -372,10 +516,7 @@ func (a securityHeaders) Check(ctx context.Context) error {
 	single("Cross-Origin-Opener-Policy", or(cfg.CrossOriginOpenerPolicy, "same-origin"))
 	single("Cross-Origin-Resource-Policy", or(cfg.CrossOriginResourcePolicy, "same-origin"))
 	single("Strict-Transport-Security", cfg.HSTS.String())
-	if len(problems) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%w: security headers of %s:\n  %s", ct.ErrMismatch, a.res.Describe(), strings.Join(problems, "\n  "))
+	return problems
 }
 
 // frameOptions returns the X-Frame-Options that mw derives from the
@@ -396,7 +537,7 @@ func frameOptions(p mw.CSP) string {
 	return ""
 }
 
-func (a securityHeaders) cspProblems(values []string, want mw.CSP) []string {
+func cspProblems(values []string, want mw.CSP, allowUnsafe bool) []string {
 	switch {
 	case len(values) == 0:
 		return []string{"has no Content-Security-Policy"}
@@ -408,7 +549,7 @@ func (a securityHeaders) cspProblems(values []string, want mw.CSP) []string {
 		return []string{fmt.Sprintf("Content-Security-Policy does not parse: %v", err)}
 	}
 	var out []string
-	if !a.p.AllowUnsafe {
+	if !allowUnsafe {
 		for d, sources := range got.All() {
 			for _, s := range sources {
 				if contains(unsafeSources, strings.ToLower(s)) {

@@ -289,8 +289,25 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 	}
 	r.Trigger, _ = attrOf(e, "id")
 	r.TriggerName, _ = attrOf(e, "name")
+	if r.Fields, err = sc.params(idx, e, sub, verb, edits, false); err != nil {
+		return HTMXRequest{}, fmt.Errorf("%w: %s: %w", ErrFormData, elt, err)
+	}
+	if r.Header, err = htmxHeaders(e, r); err != nil {
+		return HTMXRequest{}, fmt.Errorf("%w: %s: %w", ErrFormData, elt, err)
+	}
+	return r, nil
+}
 
-	c := paramCollector{idx: idx, root: root, processed: make(map[ct.Node]bool), names: make(map[string]bool)}
+// params collects the parameters of the htmx request of e with the
+// method verb, submitted by sub (nil for none), as htmx 2 does (see
+// [HTMXData]): edits replace the values of the named controls before
+// hx-vals and hx-params apply, and editing a name that is no control of
+// the request is an error. An hx-include that sc cannot resolve is an
+// error, unless partial is set: then the parts of it that sc resolves
+// count, and the others add nothing. idx holds the form owners of the
+// tree of sc.
+func (sc *htmxScope) params(idx formIndex, e, sub ct.Node, verb string, edits url.Values, partial bool) ([]Part, error) {
+	c := paramCollector{idx: idx, root: sc.root, processed: make(map[ct.Node]bool), names: make(map[string]bool)}
 	var priority, regular []Part
 	if verb != "get" {
 		// The element's form, as htmx finds it: e.form, else the closest
@@ -317,9 +334,9 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 			priority = append(priority, Part{Name: name, Value: v})
 		}
 	}
-	includes, err := sc.includes(e)
+	includes, err := sc.includes(e, partial)
 	if err != nil {
-		return HTMXRequest{}, fmt.Errorf("%w: %s: %w", ErrFormData, elt, err)
+		return nil, err
 	}
 	for _, n := range includes {
 		regular = c.process(regular, n)
@@ -338,7 +355,7 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 	fields := overrideFields(regular, priority)
 	for _, name := range slices.Sorted(maps.Keys(edits)) {
 		if !c.names[name] {
-			return HTMXRequest{}, fmt.Errorf("%w: the request of %s includes no control %q to edit", ErrFormData, elt, name)
+			return nil, fmt.Errorf("the request includes no control %q to edit", name)
 		}
 		parts := make([]Part, len(edits[name]))
 		for i, v := range edits[name] {
@@ -347,11 +364,7 @@ func htmxData(ctx context.Context, page *ct.Subject, elt, submitter *ct.Selectio
 		fields = replaceFields(fields, name, parts)
 	}
 	fields = overrideFields(fields, htmxValsFields(e))
-	r.Fields = filterParams(fields, e)
-	if r.Header, err = htmxHeaders(e, r); err != nil {
-		return HTMXRequest{}, fmt.Errorf("%w: %s: %w", ErrFormData, elt, err)
-	}
-	return r, nil
+	return filterParams(fields, e), nil
 }
 
 // underHXDisable reports whether n is inside hx-disable (also with a data-
@@ -832,10 +845,8 @@ func mergeHTMXObject(e ct.Node, name string, into *jsObject) bool {
 		if p.Kind() != ct.KindElement {
 			continue
 		}
-		v, _ := attrOf(p, name)
-		if v == "" {
-			v, _ = attrOf(p, "data-"+name)
-		}
+		// htmx reads data-name when name is absent or empty.
+		v, _ := hxValue(p, name)
 		v = strings.TrimSpace(v)
 		switch {
 		case v == "":
@@ -1299,24 +1310,34 @@ func encodeURIComponent(s string) string {
 	return b.String()
 }
 
-// htmxScope resolves htmx's extended selectors in a subject.
+// htmxScope resolves htmx's extended selectors in a subject. It is not
+// safe for concurrent use.
 type htmxScope struct {
-	root  ct.Node
-	frag  bool
-	elems []ct.Node // the elements of the document, not in template content
+	root ct.Node
+	frag bool
+	ids  map[string]ct.Node
+	// elems are the elements of the document, not in template content,
+	// and pos their positions in it, built by order.
+	elems []ct.Node
 	pos   map[ct.Node]int
-	ids   map[string]ct.Node
 }
 
 func newHTMXScope(root ct.Node) *htmxScope {
-	sc := &htmxScope{root: root, frag: isFragment(root), pos: make(map[ct.Node]int), ids: documentIDs(root)}
-	for e := range ct.Elements(root) {
-		if inside(e, "template") == nil {
-			sc.pos[e] = len(sc.elems)
-			sc.elems = append(sc.elems, e)
+	return &htmxScope{root: root, frag: isFragment(root), ids: documentIDs(root)}
+}
+
+// order returns elems and pos, which it builds on its first call.
+func (sc *htmxScope) order() ([]ct.Node, map[ct.Node]int) {
+	if sc.pos == nil {
+		sc.pos = make(map[ct.Node]int)
+		for e := range ct.Elements(sc.root) {
+			if inside(e, "template") == nil {
+				sc.pos[e] = len(sc.elems)
+				sc.elems = append(sc.elems, e)
+			}
 		}
 	}
-	return sc
+	return sc.elems, sc.pos
 }
 
 // inheritKeyword matches the inherit keyword of an hx-include list.
@@ -1349,21 +1370,34 @@ func (sc *htmxScope) target(e ct.Node) (id, unresolved string, err error) {
 	return id, "", nil
 }
 
-// includes resolves the elements of the nearest hx-include of e.
-func (sc *htmxScope) includes(e ct.Node) ([]ct.Node, error) {
+// includes resolves the elements of the nearest hx-include of e. With
+// partial, a selector that sc cannot resolve as a whole selects what its
+// parts that sc resolves select, in the order of htmx's
+// querySelectorAllExt, and the inherit keyword selects nothing.
+func (sc *htmxScope) includes(e ct.Node, partial bool) ([]ct.Node, error) {
 	v, from, ok := closestHX(e, "hx-include")
 	switch {
 	case !ok:
 		return nil, nil
 	case v == "this":
 		return []ct.Node{from}, nil
-	case inheritKeyword.MatchString(v):
+	case !partial && inheritKeyword.MatchString(v):
 		return nil, fmt.Errorf("the hx-include %q inherits, which is not supported", v)
 	}
 	nodes, known := sc.selectAll(e, v)
-	if !known {
+	switch {
+	case known:
+		return nodes, nil
+	case !partial:
 		return nil, fmt.Errorf("cannot resolve the hx-include %q within the subject", v)
 	}
+	var parts []string
+	for _, p := range splitSelectors(v) {
+		if _, known := sc.selectAll(e, p); known {
+			parts = append(parts, p)
+		}
+	}
+	nodes, _ = sc.selectAll(e, strings.Join(parts, ", "))
 	return nodes, nil
 }
 
@@ -1374,6 +1408,7 @@ func (sc *htmxScope) includes(e ct.Node) ([]ct.Node, error) {
 // non-element (document, window), or, in a fragment, an element that may
 // be outside it.
 func (sc *htmxScope) selectAll(e ct.Node, v string) (nodes []ct.Node, known bool) {
+	elems, pos := sc.order()
 	v = strings.TrimPrefix(strings.TrimSpace(v), "global ")
 	var std []simpleSelector
 	var stdIDs []string
@@ -1398,7 +1433,7 @@ func (sc *htmxScope) selectAll(e ct.Node, v string) (nodes []ct.Node, known bool
 					return nil, false
 				}
 			case "find":
-				for _, d := range sc.elems[sc.pos[e]+1:] {
+				for _, d := range elems[pos[e]+1:] {
 					if !isAncestor(e, d) {
 						break
 					}
@@ -1409,7 +1444,7 @@ func (sc *htmxScope) selectAll(e ct.Node, v string) (nodes []ct.Node, known bool
 				}
 			case "next":
 				var found ct.Node
-				for _, d := range sc.elems[sc.pos[e]+1:] {
+				for _, d := range elems[pos[e]+1:] {
 					if s.match(d) && !isAncestor(e, d) {
 						found = d
 						break
@@ -1420,8 +1455,8 @@ func (sc *htmxScope) selectAll(e ct.Node, v string) (nodes []ct.Node, known bool
 				}
 			case "previous":
 				var found ct.Node
-				for i := sc.pos[e] - 1; i >= 0; i-- {
-					if d := sc.elems[i]; s.match(d) && !isAncestor(d, e) {
+				for i := pos[e] - 1; i >= 0; i-- {
+					if d := elems[i]; s.match(d) && !isAncestor(d, e) {
 						found = d
 						break
 					}
@@ -1445,7 +1480,7 @@ func (sc *htmxScope) selectAll(e ct.Node, v string) (nodes []ct.Node, known bool
 			if sc.frag {
 				return nil, false
 			}
-			for _, d := range sc.elems {
+			for _, d := range elems {
 				if d.Tag() == "body" {
 					nodes = append(nodes, d)
 					break
@@ -1475,7 +1510,7 @@ func (sc *htmxScope) selectAll(e ct.Node, v string) (nodes []ct.Node, known bool
 		}
 	}
 	if len(std) > 0 {
-		for _, d := range sc.elems {
+		for _, d := range elems {
 			for _, s := range std {
 				if s.match(d) {
 					nodes = append(nodes, d)
@@ -1696,12 +1731,16 @@ func htmxSubmission(t TB, base *url.URL, page *ct.Subject, elt, submitter *ct.Se
 // test.
 func (c *Client) SubmitHTMX(t TB, page *ct.Subject, elt, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
-	all := c.options(opts)
-	method, target, body, pre, ok := htmxSubmission(t, defaultBase, page, elt, submitter, edits, all)
+	base, ok := c.base(t)
 	if !ok {
 		return nil
 	}
-	req := Request(t, method, target, body, append(pre, all...)...)
+	all := c.options(opts)
+	method, target, body, pre, ok := htmxSubmission(t, base, page, elt, submitter, edits, all)
+	if !ok {
+		return nil
+	}
+	req := c.build(t, method, target, body, append(pre, all...))
 	if req == nil {
 		return nil
 	}

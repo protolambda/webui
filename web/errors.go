@@ -63,8 +63,8 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 //
 // An error is classified into a status and a public message, in this order:
 //
-//   - Classify, when set, maps the application's own errors first;
 //   - an [*Error] (also wrapped) gives its status and message;
+//   - Classify, when set, maps the application's own errors;
 //   - sse.ErrWrite means the client of a stream went away: nothing is
 //     written, and it is logged at debug level only;
 //   - context.Canceled and context.DeadlineExceeded give 503 with
@@ -76,6 +76,17 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 //   - Fallback, when set, maps what is left;
 //   - anything else gives 500 with the [DefaultMessage], which never
 //     reveals the error.
+//
+// An [*Error] is the answer that the handler chose, and it keeps that
+// answer whatever its cause: Classify does not see an error that carries
+// an *Error (errors.As finds one), also when the cause is one of the
+// errors that Classify maps. Conflict(msg, fmt.Errorf("move: %w",
+// errNotFound)) answers 409 although Classify maps errNotFound to 404, and
+// Internal(err) answers 500, logged as a server failure, whatever err
+// wraps. webui's own answers that are *Error values, the 404 and 405 of
+// [Errors.Mux], the 404 of [Errors.NotFound] and the 403 of
+// [Errors.RequireAuth], pass Classify by as well: change their look with
+// the Document and Fragment hooks, which see their status.
 //
 // The hooks that render the answer see the error too ([ErrorView.Err]),
 // so a Document can render a page of its own for one of the
@@ -165,6 +176,55 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // closes; a successful answer that leaves the dialog in the page can empty
 // the region out of band.
 //
+// # Polling
+//
+// htmx stops an "every" poll (hx2.Trigger) only for an answer with status
+// 286, hx2.StatusStopPolling; error statuses never stop it. An error
+// answer to a poll goes to the alerts region and leaves the polled element
+// in the page, so a poll that keeps failing, such as one for an item that
+// was deleted meanwhile and is answered with 404, swaps its alert into the
+// region again on every tick for as long as the page is open: the window
+// scrolls to the region (the show:top of [ErrorReswap]) and the region
+// announces the message, every time. An [*Error] cannot stop the poll, as
+// its Status is 400 to 599. The handler of a poll answers an item that is
+// gone with hx2.StatusStopPolling and the content that takes the polled
+// content's place, such as a note that the item is gone, through
+// [Render], which takes any status; webui's htmx configuration swaps it
+// as a 2xx answer (see the polling example).
+//
+// # Browser console
+//
+// Error answers leave messages in the browser's console, which browser
+// checks that fail on console messages must allow. Under webui's htmx
+// configuration (hx2.DefaultResponseHandling, whose rule for 4xx and 5xx
+// statuses has the error flag), every error answer to an htmx request,
+// the alerts of [Errors.Write], [Errors.Answer] and [Errors.Intercept] and
+// the 500 of [Errors.Recover] alike, makes Chromium log two errors:
+//
+//	Failed to load resource: the server responded with a status of 404 (Not Found)
+//	Response Status Error Code 404 from /tasks/7, [object HTMLDivElement]
+//
+// The first is the browser's own, for every response with a 4xx or 5xx
+// status: also for the error page of a plain request and for a 422 answer
+// to a form with problems, and under any htmx configuration. The second
+// is htmx's (2.0.10), with the path of the request and the element that
+// the answer is swapped into. htmx logs nothing for a 422, whose rule has
+// no error flag, nor for the 401 of [Errors.RequireAuth], whose
+// HX-Redirect it follows before it looks at the status. A
+// ResponseHandling of the application's own (hx2.Config) whose "[45].."
+// rule has Error false removes htmx's line, and changes what script
+// sees: the detail of htmx:afterRequest then reports the request as
+// successful (successful true, failed false), and htmx:responseError
+// does not fire.
+//
+// bs.Dialog adds two messages of Chromium's: the warning "popovertarget
+// is ignored on elements with commandfor." whenever an opener or a closer
+// of a dialog is used, and the info "Autofocus processing was blocked
+// because a document's URL has a fragment '#main'." when a page with a
+// dialog loads at a URL with a fragment, such as #main after the skip
+// link; the info quotes whatever fragment the URL has, so checks allow it
+// for any fragment. Both are expected.
+//
 // # Logging
 //
 // Errors are logged to mw.Logger of the request context, with the status
@@ -178,9 +238,11 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // errors after the response started at debug level unless they are server
 // errors.
 type Errors struct {
-	// Classify maps an error to its answer before the default
-	// classification. It returns nil for an error it does not know. Its
-	// Message must not contain request data.
+	// Classify maps the application's own errors to their answers, ahead
+	// of webui's defaults but after an explicit [*Error] (see
+	// Classification above): it is not called for an error that carries
+	// an *Error, whose answer the handler chose. It returns nil for an
+	// error it does not know. Its Message must not contain request data.
 	Classify func(err error) *Error
 	// Fallback maps an error that neither Classify nor the default
 	// classification knows, which is otherwise answered with 500 and the
@@ -501,14 +563,16 @@ func internalAnswer() answer {
 }
 
 func (e Errors) classify(err error) answer {
+	// The handler's own answer comes first: Classify matches the cause of
+	// an *Error too, which would replace the status the handler chose.
+	var pe *Error
+	if errors.As(err, &pe) && pe != nil {
+		return errorAnswer(pe)
+	}
 	if e.Classify != nil {
 		if pe := e.Classify(err); pe != nil {
 			return errorAnswer(pe)
 		}
-	}
-	var pe *Error
-	if errors.As(err, &pe) && pe != nil {
-		return errorAnswer(pe)
 	}
 	var tooLarge *http.MaxBytesError
 	switch {

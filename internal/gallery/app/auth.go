@@ -12,7 +12,6 @@ import (
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/html/form"
 	"github.com/protolambda/chord/html/form/input"
-	"github.com/protolambda/chord/html/group/div"
 	"github.com/protolambda/chord/html/text"
 
 	"github.com/protolambda/webui/bi"
@@ -182,7 +181,7 @@ func (a *App) notesPage(r *http.Request, s *session.Session[Account], draft, pro
 	notes := notesOf(s)
 	items := make([]elem.Node, 0, len(notes))
 	for _, n := range notes {
-		items = append(items, bs.ListGroupItem(attr.Class("text-break"))(noteLines(n)...))
+		items = append(items, bs.ListGroupItem(attr.Class("text-break"))(visible.Prose(n)))
 	}
 	list := para("No notes yet.", attr.Class("text-body-secondary"))
 	if len(items) > 0 {
@@ -193,6 +192,7 @@ func (a *App) notesPage(r *http.Request, s *session.Session[Account], draft, pro
 		Icon:  bi.Lock,
 		Main: elem.Bundle{
 			para("A private page behind web.Errors.RequireAuth. The notes live in your session and end with it."),
+			para("Notes show through visible.Prose: their lines stay lines, and an invisible or direction character shows escaped, with a marker.", attr.Class("small text-body-secondary")),
 			a.notesRegion(r),
 			list,
 			session.PostForm("/notes", s.CSRF(), form.Novalidate())(
@@ -201,17 +201,6 @@ func (a *App) notesPage(r *http.Request, s *session.Session[Account], draft, pro
 			),
 		},
 	})
-}
-
-// noteLines renders a note line by line, each line through visible.Text,
-// which would show a line break as an escape.
-func noteLines(note string) []elem.Node {
-	lines := strings.Split(strings.ReplaceAll(note, "\r\n", "\n"), "\n")
-	nodes := make([]elem.Node, 0, len(lines))
-	for _, l := range lines {
-		nodes = append(nodes, div.Div()(visible.Text(l)))
-	}
-	return nodes
 }
 
 func (a *App) addNote(w http.ResponseWriter, r *http.Request) error {

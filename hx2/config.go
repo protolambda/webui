@@ -72,6 +72,20 @@ var ErrInvalidConfig = errors.New("hx2: invalid htmx config")
 // test of this package checks the keys against that script, and fails when
 // the theme moves to another release.
 //
+// Other keys keep htmx's defaults. One of them matters to forms:
+// reportValidityOfForms is false, so a request that htmx checks and stops,
+// that of an element with hx-validate="true" ([Validate]) or of a form
+// without novalidate that a trigger other than submit sends, shows no
+// message and moves no focus: nothing seems to happen. A click on an htmx
+// button inside a form skips the browser's own check too. Set the key in
+// Extra to have htmx report the first invalid field, or validate on the
+// server:
+//
+//	hx2.Config{Extra: map[string]any{"reportValidityOfForms": true}}
+//
+// An ordinary form submit is not affected: the browser checks the form,
+// and reports, before htmx sees the submit event.
+//
 // A Config is a plain value; it is safe for concurrent use as long as no
 // goroutine modifies its ResponseHandling, AttributesToSettle or Extra
 // while another reads it.
@@ -200,8 +214,9 @@ type Config struct {
 	// back to an unknown style, or to [SwapTextContent], never ends.
 	DefaultSwapStyle string
 
-	// Extra holds additional htmx config keys, e.g. "timeout" or
-	// "defaultSettleDelay", written in sorted key order with the keys above.
+	// Extra holds additional htmx config keys, e.g. "timeout",
+	// "defaultSettleDelay" or "reportValidityOfForms" (see [Validate]),
+	// written in sorted key order with the keys above.
 	// Values are encoded with encoding/json. Keys are not checked against the
 	// htmx config, so a misspelled key is silently ignored by htmx. A key that
 	// a field of Config controls, such as "allowEval", is an error: use the
@@ -259,7 +274,10 @@ type ResponseRule struct {
 // what htmx does without a matching rule. Swapping errors lets a handler
 // answer a failed htmx request with a fragment that shows the error, keeping
 // the real status code. A 204 response swaps nothing, which suits polling
-// that found no change.
+// that found no change. A 286 response ([StatusStopPolling]) swaps as a 2xx
+// one and stops the poll of the element that made the request; no other
+// status stops a poll, so an error answer to a poll, swapped like any
+// other, comes again on every tick (see [Trigger]).
 //
 // A 422 (Unprocessable Content) response is the usual answer to a form with
 // problems: an expected outcome of user input that the server explains in
@@ -267,11 +285,15 @@ type ResponseRule struct {
 // For a response with the error flag, htmx logs "Response Status Error
 // Code ..." as an error to the browser console, fires htmx:responseError,
 // and reports the request as failed in the details of its events; for every
-// validation answer, that would bury real errors in noise and fail browser
-// checks that watch the console. Without the flag, the detail of
-// htmx:afterRequest reports a 422 response as successful: a listener that
-// needs to tell validation answers apart reads the status of detail.xhr.
-// Every other 4xx and 5xx status stays an error.
+// validation answer, that would bury real errors in noise. Without the
+// flag, the detail of htmx:afterRequest reports a 422 response as
+// successful: a listener that needs to tell validation answers apart reads
+// the status of detail.xhr. Every other 4xx and 5xx status stays an error.
+// The browser logs a console error of its own, "Failed to load resource:
+// the server responded with a status of 422 (Unprocessable Entity)", for
+// a 422 as for every 4xx and 5xx response, which no rule removes: browser
+// checks that watch the console allow those (see "Browser console" at
+// [github.com/protolambda/webui/web.Errors]).
 //
 // htmx handles a swapped error response like a successful one, whatever its
 // status. It updates the browser history for boosted elements, elements

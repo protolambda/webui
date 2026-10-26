@@ -87,6 +87,11 @@ func TestCookie(gt *testing.T) {
 		{"max age", http.Cookie{Name: "__Host-session", Value: cookieValue, MaxAge: 60}, webuitest.CookieWant{MaxAge: time.Hour}, "Max-Age is 60, want 3600"},
 		{"cleared", http.Cookie{Name: "__Host-session", MaxAge: -1}, webuitest.CookieWant{}, "the cookie is cleared"},
 		{"not cleared", http.Cookie{Name: "__Host-session", Value: cookieValue}, webuitest.CookieWant{Cleared: true}, "not cleared"},
+		{"secure, want not", http.Cookie{Name: "__Host-session", Value: cookieValue, Secure: true}, webuitest.CookieWant{NotSecure: true}, "Secure, want no Secure attribute"},
+		{"http only, want not", http.Cookie{Name: "__Host-session", Value: cookieValue, HttpOnly: true}, webuitest.CookieWant{NotHttpOnly: true}, "HttpOnly, want no HttpOnly attribute"},
+		{"secure and not", http.Cookie{Name: "__Host-session", Value: cookieValue}, webuitest.CookieWant{Secure: true, NotSecure: true}, "the want requires Secure (or HostPrefix) and NotSecure"},
+		{"prefix and not secure", http.Cookie{Name: "__Host-session", Value: cookieValue, Path: "/", Secure: true}, webuitest.CookieWant{HostPrefix: true, NotSecure: true}, "the want requires Secure (or HostPrefix) and NotSecure"},
+		{"http only and not", http.Cookie{Name: "__Host-session", Value: cookieValue, HttpOnly: true}, webuitest.CookieWant{HttpOnly: true, NotHttpOnly: true}, "the want requires HttpOnly and NotHttpOnly"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t devtest.T) {
@@ -96,6 +101,14 @@ func TestCookie(gt *testing.T) {
 			t.Must(be.False(strings.Contains(err.Error(), cookieValue)))
 		})
 	}
+	t.Run("absent attributes", func(t devtest.T) {
+		// The session cookie of a plain http site: neither Secure nor
+		// __Host-, and here readable by scripts.
+		plain := &http.Cookie{Name: "session", Value: cookieValue, Path: "/", SameSite: http.SameSiteLaxMode}
+		t.Must(webuitest.Cookie(serve(plain), "session", webuitest.CookieWant{NotSecure: true, NotHttpOnly: true, SameSite: http.SameSiteLaxMode}))
+		err := webuitest.Cookie(serve(good), "__Host-session", webuitest.CookieWant{NotSecure: true, NotHttpOnly: true}).Check(t.Context())
+		t.Must(be.ErrorContains(err, "Secure, want no Secure attribute; HttpOnly, want no HttpOnly attribute"))
+	})
 	t.Run("cleared ways", func(t devtest.T) {
 		for _, c := range []*http.Cookie{
 			{Name: "s", MaxAge: -1},
@@ -154,6 +167,56 @@ func TestCookie(gt *testing.T) {
 	})
 }
 
+func TestCookieValue(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	res := respond(t, func(w http.ResponseWriter) {
+		http.SetCookie(w, &http.Cookie{Name: "theme", Value: "dark"})
+		http.SetCookie(w, &http.Cookie{Name: "__Host-preauth", Value: cookieValue, Path: "/", Secure: true})
+	})
+	t.Must(be.Equal(cookieValue, webuitest.CookieValue(t, res, "__Host-preauth")))
+	t.Must(be.Equal("dark", webuitest.CookieValue(t, res, "theme")))
+	cleared := respond(t, func(w http.ResponseWriter) { http.SetCookie(w, &http.Cookie{Name: "s", MaxAge: -1}) })
+	t.Must(be.Equal("", webuitest.CookieValue(t, cleared, "s")))
+
+	cases := []struct {
+		name string
+		set  func(w http.ResponseWriter)
+		msg  string
+	}{
+		{"missing", func(w http.ResponseWriter) {
+			http.SetCookie(w, &http.Cookie{Name: "theme", Value: cookieValue})
+			w.Header().Add("Set-Cookie", "=broken")
+		}, `webuitest.CookieValue: GET /x sets no cookie "s" (it sets theme); 1 Set-Cookie headers do not parse`},
+		{"twice", func(w http.ResponseWriter) {
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue + "2"})
+		}, `GET /x sets cookie "s" 2 times`},
+		{"does not parse", func(w http.ResponseWriter) {
+			w.Header().Add("Set-Cookie", `s="`+cookieValue+`"x`)
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+		}, `GET /x has a Set-Cookie header for "s" that does not parse`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			r := newRecordT(t.Context())
+			t.Must(be.Equal("", webuitest.CookieValue(r, respond(t, c.set), "s")))
+			t.Must(be.True(r.failed))
+			t.Must(be.Substring(r.output(), c.msg))
+			t.Must(be.False(strings.Contains(r.output(), cookieValue)))
+		})
+	}
+	r := newRecordT(t.Context())
+	webuitest.CookieValue(r, nil, "s")
+	t.Must(be.Substring(r.output(), "webuitest.CookieValue: no response"))
+	r = newRecordT(t.Context())
+	tooLong := cthttp.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+		_, _ = w.Write([]byte("too long"))
+	}), webuitest.Get(t, "/x"), cthttp.WithMaxBody(1))
+	t.Must(be.Equal("", webuitest.CookieValue(r, tooLong, "s")))
+	t.Must(be.True(r.failed))
+}
+
 func TestNoCookies(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Must(webuitest.NoCookies(respond(t, func(http.ResponseWriter) {})))
@@ -164,6 +227,51 @@ func TestNoCookies(gt *testing.T) {
 	err := webuitest.NoCookies(res).Check(t.Context())
 	t.Must(be.ErrorContains(err, `GET /x sets 2 cookies: "a" (1 do not parse)`))
 	t.Must(be.False(strings.Contains(err.Error(), cookieValue)))
+}
+
+func TestNoCookie(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	res := respond(t, func(w http.ResponseWriter) {
+		http.SetCookie(w, &http.Cookie{Name: "__Host-preauth", Value: cookieValue, Path: "/", Secure: true})
+		w.Header().Add("Set-Cookie", "=broken")
+		w.Header().Add("Set-Cookie", "no-pair")
+	})
+	t.Must(webuitest.NoCookie(res, "__Host-session"))
+	t.Must(webuitest.NoCookie(respond(t, func(http.ResponseWriter) {}), "__Host-session"))
+	t.Must(be.Equal(`noCookie(GET /x, "__Host-session")`, webuitest.NoCookie(res, "__Host-session").String()))
+	err := webuitest.NoCookie(res, "__Host-preauth").Check(t.Context())
+	t.Must(be.ErrorIs(err, ct.ErrMismatch))
+	t.Must(be.ErrorContains(err, `GET /x sets cookie "__Host-preauth"`))
+	t.Must(be.False(strings.Contains(err.Error(), cookieValue)))
+	cases := []struct {
+		name string
+		set  func(w http.ResponseWriter)
+		msg  string
+	}{
+		{"cleared", func(w http.ResponseWriter) {
+			http.SetCookie(w, &http.Cookie{Name: "s", MaxAge: -1})
+		}, `sets cookie "s"`},
+		{"twice", func(w http.ResponseWriter) {
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+		}, `sets cookie "s" 2 times`},
+		{"does not parse", func(w http.ResponseWriter) {
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+			w.Header().Add("Set-Cookie", ` s = "`+cookieValue+`"x; Path=/`)
+		}, `sets cookie "s" in 2 Set-Cookie headers, 1 of which do not parse`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			err := webuitest.NoCookie(respond(t, c.set), "s").Check(t.Context())
+			t.Must(be.ErrorIs(err, ct.ErrMismatch))
+			t.Must(be.ErrorContains(err, c.msg))
+			t.Must(be.False(strings.Contains(err.Error(), cookieValue)))
+		})
+	}
+	res = cthttp.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("too long"))
+	}), webuitest.Get(t, "/x"), cthttp.WithMaxBody(1))
+	t.Must(be.ErrorIs(webuitest.NoCookie(res, "s").Check(t.Context()), ct.ErrLoad))
 }
 
 // secured serves a page behind mw.SecurityHeaders with the configuration.

@@ -155,16 +155,34 @@
 // which accept far larger bodies (up to 10 MB of urlencoded text, more for
 // multipart) unless a body limit middleware runs first.
 //
+// Views whose forms sit deep in their tree need not pass the token down:
+// the handler wraps what it renders with [Forms.WithPageToken],
+// [Forms.WithFragmentToken] or [Forms.WithToken], stating the kind of
+// answer, and the views render [PostFormFromContext], which takes the token
+// from the render context when it renders. The token is taken once, for
+// the first form, so a page without forms sets no cookie; a form without a
+// token fails the render instead of going out with an empty one. A token
+// node below another one takes the outer node's token: the outermost node
+// decides the one token of a response. The pre-authentication cookie of a
+// page or fragment is set during the render, so render into a buffer
+// before the header is written, as web.Render does; event streams take
+// WithToken, which sets nothing. A fragment that had to issue a new cookie
+// renders the fresh copies of the page's other forms within [IfRenewed].
+// Error pages render outside the token node of the handler (the Errors
+// policy of package web renders them itself): the forms of a layout that
+// they share take an explicit token, or WithToken (see
+// [PostFormFromContext]).
+//
 // # Concurrency
 //
 // [Store], [Session], [PreAuth] and [Forms] are safe for concurrent use. A session's
 // value is guarded by the session: [Session.Data] returns a copy, and
 // [Session.Update] runs a function with exclusive access to it. The
 // callbacks [Options.OnEnd], [Options.OnEndReason] and those given to
-// [Session.Update] and [Store.EndFunc] run while their session is locked:
-// they must not call methods of that session or of its store, and should
-// return quickly ([Store.Rotate] waits for the session's lock while holding
-// the store's).
+// [Session.Update], [Store.EndFunc] and [Store.Each] run while their
+// session is locked: they must not call methods of that session or of its
+// store, and should return quickly ([Store.Rotate] waits for the session's
+// lock while holding the store's).
 //
 // # Logging
 //

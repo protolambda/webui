@@ -33,18 +33,43 @@ type escapeCase struct {
 	escaped bool
 }
 
-func checkCases(t devtest.T, name string, escape func(string) (string, bool), lenient bool, cases []escapeCase) {
+// escapeMode is one of the escape functions.
+type escapeMode int
+
+const (
+	modeStrict escapeMode = iota // Escape
+	modeText                     // EscapeText
+	modeProse                    // EscapeProse
+)
+
+var modes = []escapeMode{modeStrict, modeText, modeProse}
+
+func (m escapeMode) String() string {
+	return [...]string{"Escape", "EscapeText", "EscapeProse"}[m]
+}
+
+func (m escapeMode) escape(s string) (string, bool) {
+	switch m {
+	case modeText:
+		return visible.EscapeText(s)
+	case modeProse:
+		return visible.EscapeProse(s)
+	}
+	return visible.Escape(s)
+}
+
+func checkCases(t devtest.T, m escapeMode, cases []escapeCase) {
 	for _, c := range cases {
-		out, escaped := escape(c.in)
-		t.Mustf(be.Equal(c.out, out), "%s(%+q)", name, c.in)
-		t.Mustf(be.Equal(c.escaped, escaped), "%s(%+q) escaped", name, c.in)
-		t.Mustf(be.NoError(checkEscape(c.in, lenient)), "%s(%+q) properties", name, c.in)
+		out, escaped := m.escape(c.in)
+		t.Mustf(be.Equal(c.out, out), "%s(%+q)", m, c.in)
+		t.Mustf(be.Equal(c.escaped, escaped), "%s(%+q) escaped", m, c.in)
+		t.Mustf(be.NoError(checkEscape(c.in, m)), "%s(%+q) properties", m, c.in)
 	}
 }
 
 func TestEscape(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	checkCases(t, "Escape", visible.Escape, false, []escapeCase{
+	checkCases(t, modeStrict, []escapeCase{
 		{"", "", false},
 		{"Quarterly report", "Quarterly report", false},
 		{"<script>alert(1)</script>", "<script>alert(1)</script>", false},
@@ -157,7 +182,7 @@ func TestEscape(gt *testing.T) {
 
 func TestEscapeText(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	checkCases(t, "EscapeText", visible.EscapeText, true, []escapeCase{
+	checkCases(t, modeText, []escapeCase{
 		{"", "", false},
 		{"Quarterly report", "Quarterly report", false},
 		// Presentation selectors after any emoji, also where they change nothing.
@@ -228,6 +253,67 @@ func TestEscapeText(gt *testing.T) {
 	})
 }
 
+func TestEscapeProse(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	checkCases(t, modeProse, []escapeCase{
+		{"", "", false},
+		{"Quarterly report", "Quarterly report", false},
+		// Line breaks, spaces and tabs stay as they are.
+		{"line\nbreak", "line\nbreak", false},
+		{"line\r\nbreak\r\n", "line\r\nbreak\r\n", false},
+		{"\n\nblank lines\n\n", "\n\nblank lines\n\n", false},
+		{"  indented\n\ttabbed\t\n trailing  ", "  indented\n\ttabbed\t\n trailing  ", false},
+		{" \t \n", " \t \n", false},
+		{"C:\\notes\nD:\\more", "C:\\notes\nD:\\more", false},
+		// What EscapeText keeps, prose keeps.
+		{"10\u00A0km\n\U0001F469\u200D\U0001F4BB team", "10\u00A0km\n\U0001F469\u200D\U0001F4BB team", false},
+		{"\u0645\u06CC\u200C\u062E\n\u2764\uFE0F", "\u0645\u06CC\u200C\u062E\n\u2764\uFE0F", false},
+		{"a \u0301", "a \u0301", false}, // an accent on a single space
+		// Other control characters, a carriage return on its own too.
+		{"old\rmac", bs("old~rmac"), true},
+		{"cr\r\r\nlf", bs("cr~r\r\nlf"), true},
+		{"end\r", bs("end~r"), true},
+		{"vt\vff\f", bs("vt~u000Bff~u000C"), true},
+		{"nul\x00\nnext", bs("nul~u0000\nnext"), true},
+		{"next\u0085line", bs("next~u0085line"), true},
+		// The line and paragraph separators are no line breaks.
+		{"line\u2028para\u2029", bs("line~u2028para~u2029"), true},
+		// Direction controls and invisible characters, on one line or
+		// several: the backslashes of every line are escaped too.
+		{"invoice\u202Efdp.exe\nnext line", bs("invoice~u202Efdp.exe\nnext line"), true},
+		{"C:\\notes\nad\u200Bmin", bs("C:~~notes\nad~u200Bmin"), true},
+		{"\u2066isolated\n\u2069", bs("~u2066isolated\n~u2069"), true},
+		{"zero\u200Bwidth \u2060joiner\uFEFF", bs("zero~u200Bwidth ~u2060joiner~uFEFF"), true},
+		{"tag\U000E0041 \u00AD", bs("tag~U000E0041 ~u00AD"), true},
+		// Other spaces stay escaped where EscapeText escapes them.
+		{"no\u00A0\u00A0break", bs("no~u00A0~u00A0break"), true},
+		{"\u00A0lead", bs("~u00A0lead"), true},
+		{"a \u00A0b", bs("a ~u00A0b"), true},
+		{"a\t\u00A0b", bs("a\t~u00A0b"), true},
+		{"a\u00A0\tb", bs("a~u00A0\tb"), true},
+		{"a\u00A0\nb", bs("a~u00A0\nb"), true},
+		{"a\n\u00A0b", bs("a\n~u00A0b"), true},
+		{"em\u2003space ideographic\u3000", bs("em~u2003space ideographic~u3000"), true},
+		{"blank\u2800 \u3164", bs("blank~u2800 ~u3164"), true},
+		// Characters that show only after another one are escaped at the
+		// start of a line, and after white space other than a single
+		// space after a character.
+		{"\u0301start", bs("~u0301start"), true},
+		{"a\n\u0301b", bs("a\n~u0301b"), true},
+		{"a\r\n\u0301b", bs("a\r\n~u0301b"), true},
+		{"a\t\u0301", bs("a\t~u0301"), true},
+		{"a  \u0301", bs("a  ~u0301"), true},
+		{" \u0301", bs(" ~u0301"), true},
+		{"a\n \u0301", bs("a\n ~u0301"), true},
+		{"\u2764\n\uFE0F", bs("\u2764\n~uFE0F"), true},
+		{"\U0001F468\n\u200D\U0001F469", bs("\U0001F468\n~u200D\U0001F469"), true},
+		{"\U0001F468\u200D\n\U0001F469", bs("\U0001F468~u200D\n\U0001F469"), true},
+		{"\u0645 \u200C\u062E", bs("\u0645 ~u200C\u062E"), true},
+		// Invalid UTF-8.
+		{"bad\xFF\nbyte", bs("bad~xFF\nbyte"), true},
+	})
+}
+
 func TestRune(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, r := range []rune{'a', 'Z', '0', ' ', '\\', '~', '\u00E9', '\u0301', '\u0645', '\u4E16', '\uFFFD',
@@ -289,10 +375,17 @@ func TestEveryRune(gt *testing.T) {
 			}
 			c := string(r)
 			for _, s := range []string{c, "a" + c + "b", "\U0001F469" + c + "\U0001F4BB", "\u0645" + c + "\u0645"} {
-				for _, lenient := range []bool{false, true} {
-					if err := checkEscape(s, lenient); err != nil {
-						t.Errorf("%U in %+q (lenient %t): %v", r, s, lenient, err)
+				for _, m := range []escapeMode{modeStrict, modeText} {
+					if err := checkEscape(s, m); err != nil {
+						t.Errorf("%U in %+q (%s): %v", r, s, m, err)
 					}
+				}
+			}
+			// In prose: between letters, at the start of a line, after a
+			// space after a character, and after a tab.
+			for _, s := range []string{"a" + c + "b", "a\n" + c + " " + c + "\t" + c} {
+				if err := checkEscape(s, modeProse); err != nil {
+					t.Errorf("%U in %+q (%s): %v", r, s, modeProse, err)
 				}
 			}
 		}
@@ -304,12 +397,15 @@ func TestEveryRune(gt *testing.T) {
 func TestHostile(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, s := range webuitest.Hostile() {
-		t.Mustf(be.NoError(checkEscape(s, false)), "Escape(%+q)", s)
-		t.Mustf(be.NoError(checkEscape(s, true)), "EscapeText(%+q)", s)
+		for _, m := range modes {
+			t.Mustf(be.NoError(checkEscape(s, m)), "%s(%+q)", m, s)
+		}
 	}
 	for _, s := range []string{"\u202Egnp.exe", "ad\u200Bmin", "line\nbreak\r\nand\rcarriage", "tab\tand\x00nul"} {
-		_, escaped := visible.Escape(s)
-		t.Mustf(be.True(escaped), "Escape(%+q)", s)
+		for _, m := range modes {
+			_, escaped := m.escape(s)
+			t.Mustf(be.True(escaped), "%s(%+q)", m, s)
+		}
 	}
 	out, escaped := visible.Escape("Ad\u043Cin") // a Cyrillic letter that looks like a Latin one
 	t.Must(be.Equal("Ad\u043Cin", out))
@@ -323,6 +419,13 @@ func TestEscapeNoAlloc(gt *testing.T) {
 	s := "Quarterly report \u2764\uFE0F \U0001F469\u200D\U0001F4BB 10\u00A0km"
 	allocs := testing.AllocsPerRun(100, func() {
 		if _, escaped := visible.EscapeText(s); escaped {
+			panic("escaped")
+		}
+	})
+	t.Must(be.Equal(0.0, allocs))
+	prose := s + "\r\n  indented\n\n\tand tabbed  "
+	allocs = testing.AllocsPerRun(100, func() {
+		if _, escaped := visible.EscapeProse(prose); escaped {
 			panic("escaped")
 		}
 	})
@@ -348,26 +451,25 @@ func FuzzEscape(f *testing.F) {
 		"", " ", "a  b", "\xFF", `\u202E`, "invoice\u202Efdp.exe", "\u2764\uFE0F\u200D\U0001F525",
 		"\U0001F469\U0001F3FD\u200D\U0001F4BB", "\U0001F3F4" + england, "1\uFE0F\u20E3", "a\u00A0b",
 		"\u0645\u06CC\u200C\u062E", "\u0915\u094D\u200D\u0937", "\u0301a", "x\u3164", "\U000E0041",
+		"two\r\nlines\n\n", " \t\u0301\n\u00A0\r", "a \u0301\n\u2028",
 	} {
 		f.Add(s)
 	}
 	f.Fuzz(func(gt *testing.T, s string) {
 		t := devtest.SerialT(gt)
-		t.Must(be.NoError(checkEscape(s, false)))
-		t.Must(be.NoError(checkEscape(s, true)))
+		for _, m := range modes {
+			t.Must(be.NoError(checkEscape(s, m)))
+		}
 	})
 }
 
-// checkEscape checks the promises of Escape (or EscapeText if lenient) for
-// s: the escaped form is valid UTF-8, at most six times as long as s, shows
-// as itself, has no invisible characters other than those that the mode
-// keeps, and decodes back to s; and text that is not escaped is s itself.
-func checkEscape(s string, lenient bool) error {
-	escape := visible.Escape
-	if lenient {
-		escape = visible.EscapeText
-	}
-	out, escaped := escape(s)
+// checkEscape checks the promises of the escape function of mode m for s:
+// the escaped form is valid UTF-8, at most six times as long as s, shows as
+// itself, has no invisible characters other than those that the mode
+// keeps, and decodes back to s; text that is not escaped is s itself, and
+// escaped text is not. For prose, see also checkProse.
+func checkEscape(s string, m escapeMode) error {
+	out, escaped := m.escape(s)
 	if !utf8.ValidString(out) {
 		return errors.New("escaped form is not valid UTF-8")
 	}
@@ -376,6 +478,9 @@ func checkEscape(s string, lenient bool) error {
 	}
 	if !escaped && out != s {
 		return errors.New("not escaped, but changed")
+	}
+	if escaped && out == s {
+		return errors.New("escaped, but unchanged")
 	}
 	if escaped {
 		back, err := unescape(out)
@@ -386,9 +491,13 @@ func checkEscape(s string, lenient bool) error {
 			return fmt.Errorf("escaped form %+q decodes to %+q", out, back)
 		}
 	}
-	if again, more := escape(out); more || again != out {
+	if again, more := m.escape(out); more || again != out {
 		return fmt.Errorf("escaped form %+q does not show as itself: %+q", out, again)
 	}
+	if m == modeProse {
+		return checkProse(s, out, escaped)
+	}
+	lenient := m == modeText
 	if again, more := visible.EscapeText(out); more || again != out {
 		return fmt.Errorf("escaped form %+q is escaped by EscapeText: %+q", out, again)
 	}
@@ -406,6 +515,46 @@ func checkEscape(s string, lenient bool) error {
 		}
 		if unicode.In(r, unicode.Bidi_Control, unicode.Cc) {
 			return fmt.Errorf("escaped form %+q has the control %U", out, r)
+		}
+	}
+	return nil
+}
+
+// checkProse checks the escaped prose out of s: it has the characters that
+// EscapeText keeps, and the white space that prose keeps; prose without
+// white space escapes as EscapeText does; prose that EscapeText does not
+// escape is not escaped either; and every line of prose that is not
+// escaped, with its spaces and tabs collapsed as HTML collapses them, is
+// text that EscapeText does not escape.
+func checkProse(s, out string, escaped bool) error {
+	for i, r := range out {
+		switch {
+		case visible.Rune(r), r == '\t', r == '\n':
+		case r == '\r' && strings.HasPrefix(out[i+1:], "\n"):
+		case r == '\uFE0E' || r == '\uFE0F':
+		case r == '\u200C' || r == '\u200D' || r == '\u00A0' || r == '\u202F':
+		case r >= 0xE0020 && r <= 0xE007F:
+		default:
+			return fmt.Errorf("escaped prose %+q has %U at byte %d", out, r, i)
+		}
+		if unicode.Is(unicode.Bidi_Control, r) {
+			return fmt.Errorf("escaped prose %+q has the control %U", out, r)
+		}
+	}
+	text, textEscaped := visible.EscapeText(s)
+	if !strings.ContainsAny(s, " \t\n\r") && (text != out || textEscaped != escaped) {
+		return fmt.Errorf("prose %+q without white space escapes to %+q, by EscapeText to %+q", s, out, text)
+	}
+	if escaped && !textEscaped {
+		return fmt.Errorf("prose %+q is escaped, but not by EscapeText", s)
+	}
+	if escaped {
+		return nil
+	}
+	for line := range strings.SplitSeq(s, "\n") {
+		words := strings.FieldsFunc(strings.TrimSuffix(line, "\r"), func(r rune) bool { return r == ' ' || r == '\t' })
+		if _, more := visible.EscapeText(strings.Join(words, " ")); more {
+			return fmt.Errorf("line %+q of prose that is not escaped is escaped by EscapeText, collapsed", line)
 		}
 	}
 	return nil

@@ -81,6 +81,37 @@ func TestConfigKeysMatchPinnedHTMX(gt *testing.T) {
 	}
 }
 
+// The docs of Validate and Config rely on htmx's default of
+// reportValidityOfForms, false (a request that htmx checks and stops shows
+// nothing), and on Extra setting it, which makes htmx report the field.
+func TestReportValidityOfForms(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	data, err := fs.ReadFile(theme.FS(), theme.HTMXJS)
+	t.Must(be.NoError(err))
+	script := string(data)
+	literal, err := configLiteral(script)
+	t.Must(be.NoError(err))
+	t.Must(be.Substring(literal, "reportValidityOfForms:false"))
+	t.Must(be.Substring(script, ".config.reportValidityOfForms)"))
+	t.Must(be.Substring(script, ".reportValidity()"))
+
+	written, err := hx2.Config{Extra: map[string]any{"reportValidityOfForms": true}}.JSON()
+	t.Must(be.NoError(err))
+	t.Must(be.Substring(written, `"reportValidityOfForms":true`))
+}
+
+// The docs of StatusStopPolling and Trigger rely on htmx cancelling a poll
+// for a swapped answer with status 286, and for no other status.
+func TestStopPolling(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal(286, hx2.StatusStopPolling))
+	data, err := fs.ReadFile(theme.FS(), theme.HTMXJS)
+	t.Must(be.NoError(err))
+	script := string(data)
+	t.Must(be.Equal(1, strings.Count(script, "status===286")))
+	t.Must(be.Substring(script, "if(m.shouldSwap){if(n.status===286){"))
+}
+
 // The extraction helpers fail rather than guess on input they do not
 // understand.
 func TestConfigLiteralParsing(gt *testing.T) {

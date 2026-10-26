@@ -58,9 +58,10 @@ type PreAuthOptions struct {
 	// StrictSameSite marks the cookie SameSite=Strict instead of
 	// SameSite=Lax.
 	StrictSameSite bool
-	// TTL is how long a form stays valid after its cookie was issued; zero
-	// means [DefaultPreAuthTTL]. It must be at least a second: issue times
-	// have a resolution of one second.
+	// TTL is how long a form stays valid after its cookie was issued, on
+	// the wall clock (see [PreAuth]); zero means [DefaultPreAuthTTL]. It
+	// must be at least a second: issue times have a resolution of one
+	// second.
 	TTL time.Duration
 	// Skew is how far in the future an issue time may lie; zero means
 	// [DefaultPreAuthSkew].
@@ -127,7 +128,23 @@ type PreAuthOptions struct {
 // CSRF defence, since the pair only ever exists in the visitor's own
 // browser, but it means PreAuth is neither a replay defence nor a rate
 // limit: throttle login attempts separately, and start a session with
-// [Store.New] (which rotates the session ID) once a login succeeds.
+// [Store.New] (which rotates the session ID) once a login succeeds. An
+// application that needs one-time forms keeps the tokens of spent forms
+// itself, each until [PreAuth.Expires] of its cookie. Every form of a
+// cookie carries the same token, so a spent token refuses the cookie's
+// other forms too.
+//
+// The age of a cookie is the wall clock time ([PreAuthOptions.Now]) less
+// its issue time in Unix seconds: unlike the lifetimes of a [Store], which
+// count on the monotonic clock too, it follows the wall clock alone.
+// Setting the wall clock back makes an expired cookie verify again while
+// the clock reads before its expiry, and setting it forward expires
+// cookies early. Expiries that an application keeps for these cookies,
+// such as those of spent forms, must be wall clock times too: the times of
+// Expires, which carry no monotonic reading, compared with time.Now(), or
+// readings without one (time.Now().Round(0)). A deadline of
+// time.Now().Add(d) is compared on the monotonic clock: once the wall
+// clock was set back, it can pass while PreAuth still accepts the cookie.
 type PreAuth struct {
 	cookie cookiePolicy
 	ttl    time.Duration
@@ -250,11 +267,31 @@ func (p *PreAuth) Token(r *http.Request) (string, bool) {
 	return p.formToken(&body), true
 }
 
+// Expires returns the time from which r's pre-authentication cookie no
+// longer verifies, and true, if r carries a valid one (as for
+// [PreAuth.Token]): the cookie's issue time, in whole seconds, plus the
+// TTL. It returns the zero time and false when r is nil or carries no
+// valid cookie. It never sets or renews a cookie.
+//
+// The time is a reading of the wall clock ([PreAuthOptions.Now]) without a
+// monotonic clock reading, so comparing it with time.Now() compares wall
+// clock readings, as the checks of PreAuth do (see [PreAuth]). An
+// application that makes forms one-time keeps the token of each spent form
+// until then.
+func (p *PreAuth) Expires(r *http.Request) (time.Time, bool) {
+	_, issued, err := p.parse(p.cookie.value(r), p.now())
+	if err != nil {
+		return time.Time{}, false
+	}
+	return issued.Add(p.ttl), true
+}
+
 // Verify checks a submitted form token against r's cookie: the cookie must
 // be authentic and unexpired, and token must be its form token. It returns
 // nil or an error wrapping [ErrCSRF], whose detail (missing, malformed,
 // forged, expired, mismatch) is meant for logs. Verify is stateless: a
-// valid pair verifies again until it expires.
+// valid pair verifies again until it expires ([PreAuth.Expires]), on the
+// wall clock (see [PreAuth]).
 func (p *PreAuth) Verify(r *http.Request, token string) error {
 	body, _, err := p.parse(p.cookie.value(r), p.now())
 	if err != nil {

@@ -1,6 +1,7 @@
 package webuitest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -133,6 +134,57 @@ func shellOrDefault(s *Shell) Shell {
 		return *s
 	}
 	return DefaultShell()
+}
+
+// defaultShellHint returns the line that a failure of a default contract
+// gets when its page loads other stylesheets or scripts than
+// [DefaultShell](): the likely cause is another theme set, whose every URL
+// differs, as the version directory hashes the whole set. option names
+// the setting of the shell, such as "Client.Shell".
+func defaultShellHint(option string) string {
+	return "the page loads other stylesheets or scripts than DefaultShell(), the shell of the default theme set, " +
+		"whose URLs differ for any other theme.Options or asset sets; for the application's sets, set " +
+		option + " = new(webuitest.DefaultShell(sets...))"
+}
+
+// loadsOtherAssets reports whether page loads, in order, other
+// stylesheets or scripts than s: false when the page does not load.
+func loadsOtherAssets(ctx context.Context, page *ct.Subject, s Shell) bool {
+	doc, err := page.Load(ctx)
+	if err != nil {
+		return false
+	}
+	sheets, scripts := shellAssets(doc.Root())
+	same := func(got []ct.Node, attr string, want []Asset) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i, e := range got {
+			if u, _ := attrOf(e, attr); u != want[i].URL {
+				return false
+			}
+		}
+		return true
+	}
+	return !same(sheets, "href", s.Stylesheets) || !same(scripts, "src", s.Scripts)
+}
+
+// hinted is an assertion whose failure gets [defaultShellHint] when its
+// page loads other assets than [DefaultShell]().
+type hinted struct {
+	inner  assertion.Assertion
+	page   *ct.Subject
+	option string
+}
+
+func (h hinted) String() string { return h.inner.String() }
+
+func (h hinted) Check(ctx context.Context) error {
+	err := h.inner.Check(ctx)
+	if err == nil || !loadsOtherAssets(ctx, h.page, DefaultShell()) {
+		return err
+	}
+	return fmt.Errorf("%w\n  %s", err, defaultShellHint(h.option))
 }
 
 // Rule returns the shell expectation as a document rule, "shell()", which
@@ -273,19 +325,7 @@ func (s Shell) check(root ct.Node) []string {
 		got, _ := attrOf(hc[0], "content")
 		out = append(out, configDiff(got, s.htmxConfig())...)
 	}
-	var sheets, scripts []ct.Node
-	for e := range ct.Elements(root) {
-		switch e.Tag() {
-		case "link":
-			if rel, _ := attrOf(e, "rel"); hasFieldFold(rel, "stylesheet") {
-				sheets = append(sheets, e)
-			}
-		case "script":
-			if !jsonDataBlock(e) {
-				scripts = append(scripts, e)
-			}
-		}
-	}
+	sheets, scripts := shellAssets(root)
 	out = append(out, assetList("stylesheet", "href", sheets, s.Stylesheets, head)...)
 	out = append(out, assetList("script", "src", scripts, s.Scripts, head)...)
 	for i, sc := range scripts {
@@ -313,6 +353,24 @@ func (s Shell) check(root ct.Node) []string {
 		out = append(out, fmt.Sprintf("document has %d main landmarks, want 1", mains))
 	}
 	return out
+}
+
+// shellAssets returns the stylesheet links and the scripts (but not the
+// JSON data blocks) of a document, in tree order.
+func shellAssets(root ct.Node) (sheets, scripts []ct.Node) {
+	for e := range ct.Elements(root) {
+		switch e.Tag() {
+		case "link":
+			if rel, _ := attrOf(e, "rel"); hasFieldFold(rel, "stylesheet") {
+				sheets = append(sheets, e)
+			}
+		case "script":
+			if !jsonDataBlock(e) {
+				scripts = append(scripts, e)
+			}
+		}
+	}
+	return sheets, scripts
 }
 
 // roleOf returns the explicit role of e, or its implicit role.
@@ -440,7 +498,11 @@ func PageContract(page *ct.Subject, s Shell, rules ...ct.Rule) assertion.Asserti
 
 // FragmentContract asserts that fragment, a response that htmx swaps into a
 // page or the data of a server-sent event, is a fragment ([FragmentRule])
-// and satisfies rules, or [Rules]() when no rules are given.
+// and satisfies rules, or [Rules]() when no rules are given. Parse a
+// response with [cthttp.Result.HTMLFragment] ([Client.Fragment] does), and
+// an event with [Event.Fragment]: [cthttp.Result.HTML] parses a complete
+// document, which always has html, head and body elements, so the
+// contract fails, and the rules check the subject as a document.
 func FragmentContract(fragment *ct.Subject, rules ...ct.Rule) assertion.Assertion {
 	if len(rules) == 0 {
 		rules = Rules()

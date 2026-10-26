@@ -188,6 +188,38 @@ func ExampleRejectsCrossSite() {
 	// dns rebinding
 }
 
+// A Client with a Base tests an application at its own site, here a
+// plain http loopback site: requests name that site, and RejectsCrossSite
+// sends the probes of CrossSiteProbesFor it, whose look-alikes resemble
+// it. The probe without origin headers is left out on a loopback site,
+// where webui's default policy accepts such requests.
+func ExampleCrossSiteProbesFor() {
+	t := webuitest.PrintT{}
+	const site = "http://127.0.0.1:8080"
+	added := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /notes", func(w http.ResponseWriter, r *http.Request) {
+		added++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := mw.Chain(mux, mw.HostCheck(mw.MustParseSite(site)), mw.SameOrigin(mw.OriginPolicy{}))
+	c := &webuitest.Client{Handler: h, Base: site}
+	body := webuitest.Form(url.Values{"title": {"x"}})
+	t.Must(webuitest.RejectsCrossSite(t, c, http.MethodPost, "/notes", body, nil))
+	t.Must(c.Post(t, "/notes", body).Status(http.StatusNoContent))
+	fmt.Println(added, "note added")
+	for _, p := range webuitest.CrossSiteProbesFor(site) {
+		if p.Name == "lookalike origin" || p.Name == "https origin" {
+			req := c.Request(t, http.MethodPost, "/notes", body, p.Options...)
+			fmt.Println(p.Name+":", req.Host, req.Header.Get("Origin"))
+		}
+	}
+	// Output:
+	// 1 note added
+	// lookalike origin: 127.0.0.1:8080 http://127.0.0.1:8080.evil.example
+	// https origin: 127.0.0.1:8080 https://127.0.0.1:8080
+}
+
 // Crawl follows the links of an application and checks every page, target
 // and asset it finds.
 func ExampleCrawl() {

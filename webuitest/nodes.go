@@ -2,6 +2,7 @@ package webuitest
 
 import (
 	"iter"
+	"slices"
 	"strings"
 
 	"github.com/protolambda/chord/ct"
@@ -36,20 +37,12 @@ func HasClass(n ct.Node, class string) bool {
 }
 
 // attrOf returns the value of the attribute name of n, matching the name
-// case-insensitively.
+// case-insensitively, as [ct.Node.AttrFold] does.
 func attrOf(n ct.Node, name string) (string, bool) {
 	if n == nil {
 		return "", false
 	}
-	if v, ok := n.Attr(name); ok {
-		return v, true
-	}
-	for k, v := range n.Attrs() {
-		if strings.EqualFold(k, name) {
-			return v, true
-		}
-	}
-	return "", false
+	return n.AttrFold(name)
 }
 
 func hasAttr(n ct.Node, name string) bool {
@@ -64,8 +57,9 @@ func hxAttrOf(n ct.Node, name string) (value, attrName string, ok bool) {
 	if v, ok := attrOf(n, name); ok {
 		return v, name, true
 	}
-	if v, ok := attrOf(n, "data-"+name); ok {
-		return v, "data-" + name, true
+	data := dataName(name)
+	if v, ok := attrOf(n, data); ok {
+		return v, data, true
 	}
 	return "", "", false
 }
@@ -78,11 +72,39 @@ func hxValue(n ct.Node, name string) (value, attrName string) {
 	if v, _ := attrOf(n, name); v != "" {
 		return v, name
 	}
-	if v, _ := attrOf(n, "data-"+name); v != "" {
-		return v, "data-" + name
+	data := dataName(name)
+	if v, _ := attrOf(n, data); v != "" {
+		return v, data
 	}
 	return "", ""
 }
+
+// dataName returns name with the data- prefix. The rules look up htmx
+// attributes on every element, and mostly miss: the names of the htmx
+// attributes that this package reads come from dataNames, so that these
+// lookups do not build a string each.
+func dataName(name string) string {
+	if data, ok := dataNames[name]; ok {
+		return data
+	}
+	return "data-" + name
+}
+
+// dataNames maps the htmx and extension attributes that this package reads
+// to their names with the data- prefix.
+var dataNames = func() map[string]string {
+	names := slices.Concat(htmxRequestAttrs, htmxTargetAttrs, []string{
+		"hx-disable", "hx-disinherit", "hx-encoding", "hx-ext", "hx-headers",
+		"hx-params", "hx-preserve", "hx-push-url", "hx-replace-url",
+		"hx-trigger", "hx-vals", "sse-close", "sse-connect", "sse-swap",
+		"ws-connect",
+	})
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		out[name] = "data-" + name
+	}
+	return out
+}()
 
 // hxName returns an attribute name without a data- prefix, lower-cased.
 func hxName(key string) string {

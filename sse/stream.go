@@ -12,6 +12,8 @@ import (
 
 	"github.com/protolambda/chord/core"
 	"github.com/protolambda/chord/core/elem"
+
+	"github.com/protolambda/webui/internal/flush"
 )
 
 const (
@@ -94,9 +96,14 @@ func WithWriteWindow(d time.Duration) Option {
 // flushes through, the first write fails before anything is written, with
 // an error wrapping [http.ErrNotSupported] and not [ErrWrite]: it is a
 // configuration bug worth logging, and the handler can still answer with an
-// error status. Later writes return the same error. A writer that reports
-// [http.ErrNotSupported] only when it is flushed fails the same way, after
-// the header. Writers without write deadlines, such as
+// error status. Later writes return the same error. The check looks at
+// types only, and looks past the writers of webui's own handlers and
+// middleware (those of web.Errors.Handle, Recover and Intercept, and of
+// mw.LogRequests and mw.WriteDeadline), whose flush methods pass the flush
+// on, to the writer they wrap. A writer that reports [http.ErrNotSupported]
+// only when it is flushed, such as a wrapper of another package that
+// passes the flush on to a writer that cannot flush, fails the same way,
+// after the header. Writers without write deadlines, such as
 // [net/http/httptest.ResponseRecorder] and CGI, are tolerated: the deadline
 // is then skipped silently.
 //
@@ -323,7 +330,7 @@ func (s *Stream) write(b []byte) error {
 	if s.err != nil {
 		return s.err
 	}
-	if !s.started && !canFlush(s.w) {
+	if !s.started && !flush.Supported(s.w) {
 		return s.fail(errNoFlush(http.ErrNotSupported))
 	}
 	// The deadline comes first, before the header: middleware that sets a
@@ -355,26 +362,6 @@ func (s *Stream) write(b []byte) error {
 // ErrWrite: the client did not leave, the server is misconfigured.
 func errNoFlush(err error) error {
 	return fmt.Errorf("sse: response writer cannot flush: %w", err)
-}
-
-// maxUnwrap bounds the walk through wrapped writers, in case of a cycle.
-const maxUnwrap = 32
-
-// canFlush reports whether [http.ResponseController.Flush] finds a flush
-// method on w: it takes the same walk through Unwrap methods. It looks at
-// types only, so it writes nothing.
-func canFlush(w http.ResponseWriter) bool {
-	for range maxUnwrap {
-		switch t := w.(type) {
-		case interface{ FlushError() error }, http.Flusher:
-			return true
-		case interface{ Unwrap() http.ResponseWriter }:
-			w = t.Unwrap()
-		default:
-			return false
-		}
-	}
-	return false // a cycle would make the controller loop forever
 }
 
 // fail records a write failure: a partly written event would corrupt any

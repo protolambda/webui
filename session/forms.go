@@ -25,15 +25,22 @@ var errNoTokenSource = fmt.Errorf("%w: no session and no pre-auth", ErrCSRF)
 // application, not one taken from a request; the renderer escapes it and
 // the token like any attribute value. The token comes from
 // [Forms.PageToken] or [Forms.FragmentToken], [Session.CSRF] or
-// [PreAuth.Issue].
+// [PreAuth.Issue]; [PostFormFromContext] takes it from the render context
+// instead, so that views need no token parameter.
 func PostForm(action, token string, attrs ...attr.Node) elem.Scope {
+	return postForm(action, CSRFInput(token), attrs)
+}
+
+// postForm returns the scope of a POST form to action whose first child
+// is csrf.
+func postForm(action string, csrf elem.Node, attrs []attr.Node) elem.Scope {
 	all := make([]attr.Node, 0, 2+len(attrs))
 	all = append(all, htmlform.Method(htmlform.MethodPost), htmlform.Action(action))
 	all = append(all, attrs...)
 	scope := htmlform.Form(all...)
 	return func(children ...elem.Node) elem.Node {
 		nodes := make([]elem.Node, 0, 1+len(children))
-		nodes = append(nodes, CSRFInput(token))
+		nodes = append(nodes, csrf)
 		nodes = append(nodes, children...)
 		return scope(nodes...)
 	}
@@ -53,6 +60,12 @@ func PostForm(action, token string, attrs ...attr.Node) elem.Scope {
 //     token, and [Forms.Check] checks a token read some other way.
 //
 // Render the token with [PostForm] (or [CSRFInput] in a form of one's own).
+// Views with forms deep in their tree can leave the token to the render
+// context instead: the handler wraps what it renders with
+// [Forms.WithPageToken], [Forms.WithFragmentToken] or [Forms.WithToken],
+// the lazy forms of the three methods above, and the views render
+// [PostFormFromContext] (or [CSRFInputFromContext]), which take the token
+// when they render, and fail the render without one.
 // A visitor with a session must submit the session's token, and a visitor
 // without one the token of the pre-authentication cookie: a form rendered
 // before a login in another tab, or before a logout, is refused, and the

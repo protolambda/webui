@@ -88,9 +88,11 @@ func taskForm(token string) elem.Node {
 ```
 
 [`session.Forms`](./session/forms.go) supplies CSRF tokens and reads submissions within bounds, checking the token
-before the handler uses the values. `web.Choose` returns a fragment or a full page as appropriate, and
-`web.Redirect` handles navigation after a successful submission. See the [form examples](./session/forms_example_test.go)
-for the complete flow.
+before the handler uses the values. Views with forms deep in their tree need no token parameter: the handler wraps
+what it renders with `forms.WithPageToken` (`WithFragmentToken` for fragments, `WithToken` for event streams), and
+`session.PostFormFromContext` takes the token from the render context. `web.Choose` returns a fragment or a full
+page as appropriate, and `web.Redirect` handles navigation after a successful submission. See the
+[form examples](./session/forms_example_test.go) for the complete flow.
 
 For live views, [`sse`](./sse/doc.go) streams rendered fragments to htmx regions and handles update coalescing,
 keep-alives, and stream lifetimes. Session and login helpers live in [`session`](./session/doc.go); your application
@@ -105,7 +107,7 @@ supplies credential verification and access rules.
 | Forms, sessions, and CSRF | [`form`](./form), [`session`](./session) |
 | Handlers, middleware, and serving | [`web`](./web), [`mw`](./mw), [`server`](./server) |
 | Partial updates and live regions | [`hx2`](./hx2), [`sse`](./sse) |
-| Displaying untrusted names and identifiers | [`visible`](./visible) |
+| Displaying untrusted names, identifiers, and descriptions | [`visible`](./visible) |
 | Testing pages and request flows | [`webuitest`](./webuitest) |
 
 The package documentation covers contracts and configuration; executable `Example` tests show how the APIs fit
@@ -119,12 +121,17 @@ go doc github.com/protolambda/webui/sse Loop
 
 ## Test your application
 
-[`webuitest`](./webuitest/doc.go) provides handler-level clients and a test-server client with TLS and cookies.
+[`webuitest`](./webuitest/doc.go) provides handler-level clients and a test-server client with cookies, over TLS or plain http.
 It can submit the forms rendered by your pages, send htmx requests, read event streams, and check page structure,
 accessibility rules, CSP, and CSRF wiring.
 
 Start with the [application test](./example_test.go), then see the
 [testing examples](./webuitest/example_test.go) and [gallery tests](./internal/gallery/app/app_test.go).
+
+Checks in a real browser that fail on console messages need to allow the ones that webui causes by design: every
+4xx or 5xx answer logs the browser's "Failed to load resource" error, an error answer to an htmx request adds
+htmx's "Response Status Error Code", and dialogs add two Chromium messages. The "Browser console" section of
+`go doc github.com/protolambda/webui/web Errors` lists them.
 
 ## Browser support
 

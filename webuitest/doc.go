@@ -13,14 +13,18 @@
 // [Rules] bundles the document rules that every webui page satisfies: ct's
 // structure rules, the content security policy (no inline script or style,
 // no htmx scripting, safe and same-origin URLs, subresource integrity),
-// CSRF fields and token leaks, htmx targets and SSE wiring, the no-JS
-// dialog markup, and accessibility (icons hidden, controls named, no
-// nested controls, rectangular tables, safe external links). Each rule is
-// also available alone. A fragment is checked as htmx runs it, under the
-// htmx configuration of the page around it: webui's, the zero hx2.Config,
-// unless [WithHTMXConfig] names another. Rules are pure values: they never
-// call the test, and their messages name locations and attribute names,
-// never secret values.
+// CSRF fields and token leaks, htmx targets, preserved elements and SSE
+// wiring, the no-JS dialog markup, and accessibility (icons hidden,
+// controls named, no nested controls, rectangular tables, hidden text
+// that its scroller clips, safe external links). Each rule is also
+// available alone. A fragment is checked as htmx runs it, under the htmx
+// configuration of the page around it: webui's, the zero hx2.Config,
+// unless [WithHTMXConfig] names another. A subject with an html element is
+// a document, any other a fragment: parse fragment answers with
+// [cthttp.Result.HTMLFragment], as [Client.Fragment] and [Crawl] do, since
+// [cthttp.Result.HTML] parses a complete document and always adds one.
+// Rules are pure values: they never call the test, and their messages
+// name locations and attribute names, never secret values.
 //
 // [Shell] describes what every page of an application has in common: the
 // document head that webui's page.Document renders (charset, viewport,
@@ -41,6 +45,10 @@
 // Origin on state-changing ones, and options for htmx requests and for
 // the negative cases ([FetchSite], [NoFetchMetadata], [Host], ...). Bodies
 // are [Form], [Multipart] and [Parts]. [Serve] runs a handler on a request.
+// A [Client] and a [Browser] build their requests on [Client.Base] and
+// [BrowserOptions.Base] instead, for an application tested at another
+// site, such as a plain http loopback site; as a [SiteSender] each, they
+// report it to [Crawl] and [RejectsCrossSite].
 //
 // [Client] is the handler-level harness: it serves requests through a
 // handler, prepares them (for example to attach a session), adds the
@@ -51,19 +59,24 @@
 // ([HTMXData], [Client.SubmitHTMX]: method and URL of hx-post, hx-delete
 // and the others, hx-vals, hx-include, hx-params, and the HX-* headers). A
 // Client keeps no cookies: attach state to its requests (Prepare,
-// [SendCookie]). [Browser] is the same harness over a real test server
-// with TLS and a cookie jar, for full-stack tests and for flows that need
-// cookies, such as logins.
+// [SendCookie], or [SendCookies] with the cookies of an earlier response,
+// which [CookieValue] reads one by one). [Browser] is the same harness
+// over a real test server, with TLS for an https site and plain http for
+// an http one, and a cookie jar, for full-stack tests and for flows that
+// need cookies, such as logins.
 //
-// [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookies] and
-// [SecurityHeaders] assert responses; cookie values are never printed.
-// [StrictPolicy] and [PolicyFor] are the security headers of pages,
-// [AssetPolicy] and [AssetPolicyFor] those of asset files.
-// [CrossSiteProbes], [RejectsCrossSite], [OpenRedirectVectors] and
-// [Hostile] supply attack inputs. [Crawl] follows an application's links
-// and checks every page and target it finds, with a contract per page
-// when [CrawlOptions.ContractFor] is set. [Logs] captures log records,
-// and [Logs.NotLogged] checks that no secret reached them.
+// [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookie],
+// [NoCookies] and [SecurityHeaders] assert responses; cookie values are
+// never printed. [StrictPolicy] and [PolicyFor] are the security headers
+// of pages, [AssetPolicy] and [AssetPolicyFor] those of asset files.
+// [CrossSiteProbes], [CrossSiteProbesFor], [RejectsCrossSite],
+// [OpenRedirectVectors] and [Hostile] supply attack inputs. [Crawl]
+// follows an application's links and checks every page and target it
+// finds, with a contract per page when [CrawlOptions.ContractFor] is set,
+// and the security headers of pages and assets with
+// [CrawlOptions.PagePolicy] and [CrawlOptions.AssetPolicy].
+// [Logs] captures log records, and [Logs.NotLogged] checks that no secret
+// reached them.
 //
 // [AttrIs] and [HasClass] read ct nodes, for custom rules
 // ([ct.CustomRule]) next to [ct.Elements], [ct.Descendants] and

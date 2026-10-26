@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
@@ -120,6 +121,57 @@ func TestRequestOptions(gt *testing.T) {
 		req := webuitest.Get(t, "http://other.example:8080/a")
 		t.Must(be.Equal("other.example:8080", req.Host))
 		t.Must(be.True(req.TLS == nil))
+		// The default Origin is that of the site the request goes to, as
+		// browsers serialize it.
+		req = webuitest.Post(t, "http://127.0.0.1:8080/a", webuitest.Body{})
+		t.Must(be.Equal("127.0.0.1:8080", req.Host))
+		t.Must(be.Equal("http://127.0.0.1:8080", req.Header.Get("Origin")))
+		req = webuitest.Post(t, "HTTPS://Notes.Example.Test:443/a", webuitest.Body{})
+		t.Must(be.Equal("https://notes.example.test", req.Header.Get("Origin")))
+	})
+	t.Run("origin of the page", func(t devtest.T) {
+		req := webuitest.Post(t, "done", webuitest.Body{}, webuitest.PageURL("/tasks/7/"))
+		t.Must(be.Equal("/tasks/7/done", req.URL.Path))
+		t.Must(be.Equal(webuitest.BaseURL, req.Header.Get("Origin")))
+		req = webuitest.Post(t, "/tasks", webuitest.Body{}, webuitest.PageURL("http://localhost:8080/tasks"))
+		t.Must(be.Equal("localhost:8080", req.Host))
+		t.Must(be.Equal("http://localhost:8080", req.Header.Get("Origin")))
+		t.Must(be.Equal("same-origin", req.Header.Get("Sec-Fetch-Site")))
+		// A page of another origin that sends a request to the site: the
+		// page's origin, and the fetch metadata of the two origins.
+		req = webuitest.Post(t, webuitest.BaseURL+"/tasks", webuitest.Body{}, webuitest.PageURL("https://other.example.test/p"))
+		t.Must(be.Equal("app.example.test", req.Host))
+		t.Must(be.Equal("https://other.example.test", req.Header.Get("Origin")))
+		t.Must(be.Equal("same-site", req.Header.Get("Sec-Fetch-Site")))
+		for page, want := range map[string]string{
+			"/tasks":                          "same-origin",
+			"https://APP.example.test:443/p":  "same-origin",
+			"https://app.example.test:8443/p": "same-site",
+			"https://example.test/p":          "same-site",
+			"https://a.b.example.test/p":      "same-site",
+			"http://app.example.test/p":       "cross-site",
+			"https://evil.example/p":          "cross-site",
+			"https://example.com/p":           "cross-site",
+			"https://127.0.0.1/p":             "cross-site",
+		} {
+			req = webuitest.Get(t, webuitest.BaseURL+"/tasks", webuitest.PageURL(page))
+			t.Mustf(be.Equal(want, req.Header.Get("Sec-Fetch-Site")), "page %s", page)
+		}
+		for _, c := range []struct{ page, target, want string }{
+			{"http://127.0.0.1:8080/p", "http://127.0.0.1:9090/x", "same-site"},
+			{"http://127.0.0.1/p", "http://127.0.0.2/x", "cross-site"},
+			{"http://[::1]:8080/p", "http://[::1]:9090/x", "same-site"},
+			{"http://localhost:8080/p", "http://localhost:9090/x", "same-site"},
+			{"http://localhost/p", "http://app.localhost/x", "cross-site"},
+		} {
+			req = webuitest.Post(t, c.target, webuitest.Body{}, webuitest.PageURL(c.page))
+			t.Mustf(be.Equal(c.want, req.Header.Get("Sec-Fetch-Site")), "page %s, target %s", c.page, c.target)
+		}
+		// FetchSite overrides it; Origin changes only the Origin.
+		req = webuitest.Post(t, webuitest.BaseURL+"/tasks", webuitest.Body{}, webuitest.PageURL("https://evil.example/p"), webuitest.FetchSite("same-origin"))
+		t.Must(be.Equal("same-origin", req.Header.Get("Sec-Fetch-Site")))
+		req = webuitest.Post(t, "/tasks", webuitest.Body{}, webuitest.Origin(webuitest.ForeignOrigin))
+		t.Must(be.Equal("same-origin", req.Header.Get("Sec-Fetch-Site")))
 	})
 	t.Run("invalid", func(t devtest.T) {
 		r := newRecordT(t.Context())
@@ -129,6 +181,37 @@ func TestRequestOptions(gt *testing.T) {
 		r = newRecordT(t.Context())
 		t.Must(be.True(webuitest.Request(r, "BAD METHOD", "/", webuitest.Body{}) == nil))
 		t.Must(be.True(r.failed))
+	})
+}
+
+func TestSendCookies(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	res := webuitest.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "a", Value: "1", Path: "/", Secure: true, HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "b", Value: "2", Domain: "other.example.test"})
+		http.SetCookie(w, &http.Cookie{Name: "a", Value: "3"})
+		http.SetCookie(w, &http.Cookie{Name: "gone", Value: "x", MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: "expired", Value: "x", Expires: time.Unix(1, 0)})
+		http.SetCookie(w, &http.Cookie{Name: "kept", Value: "x", MaxAge: 60, Expires: time.Unix(1, 0)})
+		http.SetCookie(w, &http.Cookie{Name: "b", Value: "4", MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: "c", Value: "5"})
+	}), webuitest.Get(t, "/"))
+	req := webuitest.Get(t, "/", webuitest.SendCookie("x", "y"), webuitest.SendCookies(res))
+	t.Must(be.Equal("x=y; a=3; kept=x; c=5", req.Header.Get("Cookie")))
+
+	t.Run("failures", func(t devtest.T) {
+		const secret = "cookie-value-never-printed"
+		broken := webuitest.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Add("Set-Cookie", `s="`+secret+`"x`)
+		}), webuitest.Get(t, "/x"))
+		r := newRecordT(t.Context())
+		t.Must(be.True(webuitest.Get(r, "/", webuitest.SendCookies(broken)) == nil))
+		t.Must(be.True(r.failed))
+		t.Must(be.Substring(r.output(), "webuitest: cookies of GET /x: 1 Set-Cookie headers do not parse"))
+		t.Must(be.False(strings.Contains(r.output(), secret)))
+		r = newRecordT(t.Context())
+		t.Must(be.True(webuitest.Get(r, "/", webuitest.SendCookies(nil)) == nil))
+		t.Must(be.Substring(r.output(), "no response to take cookies from"))
 	})
 }
 

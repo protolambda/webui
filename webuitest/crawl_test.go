@@ -21,6 +21,7 @@ import (
 	"github.com/protolambda/mustbe/be"
 
 	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/session"
 	"github.com/protolambda/webui/sse"
 	"github.com/protolambda/webui/theme"
@@ -229,6 +230,41 @@ func TestCrawlContractFor(gt *testing.T) {
 	})
 }
 
+// TestCrawlSite crawls through senders with another base: the crawl
+// follows the absolute links of that site, and not those of BaseURL.
+func TestCrawlSite(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	mux := site(
+		text.A(text.Href(loopbackSite+"/tasks?from=home"))(text.Text("Tasks, absolute")),
+		text.A(text.Href("HTTP://127.0.0.1:8080/old"))(text.Text("Old, absolute")),
+		text.A(text.Href(webuitest.BaseURL+"/elsewhere"))(text.Text("Another site")),
+		text.A(text.Href("https://127.0.0.1:8080/tasks?from=tls"))(text.Text("Tasks, other scheme")),
+	)
+	var pages []string
+	opts := webuitest.CrawlOptions{
+		Routes: webuitest.MuxRoutes(mux),
+		ContractFor: func(u *url.URL) webuitest.Contract {
+			pages = append(pages, u.String())
+			return nil
+		},
+	}
+	report := webuitest.Crawl(t, &webuitest.Client{Handler: mux, Base: loopbackSite}, opts)
+	t.Must(report)
+	t.Must(be.DeepEqual([]string{"/", "/tasks", "/tasks?from=home"}, report.Pages))
+	t.Must(be.DeepEqual([]string{loopbackSite + "/", loopbackSite + "/tasks", loopbackSite + "/tasks?from=home"}, pages))
+
+	pages = nil
+	browser := webuitest.Crawl(t, webuitest.NewBrowser(t, mux, webuitest.BrowserOptions{Base: loopbackSite}), opts)
+	t.Must(browser)
+	t.Must(be.DeepEqual(report.Pages, browser.Pages))
+	t.Must(be.DeepEqual(report.Targets, browser.Targets))
+
+	r := newRecordT(t.Context())
+	err := webuitest.Crawl(r, &webuitest.Client{Handler: mux, Base: "localhost"}, opts).Check(t.Context())
+	t.Must(be.Substring(r.output(), "webuitest: the site of the sender: base URL \"localhost\""))
+	t.Must(be.ErrorContains(err, "the sender has no valid site"))
+}
+
 func TestCrawlRedirects(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Run("chain that mints new URLs", func(t devtest.T) {
@@ -254,6 +290,88 @@ func TestCrawlRedirects(gt *testing.T) {
 		err := report.Check(t.Context())
 		t.Must(be.ErrorContains(err, "GET /b (from /a): the redirects loop back to /a"))
 		t.Must(be.ErrorContains(err, "GET /self (from the start): the redirects loop back to /self"))
+	})
+	t.Run("off the site", func(t devtest.T) {
+		// A link that redirects to another site, a start page that does,
+		// and a scheme-relative one.
+		mux := site(text.A(text.Href("/out"))(text.Text("Out")), text.A(text.Href("/help"))(text.Text("Help")))
+		mux.HandleFunc("GET /out", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://other.example/tasks?from=app#top", http.StatusSeeOther)
+		})
+		mux.HandleFunc("GET /help", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "//docs.example/tasks", http.StatusFound)
+		})
+		mux.HandleFunc("GET /away", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://other.example/", http.StatusFound)
+		})
+		c := &webuitest.Client{Handler: mux}
+		report := webuitest.Crawl(t, c, webuitest.CrawlOptions{Start: []string{"/", "/away"}, Routes: webuitest.MuxRoutes(mux)})
+		t.Must(report)
+		var off []webuitest.Target
+		for _, tg := range report.Targets {
+			if tg.Kind == webuitest.TargetOffsiteRedirect {
+				off = append(off, tg)
+			}
+		}
+		t.Must(be.DeepEqual([]webuitest.Target{
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "https://other.example/", Page: "/away"},
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "https://other.example/tasks?from=app", Page: "/out"},
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "https://docs.example/tasks", Page: "/help"},
+		}, off))
+		t.Must(report.Uses(http.MethodGet, "https://other.example/tasks?from=app"))
+		t.Must(be.DeepEqual([]string{"/", "/tasks"}, report.Pages))
+		t.Must(be.Equal("offsite redirect", webuitest.TargetOffsiteRedirect.String()))
+
+		// Pages that must answer 200 themselves.
+		strict := webuitest.Crawl(t, c, webuitest.CrawlOptions{Start: []string{"/", "/away"}, NoRedirects: true})
+		t.Must(be.DeepEqual([]string{
+			"GET /away (from the start) redirects to https://other.example/ (302), want 200",
+			"GET /old (from /) redirects to /tasks (301), want 200",
+			"GET /out (from /) redirects to https://other.example/tasks?from=app (303), want 200",
+			"GET /help (from /) redirects to https://docs.example/tasks (302), want 200",
+		}, strict.Problems))
+		// The redirect on the site is still followed.
+		t.Must(strict.Covers("/tasks"))
+	})
+	t.Run("other scheme", func(t devtest.T) {
+		// The site's host over http is another origin than the https
+		// site: its links are not followed, and a redirect there leaves
+		// the site.
+		mux := site(text.A(text.Href("http://app.example.test/tasks?plain"))(text.Text("Plain")))
+		mux.HandleFunc("GET /plain", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "http://app.example.test/tasks", http.StatusFound)
+		})
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{Start: []string{"/", "/plain", "http://app.example.test/"}})
+		t.Must(be.DeepEqual([]string{`start page "http://app.example.test/" is not a path of the site`}, report.Problems))
+		t.Must(be.DeepEqual([]string{"/", "/tasks"}, report.Pages))
+		var off []webuitest.Target
+		for _, tg := range report.Targets {
+			if tg.Kind == webuitest.TargetOffsiteRedirect {
+				off = append(off, tg)
+			}
+		}
+		t.Must(be.DeepEqual([]webuitest.Target{
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "http://app.example.test/tasks", Page: "/plain"},
+		}, off))
+	})
+	t.Run("no usable location", func(t devtest.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /none", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusFound) })
+		mux.HandleFunc("GET /blank", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", " ")
+			w.WriteHeader(http.StatusSeeOther)
+		})
+		mux.HandleFunc("GET /bad", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "http://%zz/")
+			w.WriteHeader(http.StatusFound)
+		})
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{Start: []string{"/none", "/blank", "/bad"}})
+		t.Must(be.DeepEqual([]string{
+			"GET /none (from the start) answered 302 without a Location",
+			"GET /blank (from the start) answered 303 without a Location",
+			"GET /bad (from the start) answered 302 with a Location that does not parse",
+		}, report.Problems))
+		t.Must(be.Empty(report.Targets))
 	})
 	t.Run("short chains are followed", func(t devtest.T) {
 		mux := site()
@@ -282,7 +400,96 @@ func TestCrawlAssets(gt *testing.T) {
 	err := report.Check(t.Context())
 	t.Must(be.ErrorContains(err, "asset "+css+" (on /): no X-Content-Type-Options: nosniff; the served bytes do not match the integrity value of the page"))
 	t.Must(be.Len(report.Problems, 1))
+	// A policy checks nosniff in its place, with the other headers.
+	policy := webuitest.Policy{Headers: mw.Headers{CacheControl: "no-cache"}}
+	report = webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{AssetPolicy: func(u *url.URL) *webuitest.Policy {
+		if u.Path != css {
+			return nil
+		}
+		return &policy
+	}})
+	t.Must(be.Len(report.Problems, 1))
+	t.Must(be.Substring(report.Problems[0], "asset "+css+" (on /): has no Content-Security-Policy; "))
+	t.Must(be.Substring(report.Problems[0], `has no X-Content-Type-Options, want "nosniff"; `))
+	t.Must(be.Substring(report.Problems[0], `has no Cache-Control, want "no-cache"; `))
+	t.Must(be.False(strings.Contains(report.Problems[0], "no X-Content-Type-Options: nosniff")))
 }
+
+// TestCrawlPolicies checks the security headers of pages and assets, and
+// that assets set no cookies.
+func TestCrawlPolicies(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	mux := site()
+	mux.HandleFunc("GET /cached", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		render(w, r, http.StatusOK, validDoc().node())
+	})
+	page, asset := webuitest.StrictPolicy(), webuitest.AssetPolicy()
+	everyPage := func(*url.URL) *webuitest.Policy { return &page }
+	everyAsset := func(*url.URL) *webuitest.Policy { return &asset }
+	secured := mw.SecurityHeaders(mw.Headers{})(mux)
+	start := []string{"/", "/cached"}
+
+	report := webuitest.Crawl(t, &webuitest.Client{Handler: secured}, webuitest.CrawlOptions{
+		Start: start, PagePolicy: everyPage, AssetPolicy: everyAsset, NoAssetCookies: true,
+	})
+	t.Must(be.DeepEqual([]string{
+		`security headers of /cached: has Cache-Control "public, max-age=60", want "no-store"`,
+	}, report.Problems))
+	// Without the middleware, every page, redirect and asset lacks them.
+	var urls []string
+	report = webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{
+		PagePolicy: func(u *url.URL) *webuitest.Policy {
+			urls = append(urls, u.String())
+			defer func() { u.Path = "/changed" }()
+			return &page
+		},
+		AssetPolicy: everyAsset,
+	})
+	t.Must(be.DeepEqual([]string{webuitest.BaseURL + "/", webuitest.BaseURL + "/tasks", webuitest.BaseURL + "/old"}, urls))
+	err := report.Check(t.Context())
+	for _, want := range []string{
+		"security headers of /: has no Content-Security-Policy; has no X-Frame-Options",
+		"security headers of /tasks: ",
+		"security headers of /old: ",
+		"asset /assets/webui/",
+		`has no X-Content-Type-Options, want "nosniff"`,
+	} {
+		t.Must(be.ErrorContains(err, want))
+	}
+	t.Must(be.Len(report.Problems, 3+5))
+	// A nil policy checks no headers; the assets (whose set sends nosniff
+	// itself) are fetched and pass their own checks.
+	var assets atomic.Int32
+	report = webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{
+		PagePolicy: func(*url.URL) *webuitest.Policy { return nil },
+		AssetPolicy: func(*url.URL) *webuitest.Policy {
+			assets.Add(1)
+			return nil
+		},
+	})
+	t.Must(report)
+	t.Must(be.Equal(int32(5), assets.Load()))
+
+	t.Run("asset cookies", func(t devtest.T) {
+		visits := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.SetCookie(w, &http.Cookie{Name: "visit", Value: "never-printed"})
+			secured.ServeHTTP(w, r)
+		})
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: visits}, webuitest.CrawlOptions{NoAssetCookies: true})
+		t.Must(be.Len(report.Problems, 5))
+		t.Must(be.Substring(report.Problems[0], `asset /assets/webui/`))
+		t.Must(be.Substring(report.Problems[0], `sets 1 cookies: "visit"`))
+		t.Must(be.False(strings.Contains(report.Check(t.Context()).Error(), "never-printed")))
+		// Pages may set cookies, and assets too without NoAssetCookies.
+		t.Must(webuitest.Crawl(t, &webuitest.Client{Handler: visits}, webuitest.CrawlOptions{Assets: true}))
+	})
+}
+
+// routerFunc is the mw.Router of a function.
+type routerFunc func(r *http.Request) (http.Handler, string)
+
+func (f routerFunc) Handler(r *http.Request) (http.Handler, string) { return f(r) }
 
 func TestMuxRoutes(gt *testing.T) {
 	t := devtest.ParallelT(gt)
@@ -304,6 +511,28 @@ func TestMuxRoutes(gt *testing.T) {
 	only := http.NewServeMux()
 	only.HandleFunc("GET /a", func(http.ResponseWriter, *http.Request) {})
 	t.Must(be.False(webuitest.MuxRoutes(only)(http.MethodPost, "/a")))
+
+	// A mux that an outer mux serves at its catch-all: the outer mux
+	// routes all of its requests to "/", Mounted to the mux's patterns.
+	outer := http.NewServeMux()
+	outer.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	outer.Handle("/", mux)
+	t.Must(be.False(webuitest.MuxRoutes(outer)(http.MethodGet, "/tasks/7")))
+	mounted := webuitest.MuxRoutes(mw.Mounted(outer, "/", mux))
+	t.Must(be.True(mounted(http.MethodGet, "/tasks/7")))
+	t.Must(be.True(mounted(http.MethodGet, "/healthz")))
+	t.Must(be.True(mounted(http.MethodGet, "/")))
+	t.Must(be.False(mounted(http.MethodGet, "/notes")))
+	t.Must(be.False(mounted(http.MethodGet, "/elsewhere")))
+	// Any router: here one that sends posts to another mux.
+	byMethod := routerFunc(func(r *http.Request) (http.Handler, string) {
+		if r.Method == http.MethodPost {
+			return only.Handler(r)
+		}
+		return mux.Handler(r)
+	})
+	t.Must(be.True(webuitest.MuxRoutes(byMethod)(http.MethodGet, "/tasks/7")))
+	t.Must(be.False(webuitest.MuxRoutes(byMethod)(http.MethodPost, "/tasks")))
 	t.Must(be.Equal("redirect", webuitest.TargetRedirect.String()))
 	t.Must(be.Equal("TargetKind(99)", webuitest.TargetKind(99).String()))
 }

@@ -70,7 +70,11 @@
 // and titles that other users chose with
 // [github.com/protolambda/webui/visible.Text], and identifiers with
 // [github.com/protolambda/webui/visible.Code]: they escape such characters
-// and mark the result. Look-alike letters, such as a Cyrillic letter in a
+// and mark the result. Where only text fits, such as the Label of a
+// [SelectOption] or an aria-label, use
+// [github.com/protolambda/webui/visible.TextString] and
+// [github.com/protolambda/webui/visible.CodeString], which keep the marker
+// as a word. Look-alike letters, such as a Cyrillic letter in a
 // Latin name, are visible letters that neither escapes; telling such names
 // apart is an application policy (see the visible package).
 //
@@ -109,6 +113,14 @@
 // hx-post and no method falls back to a GET of the page's URL, with the
 // fields, the CSRF token too, in the query string. The htmx form example of
 // [BtnPrimary] shows the whole form.
+//
+// [Field], [Textarea] and [Select] sit in a div.mb-3, a block with a bottom
+// margin, as fields stacked in a form do. In a row of controls, such as a
+// filter bar or the cells of a table, give them another class with
+// WrapperClass, such as "col-auto" or "mb-0" (see the row example of
+// [Field]): a margin class in Wrapper cannot undo mb-3. With Plaintext,
+// [Field] and [Textarea] show, as read-only text with its label, a value
+// the form does not let the user change.
 //
 // # Components
 //

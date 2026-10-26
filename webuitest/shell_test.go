@@ -3,6 +3,8 @@ package webuitest_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +20,7 @@ import (
 	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/text"
 	"github.com/protolambda/devtest"
+	"github.com/protolambda/mustbe/assertion"
 	"github.com/protolambda/mustbe/be"
 
 	"github.com/protolambda/webui/asset"
@@ -330,6 +333,66 @@ func TestDefaultShell(gt *testing.T) {
 		err = webuitest.ShellContract(ct.View(extra), s).Check(t.Context())
 		t.Must(be.ErrorContains(err, "is not part of the shell"))
 	})
+}
+
+// TestDefaultShellHint checks that a failure of the default contract of a
+// Client or a Crawl names the likely cause when the page loads other
+// assets than the default shell: a Shell for the application's sets.
+func TestDefaultShellHint(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	set := theme.MustAssets(theme.Options{WithoutIcons: true})
+	mux := http.NewServeMux()
+	mux.Handle(set.Pattern(), set)
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		render(w, r, http.StatusOK, validDoc(set).with(func(d *docSpec) {
+			d.body = []elem.Node{section.Main()(text.A(text.Href("/about"))(text.Text("About")))}
+		}).node())
+	})
+	mux.HandleFunc("GET /about", func(w http.ResponseWriter, r *http.Request) {
+		render(w, r, http.StatusOK, validDoc(set).node())
+	})
+	mux.HandleFunc("GET /quirks", func(w http.ResponseWriter, r *http.Request) {
+		// The default theme set, without a doctype.
+		render(w, r, http.StatusOK, validDoc().with(func(d *docSpec) { d.doctype = false }).node())
+	})
+	const clientHint = "the page loads other stylesheets or scripts than DefaultShell(), the shell of the default theme set, " +
+		"whose URLs differ for any other theme.Options or asset sets; for the application's sets, set " +
+		"Client.Shell = new(webuitest.DefaultShell(sets...))"
+
+	c := &webuitest.Client{Handler: mux}
+	r := newRecordT(t.Context())
+	c.Page(r, c.Get(t, "/"), http.StatusOK)
+	t.Must(be.Substring(r.output(), "shell(): stylesheet 1 at"))
+	t.Must(be.Suffix(r.output(), "\n  "+clientHint))
+	// A page with the default assets fails without the hint, and so does
+	// a page of a client with a Shell.
+	r = newRecordT(t.Context())
+	c.Page(r, c.Get(t, "/quirks"), http.StatusOK)
+	t.Must(be.Substring(r.output(), "document has no <!DOCTYPE html>"))
+	t.Must(be.False(strings.Contains(r.output(), "DefaultShell()")))
+	shell := webuitest.DefaultShell(theme.MustAssets(theme.Options{WithoutSSE: true}))
+	r = newRecordT(t.Context())
+	(&webuitest.Client{Handler: mux, Shell: &shell}).Page(r, c.Get(t, "/"), http.StatusOK)
+	t.Must(be.True(r.failed))
+	t.Must(be.False(strings.Contains(r.output(), "DefaultShell()")))
+
+	// A crawl gives the hint once, with its own option.
+	report := webuitest.Crawl(t, c, webuitest.CrawlOptions{})
+	t.Must(be.Len(report.Problems, 2))
+	t.Must(be.Suffix(report.Problems[0], "\n  "+strings.Replace(clientHint, "Client.Shell", "CrawlOptions.Shell", 1)))
+	t.Must(be.False(strings.Contains(report.Problems[1], "DefaultShell()")))
+	// Not with a Shell, a Contract or a contract of ContractFor.
+	defaultContract := func(p *ct.Subject) assertion.Assertion { return webuitest.PageContract(p, webuitest.DefaultShell()) }
+	for _, o := range []webuitest.CrawlOptions{
+		{Shell: &shell},
+		{Contract: defaultContract},
+		{ContractFor: func(*url.URL) webuitest.Contract { return defaultContract }},
+	} {
+		report := webuitest.Crawl(t, c, o)
+		t.Must(be.Len(report.Problems, 2))
+		t.Must(be.False(strings.Contains(strings.Join(report.Problems, "\n"), "DefaultShell()")))
+	}
+	t.Must(webuitest.Crawl(t, c, webuitest.CrawlOptions{Shell: new(webuitest.DefaultShell(set))}))
 }
 
 func TestPageContract(gt *testing.T) {

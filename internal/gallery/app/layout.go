@@ -151,6 +151,8 @@ func (a *App) navbarEnd(r *http.Request) []elem.Node {
 	acc, _ := s.Data()
 	return []elem.Node{
 		text.Span(attr.Class("navbar-text small"))(text.Text("Signed in as "), text.Strong()(visible.Text(acc.Name))),
+		// The session's own token, not the render context's: error pages
+		// render the navbar too, outside every token node.
 		session.PostForm("/logout", s.CSRF())(
 			bs.BtnOutlineSecondary(button.Type(button.TypeSubmit), ba.BtnSM())(bi.BoxArrowRight, text.Text(" Log out")),
 		),
@@ -196,18 +198,15 @@ func errText(msg string) elem.Node {
 }
 
 // choosePage answers r like web.Choose, with a fragment that holds no
-// form, or the page that full renders for a form token. It asks for the
-// token only for the page, so that a fragment, such as the answer to a
-// poll, never sets a pre-authentication cookie.
-func (a *App) choosePage(w http.ResponseWriter, r *http.Request, fragment elem.Node, full func(token string) elem.Node) error {
+// form, or the page that full builds, whose forms take the page's token
+// (session.Forms.WithPageToken). It builds the page only for the requests
+// it answers, so that a fragment, such as the answer to a poll, neither
+// builds it nor sets a pre-authentication cookie.
+func (a *App) choosePage(w http.ResponseWriter, r *http.Request, fragment elem.Node, full func() elem.Node) error {
 	if web.WantsFragment(r) {
 		return web.Choose(w, r, http.StatusOK, fragment, nil)
 	}
-	token, err := a.forms.PageToken(w, r)
-	if err != nil {
-		return err
-	}
-	return web.Choose(w, r, http.StatusOK, fragment, full(token))
+	return web.Choose(w, r, http.StatusOK, fragment, a.forms.WithPageToken(w, r, full()))
 }
 
 // capitalize returns s with an upper-case first ASCII letter.

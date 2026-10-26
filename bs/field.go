@@ -69,6 +69,19 @@ type Field struct {
 	Disabled     bool
 	ReadOnly     bool
 
+	// Plaintext shows the value as text, for a value that the form shows
+	// but does not let the user change: the input gets Bootstrap's
+	// form-control-plaintext class instead of form-control (no border and
+	// no background), and is read-only whether or not ReadOnly is set. It
+	// keeps its label and stays focusable. With a Name, it is submitted as
+	// any read-only input is, so the server must not trust the value that
+	// comes back: leave Name empty for a value that is only shown. Only the
+	// text-like types other than password, and the date and time types, can
+	// be plaintext: another Type, or Before or After (an input group, in
+	// which the plaintext input would take a line of its own), fails with
+	// [ErrInvalidOption].
+	Plaintext bool
+
 	Help  elem.Node // help text (div.form-text#ID-help); nil leaves it out
 	Error elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
 
@@ -80,9 +93,18 @@ type Field struct {
 	// replace the aria-invalid default, but must not set an attribute that
 	// a field above renders (such as id, name, type or value).
 	Attrs attr.Node
-	// Wrapper holds additional attributes of the wrapping div.mb-3, e.g. a
-	// grid column class.
+	// Wrapper holds additional attributes of the wrapping div. Its classes
+	// add to the wrapper's class; a grid column class, or another class
+	// that takes the place of mb-3, goes in WrapperClass instead.
 	Wrapper attr.Node
+	// WrapperClass, when not empty, replaces the wrapper's class, mb-3 (a
+	// bottom margin), for a field in a row of controls: "col-auto" in a
+	// grid row, "mb-0" or "flex-grow-1" in a filter bar with
+	// align-items-end. A margin class in Wrapper cannot undo mb-3:
+	// Bootstrap's spacing classes are all !important, and its stylesheet
+	// has mb-0 to mb-5 and then mb-auto in that order, so mb-3 comes after
+	// mb-0, mb-1 and mb-2.
+	WrapperClass string
 }
 
 // fieldClass returns the control class of an input type, and false for a
@@ -101,10 +123,22 @@ func fieldClass(t input.InputType) (string, bool) {
 	return "", false
 }
 
+// plaintextType reports whether an input of type t can show its value as
+// plain text (see Field.Plaintext): a text-like type other than password,
+// or a date or time type.
+func plaintextType(t input.InputType) bool {
+	switch t {
+	case input.Text, input.Email, input.Number, input.Tel, input.URL, input.Search,
+		input.Date, input.Time, input.DatetimeLocal, input.Month, input.Week:
+		return true
+	}
+	return false
+}
+
 // Eval builds the field. It fails with [ErrInvalidID] for an invalid ID,
 // with [ErrNoName] without a label, and with [ErrInvalidOption] for an
-// unsupported Type or InputMode, or a password field with a value (in
-// Value or in Attrs).
+// unsupported Type or InputMode, a password field with a value (in Value
+// or in Attrs), or Plaintext with another type or in an input group.
 func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	const component = "bs.Field"
 	if err := checkID(component, f.ID); err != nil {
@@ -123,6 +157,15 @@ func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 	if !f.InputMode.Valid() {
 		return elem.Obj{}, fmt.Errorf("%s: %w: unknown input mode", component, ErrInvalidOption)
+	}
+	if f.Plaintext {
+		if !plaintextType(typ) {
+			return elem.Obj{}, fmt.Errorf("%s: %w: plaintext needs a text-like, date or time type", component, ErrInvalidOption)
+		}
+		if len(f.Before) > 0 || len(f.After) > 0 {
+			return elem.Obj{}, fmt.Errorf("%s: %w: a plaintext field cannot be in an input group", component, ErrInvalidOption)
+		}
+		class = "form-control-plaintext"
 	}
 	c, err := newControl(ctx, component, f.ID, f.Label, f.Help, f.Error, f.Attrs)
 	if err != nil {
@@ -154,7 +197,7 @@ func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	if f.InputMode != "" {
 		own = append(own, attr.Name("inputmode").Raw(string(f.InputMode)))
 	}
-	own = appendStates(own, f.Required, f.Disabled, f.ReadOnly)
+	own = appendStates(own, f.Required, f.Disabled, f.ReadOnly || f.Plaintext)
 	own = append(own, c.aria()...)
 	control := input.Input(compose(c.user, own...))
 
@@ -175,7 +218,7 @@ func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 		children = append(children, c.feedback()...)
 	}
 	children = append(children, c.helpText()...)
-	return wrapper(rawClass("mb-3"), f.Wrapper)(children...).Eval(ctx)
+	return wrapper(wrapperClass(f.WrapperClass), f.Wrapper)(children...).Eval(ctx)
 }
 
 // Textarea is a labelled multi-line text field, with help text and a
@@ -194,10 +237,12 @@ type Textarea struct {
 	Required     bool
 	Disabled     bool
 	ReadOnly     bool
+	Plaintext    bool      // form-control-plaintext instead of form-control, and read-only; see Field.Plaintext
 	Help         elem.Node // help text (div.form-text#ID-help); nil leaves it out
 	Error        elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
 	Attrs        attr.Node // additional attributes of the textarea; see Field.Attrs
-	Wrapper      attr.Node // additional attributes of the wrapping div.mb-3
+	Wrapper      attr.Node // additional attributes of the wrapping div; classes add to its class
+	WrapperClass string    // replaces the wrapper's class, mb-3, when not empty; see Field.WrapperClass
 }
 
 // Eval builds the textarea field. It fails with [ErrInvalidID] for an
@@ -216,7 +261,11 @@ func (t Textarea) Eval(ctx context.Context) (elem.Obj, error) {
 		return elem.Obj{}, err
 	}
 
-	own := []attr.Node{c.class("form-control"), attr.ID(t.ID)}
+	class := "form-control"
+	if t.Plaintext {
+		class = "form-control-plaintext"
+	}
+	own := []attr.Node{c.class(class), attr.ID(t.ID)}
 	if t.Name != "" {
 		own = append(own, textarea.Name(t.Name))
 	}
@@ -229,7 +278,7 @@ func (t Textarea) Eval(ctx context.Context) (elem.Obj, error) {
 	if t.Autocomplete != "" {
 		own = append(own, textarea.Autocomplete(t.Autocomplete))
 	}
-	own = appendStates(own, t.Required, t.Disabled, t.ReadOnly)
+	own = appendStates(own, t.Required, t.Disabled, t.ReadOnly || t.Plaintext)
 	own = append(own, c.aria()...)
 
 	var content []elem.Node
@@ -242,7 +291,7 @@ func (t Textarea) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 	children = append(children, c.feedback()...)
 	children = append(children, c.helpText()...)
-	return wrapper(rawClass("mb-3"), t.Wrapper)(children...).Eval(ctx)
+	return wrapper(wrapperClass(t.WrapperClass), t.Wrapper)(children...).Eval(ctx)
 }
 
 // SelectOption is an option of a [Select]. The value attribute is always
@@ -258,18 +307,19 @@ type SelectOption struct {
 // Select is a labelled select box, with help text and a server-side
 // validation error wired like those of a [Field].
 type Select struct {
-	ID          string         // the select's id: a token, see ValidID
-	Name        string         // form field name; empty renders no name
-	Label       elem.Node      // label content; without it, Attrs must give an aria-label
-	LabelHidden bool           // visually hidden label
-	Options     []SelectOption // the options, in order
-	Multiple    bool           // allow several selected options
-	Required    bool
-	Disabled    bool
-	Help        elem.Node // help text (div.form-text#ID-help); nil leaves it out
-	Error       elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
-	Attrs       attr.Node // additional attributes of the select; see Field.Attrs
-	Wrapper     attr.Node // additional attributes of the wrapping div.mb-3
+	ID           string         // the select's id: a token, see ValidID
+	Name         string         // form field name; empty renders no name
+	Label        elem.Node      // label content; without it, Attrs must give an aria-label
+	LabelHidden  bool           // visually hidden label
+	Options      []SelectOption // the options, in order
+	Multiple     bool           // allow several selected options
+	Required     bool
+	Disabled     bool
+	Help         elem.Node // help text (div.form-text#ID-help); nil leaves it out
+	Error        elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
+	Attrs        attr.Node // additional attributes of the select; see Field.Attrs
+	Wrapper      attr.Node // additional attributes of the wrapping div; classes add to its class
+	WrapperClass string    // replaces the wrapper's class, mb-3, when not empty; see Field.WrapperClass
 }
 
 // Eval builds the select field. It fails with [ErrInvalidID] for an
@@ -323,7 +373,7 @@ func (s Select) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 	children = append(children, c.feedback()...)
 	children = append(children, c.helpText()...)
-	return wrapper(rawClass("mb-3"), s.Wrapper)(children...).Eval(ctx)
+	return wrapper(wrapperClass(s.WrapperClass), s.Wrapper)(children...).Eval(ctx)
 }
 
 // Checkbox is a labelled checkbox (or switch), with help text and a
@@ -586,6 +636,15 @@ func appendStates(own []attr.Node, required, disabled, readOnly bool) []attr.Nod
 		own = append(own, attr.Name("readonly").Bool())
 	}
 	return own
+}
+
+// wrapperClass returns the class of the wrapper of a [Field], [Textarea] or
+// [Select]: the caller's class, escaped, or mb-3 when it is empty.
+func wrapperClass(class string) attr.Node {
+	if class == "" {
+		return rawClass("mb-3")
+	}
+	return attr.Class(class)
 }
 
 // wrapper returns a div with the class and the caller's wrapper attributes.

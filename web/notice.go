@@ -24,12 +24,21 @@ type Notice struct {
 	// never contains request data.
 	Message string
 	// Variant is the color of the notice. Empty means bs.VariantSuccess.
+	// It changes the color only: a notice of every variant is a polite
+	// status (see [Notice.Alert]).
 	Variant bs.Variant
 }
 
 // Alert renders the notice as an alert ([page.Notice]): with role="status"
 // in the page it comes with, and without a role inside page.AlertsOOB or
 // page.AlertsContent, whose live region announces it.
+//
+// The role is the same for every Variant, bs.VariantDanger included: a
+// status, which screen readers announce politely, without interrupting,
+// and generally not at all when it comes with the page as it loads. For
+// an action that was refused, which the user must not miss, render the
+// message as an error alert (page.ErrorAlert, role="alert") instead; see
+// [Notices].
 func (n Notice) Alert() elem.Node {
 	return page.Notice(n.Variant, text.Text(n.Message))
 }
@@ -43,6 +52,18 @@ func (n Notice) Alert() elem.Node {
 // ever shown: a crafted link cannot put its own text on the page, and an
 // unknown code shows nothing. The notice survives a reload, and needs no
 // session state.
+//
+// A notice reports an outcome politely: [Notice.Alert] renders a status
+// (role="status") whatever its Variant, so a danger notice does not
+// interrupt, and is generally not announced as the page with it loads. An
+// action that was refused, such as one that the state of an item did not
+// allow, needs an error alert (page.ErrorAlert, role="alert") to be
+// announced. After a redirect, keep the codes of refusals in a registry of
+// their own, look the code of the request up with [Notices.Of] and render
+// its message with page.ErrorAlert (see the refusal example). Without a
+// redirect, answer the refused request with the page again, with
+// page.ErrorAlert among its alerts and a 4xx status, as a form with
+// problems is answered.
 //
 // Codes are 1 to [MaxNoticeCode] bytes of lower-case ASCII letters, digits,
 // '-' and '_'. Build the registry once, e.g. as a package variable; it is
@@ -82,6 +103,7 @@ func (n Notices) Of(r *http.Request) (Notice, bool) {
 
 // Alert renders the notice of the request ([Notices.Of]) as an alert, or
 // nothing when it has none: put it among the alerts of the page's layout.
+// The alert is a status for every Variant ([Notice.Alert]).
 func (n Notices) Alert(r *http.Request) elem.Node {
 	if notice, ok := n.Of(r); ok {
 		return notice.Alert()

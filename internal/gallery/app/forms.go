@@ -87,27 +87,24 @@ func plausibleEmail(v string) bool {
 }
 
 func (a *App) formsDemo(w http.ResponseWriter, r *http.Request) error {
-	token, err := a.forms.PageToken(w, r)
-	if err != nil {
-		return err
-	}
-	return web.Render(w, r, http.StatusOK, a.formsPage(r, token, taskInput{Visibility: "team"}, taskProblems{}))
+	return web.Render(w, r, http.StatusOK, a.forms.WithPageToken(w, r, a.formsPage(r, taskInput{Visibility: "team"}, taskProblems{})))
 }
 
-func (a *App) formsPage(r *http.Request, token string, in taskInput, p taskProblems) elem.Node {
+func (a *App) formsPage(r *http.Request, in taskInput, p taskProblems) elem.Node {
 	return a.page(r, view{
 		Title: "Forms",
 		Icon:  bi.UiChecks,
 		Main: elem.Bundle{
 			para("The server validates every field. A plain post answers a form with problems with the page again (status 422); with htmx the form swaps in place. A valid task redirects to this page with a notice (Post/Redirect/Get). Browser validation is off (novalidate), so that the server's messages show."),
-			bs.Row()(bs.ColLG(8)(taskForm(token, in, p))),
+			bs.Row()(bs.ColLG(8)(taskForm(in, p))),
 		},
 	})
 }
 
 // taskForm renders the task form with the values and problems of a
-// submission.
-func taskForm(token string, in taskInput, p taskProblems) elem.Node {
+// submission. It takes the token of the render context
+// (session.PostFormFromContext).
+func taskForm(in taskInput, p taskProblems) elem.Node {
 	var summary elem.Node
 	if n := p.count(); n > 0 {
 		msg := "The form has a problem. Check the highlighted field."
@@ -137,7 +134,7 @@ func taskForm(token string, in taskInput, p taskProblems) elem.Node {
 		})
 	}
 
-	return session.PostForm("/forms", token,
+	return session.PostFormFromContext("/forms",
 		attr.ID("task-form"), form.Novalidate(),
 		hx2.Post("/forms"), hx2.Target("this"), hx2.Swap(hx2.SwapOuterHTML),
 	)(
@@ -215,8 +212,8 @@ func (a *App) submitTask(w http.ResponseWriter, r *http.Request) error {
 		Notify:      f.String("notify") == "yes",
 	}.validate()
 	if problems.count() > 0 {
-		token := f.String(session.CSRFField)
-		return web.Choose(w, r, http.StatusUnprocessableEntity, taskForm(token, in, problems), a.formsPage(r, token, in, problems))
+		return web.Choose(w, r, http.StatusUnprocessableEntity,
+			a.forms.WithFragmentToken(w, r, taskForm(in, problems)), a.forms.WithPageToken(w, r, a.formsPage(r, in, problems)))
 	}
 	if _, err := a.tasks.add(task{Title: in.Title, Priority: priority(in.Priority), Labels: in.Labels}); err != nil {
 		return web.Conflict("The task list is full. Delete a task on the htmx page first.", err)

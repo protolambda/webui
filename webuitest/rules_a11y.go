@@ -2,6 +2,7 @@ package webuitest
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -289,6 +290,192 @@ func spanAttr(cell ct.Node, name string, def, max int) int {
 		return def
 	}
 	return min(n, max)
+}
+
+// ScrollersClipHiddenText requires that visually hidden text inside a
+// scroller stays inside it. Bootstrap positions .visually-hidden (other
+// than a caption) and an unfocused .visually-hidden-focusable
+// absolutely, so their containing block is the nearest positioned or
+// transformed ancestor: when that is outside the scroller, the scroller
+// does not clip the text, and on a narrow screen text at the far end of a
+// wide table widens the whole page, which only shows in a narrow browser.
+// Every element with one of these classes inside a scroller needs a
+// positioned or transformed element between them, or a positioned or
+// transformed scroller. The scrollers are the elements with the classes
+// table-responsive and table-responsive-sm to -xxl, overflow-auto,
+// overflow-scroll, overflow-hidden, and their -x- and -y- variants, and
+// those of Bootstrap 5.3.8 components that hide or scroll their overflow:
+// text-truncate, progress (but not as a child of progress-stacked),
+// progress-stacked, progress-bar, and navbar-nav-scroll (but not in
+// navbar-expand, which expands the navbar at every width);
+// overflow-visible classes that make both axes visible override them. The
+// elements between are:
+//
+//   - the classes position-relative, position-absolute, position-fixed
+//     and position-sticky;
+//   - also with position-static, the transformed classes
+//     translate-middle, translate-middle-x and translate-middle-y, and
+//     spinner-border and spinner-grow, which their animation transforms
+//     (bs.Spinner and bs.SpinnerGrow hold their label in them);
+//   - unless the class position-static overrides them, sticky-top,
+//     sticky-bottom, fixed-top and fixed-bottom, the classes of
+//     Bootstrap 5.3.8 components that position themselves wherever they
+//     are (dropdown, dropdown-center, dropend, dropstart, dropup,
+//     dropup-center, btn-group, btn-group-vertical, input-group,
+//     form-floating, navbar, card, card-img-overlay, alert,
+//     list-group-item, accordion-button, page-link, modal, modal-dialog,
+//     modal-content, modal-body, modal-backdrop, offcanvas-backdrop,
+//     carousel, carousel-inner, carousel-item, the carousel controls,
+//     indicators and caption, ratio, toast-container, btn-check,
+//     valid-tooltip and invalid-tooltip), sub and sup, which Bootstrap
+//     positions, and dialog elements and popovers, which browsers
+//     position;
+//   - another visually hidden element, which holds the text instead.
+//
+// bs.TableResponsive is positioned, and so is the wrapper that
+// bs.DataTable renders with it. Each scroller is reported once, with its
+// first escaping element. Template content is not rendered and is not
+// checked.
+func ScrollersClipHiddenText() ct.Rule {
+	return ct.CustomRule("scrollersClipHiddenText()", func(root ct.Node) []string {
+		var out []string
+		var order []ct.Node
+		escaped := make(map[ct.Node][]ct.Node) // scroller -> hidden elements
+		for e := range ct.Elements(root) {
+			if !visuallyHidden(e) || inside(e, "template") != nil {
+				continue
+			}
+			for p := e.Parent(); p != nil; p = p.Parent() {
+				if p.Kind() != ct.KindElement {
+					continue
+				}
+				if containing(p) {
+					break
+				}
+				if scroller(p) {
+					if escaped[p] == nil {
+						order = append(order, p)
+					}
+					escaped[p] = append(escaped[p], e)
+					break
+				}
+			}
+		}
+		for _, s := range order {
+			more := ""
+			if n := len(escaped[s]) - 1; n > 0 {
+				more = fmt.Sprintf(" (and %d more)", n)
+			}
+			out = append(out, fmt.Sprintf("%s at %s scrolls, but the visually hidden text at %s%s escapes it: Bootstrap positions that text absolutely, and neither the scroller nor an element between them is positioned or transformed (add position-relative to the scroller)", s.Tag(), loc(s), loc(escaped[s][0]), more))
+		}
+		return out
+	})
+}
+
+// visuallyHidden reports whether Bootstrap positions e absolutely to hide
+// it: it has the class visually-hidden or visually-hidden-focusable, and
+// is not a caption.
+func visuallyHidden(e ct.Node) bool {
+	return e.Tag() != "caption" && (HasClass(e, "visually-hidden") || HasClass(e, "visually-hidden-focusable"))
+}
+
+// positionedClasses are the classes of Bootstrap 5.3.8 that position an
+// element wherever it is, on narrow screens too; the position utilities
+// override them.
+var positionedClasses = map[string]bool{
+	"sticky-top": true, "sticky-bottom": true, "fixed-top": true, "fixed-bottom": true,
+	"dropdown": true, "dropdown-center": true, "dropend": true, "dropstart": true, "dropup": true, "dropup-center": true,
+	"btn-group": true, "btn-group-vertical": true, "input-group": true, "form-floating": true,
+	"navbar": true, "card": true, "card-img-overlay": true, "alert": true, "list-group-item": true,
+	"accordion-button": true, "page-link": true,
+	"modal": true, "modal-dialog": true, "modal-content": true, "modal-body": true, "modal-backdrop": true, "offcanvas-backdrop": true,
+	"carousel": true, "carousel-inner": true, "carousel-item": true, "carousel-control-next": true, "carousel-control-prev": true,
+	"carousel-indicators": true, "carousel-caption": true,
+	"ratio": true, "toast-container": true, "btn-check": true, "valid-tooltip": true, "invalid-tooltip": true,
+}
+
+// containing reports whether e is the containing block of its absolutely
+// positioned descendants, for [ScrollersClipHiddenText]: a positioned
+// element (its position is not static) or a transformed one.
+func containing(e ct.Node) bool {
+	if visuallyHidden(e) {
+		return true
+	}
+	class, _ := attrOf(e, "class")
+	static := false
+	byClass := false
+	for c := range strings.FieldsSeq(class) {
+		switch c {
+		case "position-relative", "position-absolute", "position-fixed", "position-sticky":
+			return true
+		case "translate-middle", "translate-middle-x", "translate-middle-y", "spinner-border", "spinner-grow":
+			// A transform, which position-static does not undo.
+			return true
+		case "position-static":
+			static = true
+		default:
+			byClass = byClass || positionedClasses[c]
+		}
+	}
+	if static {
+		return false
+	}
+	switch e.Tag() {
+	case "sub", "sup", "dialog":
+		return true
+	}
+	return byClass || hasAttr(e, "popover")
+}
+
+// scroller reports whether the classes of e make it clip its content, for
+// [ScrollersClipHiddenText]: an overflow other than visible on an axis.
+// The overflow utilities, which are !important, override the classes of
+// components, and among themselves the later ones in Bootstrap's
+// stylesheet win: overflow-x- and overflow-y- over overflow-, and auto,
+// hidden, visible, scroll in that order.
+func scroller(e ct.Node) bool {
+	class, ok := attrOf(e, "class")
+	if !ok || !strings.Contains(class, "overflow-") && !strings.Contains(class, "table-responsive") &&
+		!strings.Contains(class, "text-truncate") && !strings.Contains(class, "progress") && !strings.Contains(class, "navbar-nav-scroll") {
+		return false
+	}
+	var x, y string
+	classes := strings.Fields(class)
+	for _, c := range classes {
+		switch c {
+		case "table-responsive", "table-responsive-sm", "table-responsive-md", "table-responsive-lg", "table-responsive-xl", "table-responsive-xxl":
+			x = "auto"
+		case "text-truncate", "progress-stacked", "progress-bar":
+			x, y = "hidden", "hidden"
+		case "progress":
+			// .progress-stacked > .progress has a visible overflow.
+			if p := e.Parent(); p == nil || !HasClass(p, "progress-stacked") {
+				x, y = "hidden", "hidden"
+			}
+		case "navbar-nav-scroll":
+			// .navbar-expand .navbar-nav-scroll has a visible overflow; the
+			// breakpoint variants expand only wider screens.
+			if ct.Closest(e.Parent(), func(n ct.Node) bool { return HasClass(n, "navbar-expand") }) == nil {
+				y = "auto"
+			}
+		}
+	}
+	for _, prefix := range []string{"overflow-", "overflow-x-", "overflow-y-"} {
+		for _, v := range []string{"auto", "hidden", "visible", "scroll"} {
+			if !slices.Contains(classes, prefix+v) {
+				continue
+			}
+			switch prefix {
+			case "overflow-":
+				x, y = v, v
+			case "overflow-x-":
+				x = v
+			default:
+				y = v
+			}
+		}
+	}
+	return x != "" && x != "visible" || y != "" && y != "visible"
 }
 
 // ExternalLinksSafe requires rel="noopener" (or noreferrer, which implies

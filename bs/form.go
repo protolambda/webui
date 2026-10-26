@@ -9,8 +9,9 @@ import (
 )
 
 // FormGroup creates a form field wrapper: div.mb-3, a block with a bottom
-// margin (Bootstrap 5 has no .form-group class). [Field] and the other
-// field components render this wrapper themselves.
+// margin (Bootstrap 5 has no .form-group class). [Field], [Textarea] and
+// [Select] render this wrapper themselves, with another class when their
+// WrapperClass is set.
 func FormGroup(attrs ...attr.Node) elem.Scope {
 	return div.Div(attr.Cons(rawClass("mb-3"), attrs...))
 }

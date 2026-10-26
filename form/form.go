@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"slices"
+	"strings"
 )
 
 // Default limits, used for the zero fields of [Limits]. Note the units:
@@ -38,7 +39,8 @@ const maxBoundary = 70
 // Callers match them with [errors.Is] and must treat them as immutable.
 var (
 	// ErrMalformed reports a body that is not a well-formed form of its
-	// declared type, a field without a name, a multipart part whose name is
+	// declared type (such as a multipart body that ends before its closing
+	// delimiter), a field without a name, a multipart part whose name is
 	// ambiguous (two Content-Disposition headers, or both a name and an
 	// RFC 2231 name* parameter), or a body that could not be read to its
 	// end.
@@ -292,6 +294,11 @@ func (v *Values) Add(name string, value []byte) {
 // [URLEncoded], within limits (see [Limits] for the defaults of its zero
 // fields). The URL query string is ignored.
 //
+// A multipart body must end with its closing delimiter, and its boundary
+// must not contain a colon, which RFC 2046 allows but browsers never send:
+// with one, a body cut off after a delimiter line would read as complete.
+// Either fails with [ErrMalformed].
+//
 // A request whose declared Content-Length exceeds the body limit is refused
 // before its body is read. Otherwise the body is wrapped in
 // [http.MaxBytesReader] with w, which on an oversized body tells the server
@@ -357,7 +364,9 @@ func (rd *reader) read(w http.ResponseWriter, r *http.Request) (_ *Values, err e
 	switch mediaType {
 	case URLEncoded:
 	case Multipart:
-		if boundary == "" || len(boundary) > maxBoundary {
+		// A colon would make the closing delimiter a valid header line
+		// (see endReader).
+		if boundary == "" || len(boundary) > maxBoundary || strings.Contains(boundary, ":") {
 			return nil, fmt.Errorf("%w: bad multipart boundary", ErrMalformed)
 		}
 	default:
@@ -468,6 +477,10 @@ func (b *bodyReader) classify(err error) error {
 			return errBodyTooLarge(tooBig)
 		}
 		return fmt.Errorf("%w: %w", ErrMalformed, readError{b.err})
+	}
+	if errors.Is(err, errTruncated) {
+		// The multipart reader may have wrapped it in a text of its own.
+		return errTruncated
 	}
 	for _, sentinel := range []error{ErrMalformed, ErrTooLarge, ErrTooManyFields, ErrFile} {
 		if errors.Is(err, sentinel) {

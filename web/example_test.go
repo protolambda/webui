@@ -325,22 +325,56 @@ func ExampleErrors_dialog() {
 	// <div class="alert alert-danger">The item changed meanwhile. Reload the page and try again.</div>
 }
 
-// Applications map their own errors before the defaults.
+// A poll ends when its item is gone: the handler answers with
+// hx2.StatusStopPolling and the content that takes the polled content's
+// place, which htmx swaps in before it stops polling. A 404 would not stop
+// the poll: its alert would come again on every tick.
+func ExampleErrors_polling() {
+	states := map[string]string{"7": "Running"}
+	mux := http.NewServeMux()
+	mux.Handle("GET /tasks/{id}/state", web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		state, ok := states[r.PathValue("id")]
+		if !ok {
+			return web.Render(w, r, hx2.StatusStopPolling, text.P()(text.Text("This task was deleted.")))
+		}
+		return web.Render(w, r, http.StatusOK, text.P()(text.Text(state)))
+	}))
+	core.Dump(div.Div(hx2.Get("/tasks/7/state"), hx2.Trigger("every 2s"))(text.P()(text.Text("Running"))))
+	serve(mux, htmxRequest(http.MethodGet, "/tasks/7/state", "https://app.example/tasks/7"))
+	delete(states, "7") // deleted in another tab
+	serve(mux, htmxRequest(http.MethodGet, "/tasks/7/state", "https://app.example/tasks/7"))
+	// Output:
+	// <div hx-get="/tasks/7/state" hx-trigger="every 2s"><p>Running</p></div>
+	// 200
+	// <p>Running</p>
+	// 286
+	// <p>This task was deleted.</p>
+}
+
+// Applications map their own errors ahead of webui's defaults. An *Error
+// keeps the answer that its handler chose, whatever its cause.
 func ExampleErrors_classify() {
-	errStale := errors.New("stale revision")
+	errNotFound := errors.New("not found")
 	errs := web.Errors{Classify: func(err error) *web.Error {
-		if errors.Is(err, errStale) {
-			return web.Conflict("The task changed meanwhile. Reload it and try again.", err)
+		if errors.Is(err, errNotFound) {
+			return web.NotFound("There is no such task.", err)
 		}
 		return nil
 	}}
-	save := errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
-		return fmt.Errorf("save task 7: %w", errStale)
+	show := errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return fmt.Errorf("load task 7: %w", errNotFound)
 	})
-	serve(save, htmxRequest(http.MethodPost, "/tasks/7", "https://app.example/tasks/7"))
+	// The task is there, the project that it moves to is not.
+	move := errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Conflict("The project was deleted meanwhile.", fmt.Errorf("move task 7 to project 3: %w", errNotFound))
+	})
+	serve(show, htmxRequest(http.MethodGet, "/tasks/7", "https://app.example/tasks"))
+	serve(move, htmxRequest(http.MethodPost, "/tasks/7/project", "https://app.example/tasks/7"))
 	// Output:
+	// 404
+	// <div class="alert alert-danger">There is no such task.</div>
 	// 409
-	// <div class="alert alert-danger">The task changed meanwhile. Reload it and try again.</div>
+	// <div class="alert alert-danger">The project was deleted meanwhile.</div>
 }
 
 // Pages behind the guard send visitors without a session to the login
@@ -405,6 +439,34 @@ func ExampleNotices() {
 	// <div id="alerts" aria-live="polite"><div class="alert alert-success" role="status">Task saved.</div></div>
 	// 200
 	// <div id="alerts" aria-live="polite"></div>
+}
+
+// A refusal after a redirect is an error alert (role="alert"), which the
+// page renders from a registry of refusals: a notice is a polite status
+// whatever its color, and may go unannounced as the page loads.
+func ExampleNotices_refusal() {
+	notices := web.Notices{"saved": {Message: "Task saved."}}
+	refusals := web.Notices{"locked": {Message: "The task is locked. Nothing was changed."}}
+	save := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refusals.Redirect(w, r, "/tasks", "locked")
+	})
+	list := web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		alerts := []elem.Node{notices.Alert(r)}
+		if n, ok := refusals.Of(r); ok {
+			alerts = append(alerts, page.ErrorAlert(text.Text(n.Message)))
+		}
+		return web.Render(w, r, http.StatusOK, page.AlertsRegion(alerts...))
+	})
+	serve(save, httptest.NewRequest(http.MethodPost, "/tasks/7", nil), "Location")
+	serve(list, httptest.NewRequest(http.MethodGet, "/tasks?notice=locked", nil))
+	serve(list, httptest.NewRequest(http.MethodGet, "/tasks?notice=saved", nil))
+	// Output:
+	// 303
+	// Location: /tasks?notice=locked
+	// 200
+	// <div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">The task is locked. Nothing was changed.</div></div>
+	// 200
+	// <div id="alerts" aria-live="polite"><div class="alert alert-success" role="status">Task saved.</div></div>
 }
 
 func ExampleWithParam() {

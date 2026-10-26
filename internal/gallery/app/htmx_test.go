@@ -182,11 +182,11 @@ func TestHTMXSwaps(gt *testing.T) {
 		t.Must(row.Count(1))
 		t.Must(row.Find(ct.Tag("code")).Matches(ct.Attr("dir", "ltr")))
 		t.Must(row.Find(ct.Class("badge")).Texts(visible.MarkerText))
-		t.Must(frag.Find(ct.Role("button", ct.Named(`Delete invoice\u202Efdp.exe`))).Count(1))
+		t.Must(frag.Find(ct.Role("button", ct.Named(`Delete escaped invoice\u202Efdp.exe`))).Count(1))
 		t.Must(be.False(strings.Contains(res.BodyString(), "\u202E")))
 		res = c.Get(t, "/htmx/search?q=invoice", webuitest.HTMX())
 		t.Must(c.Fragment(t, res, http.StatusOK, "div").Find(ct.Class("list-group-item")).Find(ct.Class("badge")).Texts(visible.MarkerText))
-		del := frag.Find(ct.Tag("form"), ct.HasDescendant(ct.Role("button", ct.Named(`Delete invoice\u202Efdp.exe`))))
+		del := frag.Find(ct.Tag("form"), ct.HasDescendant(ct.Role("button", ct.Named(`Delete escaped invoice\u202Efdp.exe`))))
 		t.Must(c.Submit(t, frag, del, nil, nil, webuitest.HTMX()).Status(http.StatusOK))
 	})
 

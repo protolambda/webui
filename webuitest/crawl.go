@@ -13,6 +13,8 @@ import (
 
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/mustbe/assertion"
+
+	"github.com/protolambda/webui/mw"
 )
 
 // ErrCrawl reports the problems that a [Crawl] found.
@@ -22,12 +24,22 @@ var ErrCrawl = errors.New("webuitest: crawl found problems")
 // method and path (with an optional query) to a handler of its own.
 type RouteChecker func(method, path string) bool
 
-// MuxRoutes returns the [RouteChecker] of mux: a request is routed when
-// the mux matches it to a pattern (on [BaseURL]'s host), the pattern is
-// not the catch-all "/" (unless the path is "/"), and the handler is not
-// a redirect that the mux generates (to add a trailing slash or clean the
-// path), which a page should not link to.
-func MuxRoutes(mux *http.ServeMux) RouteChecker {
+// MuxRoutes returns the [RouteChecker] of a mux, an [*http.ServeMux] or
+// another mw.Router: a request is routed when the router matches it to a
+// pattern (on [BaseURL]'s host), the pattern is not the catch-all "/"
+// (unless the path is "/"), and the handler is not a redirect that a mux
+// generates (to add a trailing slash or clean the path), which a page
+// should not link to.
+//
+// The host is BaseURL's also when the crawl runs on another site
+// ([Client.Base], [BrowserOptions.Base]): patterns with a host are matched
+// against BaseURL's host, not the site's, so the routes of a mux that
+// routes by host need a RouteChecker of their own there.
+//
+// For a mux that an outer mux serves at its catch-all "/", the outer mux
+// routes every request of it to "/": pass mw.Mounted(outer, "/", mux),
+// which resolves those requests with the inner mux.
+func MuxRoutes(mux mw.Router) RouteChecker {
 	redirect := reflect.TypeOf(http.RedirectHandler("/", http.StatusMovedPermanently))
 	return func(method, path string) bool {
 		u, err := url.Parse(path)
@@ -70,8 +82,13 @@ const (
 	TargetStream
 	// TargetAsset is a stylesheet, icon, preload, script or image.
 	TargetAsset
-	// TargetRedirect is the Location of a redirect.
+	// TargetRedirect is the Location of a redirect on the site, which the
+	// crawl follows.
 	TargetRedirect
+	// TargetOffsiteRedirect is the Location of a redirect that leaves the
+	// site for another one, which the crawl does not follow. Its URL is
+	// absolute.
+	TargetOffsiteRedirect
 )
 
 // String returns the lowercase name of the kind, such as "link", or
@@ -90,6 +107,8 @@ func (k TargetKind) String() string {
 		return "asset"
 	case TargetRedirect:
 		return "redirect"
+	case TargetOffsiteRedirect:
+		return "offsite redirect"
 	}
 	return fmt.Sprintf("TargetKind(%d)", uint8(k))
 }
@@ -98,7 +117,8 @@ func (k TargetKind) String() string {
 type Target struct {
 	Kind   TargetKind
 	Method string
-	// URL is the path and query of the target, without the fragment.
+	// URL is the path and query of the target, without the fragment; for
+	// a [TargetOffsiteRedirect], the absolute URL without the fragment.
 	URL string
 	// Page is the URL of the page with the target.
 	Page string
@@ -115,8 +135,11 @@ type CrawlOptions struct {
 	// Routes, when set, must route every target that the crawl finds.
 	Routes RouteChecker
 	// Shell is the page shell of the default contract, as for
-	// [Client.Shell]; nil means [DefaultShell](). The crawl does not read
-	// the Shell (or the Contract) of the Client that it sends through.
+	// [Client.Shell]; nil means [DefaultShell](), and then the problem of
+	// the first page that fails the default contract and loads other
+	// stylesheets or scripts than DefaultShell() ends with a line that
+	// suggests a Shell. The crawl does not read the Shell (or the
+	// Contract) of the Client that it sends through.
 	Shell *Shell
 	// Contract checks every crawled page; nil means [PageContract] with
 	// Shell and [Rules]().
@@ -124,9 +147,10 @@ type CrawlOptions struct {
 	// ContractFor, when set, picks the contract of each crawled page by
 	// the page's URL, for applications whose pages differ in what they
 	// load or allow, such as a page with an asset set of its own. A nil
-	// result means Contract. The URL is absolute on [BaseURL], with the
-	// path and query of the page (after redirects) and no fragment; each
-	// call gets a fresh copy, which ContractFor may keep or change.
+	// result means Contract. The URL is absolute on the site of the crawl
+	// (see [Crawl]), with the path and query of the page (after
+	// redirects) and no fragment; each call gets a fresh copy, which
+	// ContractFor may keep or change.
 	ContractFor func(u *url.URL) Contract
 	// Skip, when set, excludes targets by path (for example "/logout" or
 	// a prefix of downloads) from route checks and from crawling.
@@ -135,11 +159,35 @@ type CrawlOptions struct {
 	// crawl that reaches the bound reports it. Redirects do not count as
 	// pages: a chain of them is bounded by itself, see [Crawl].
 	MaxPages int
-	// Assets fetches every stylesheet, icon, preload and script once and
-	// checks that it is served with status 200, nosniff and the content
-	// type of its kind, and that its bytes match the integrity value of
-	// the page that loads it.
+	// NoRedirects reports every redirect of a crawled page as a problem,
+	// on the site or off it, a start page's too, for applications whose
+	// pages must answer 200 themselves. Redirects on the site are still
+	// followed, so that the crawl goes on.
+	NoRedirects bool
+	// PagePolicy, when set, picks the security headers ([SecurityHeaders])
+	// that each crawled page must carry by the page's URL (absolute on
+	// the site, a fresh copy for each call, as for ContractFor); a nil
+	// result checks no headers of that page. A redirect is checked with
+	// the policy of its own URL. For one policy of every page:
+	//
+	//	PagePolicy: func(*url.URL) *webuitest.Policy { return &policy },
+	PagePolicy func(u *url.URL) *Policy
+	// Assets fetches every stylesheet, icon, preload, script and image
+	// once and checks that it is served with status 200, nosniff and the
+	// content type of its kind, and that its bytes match the integrity
+	// value of the page that loads it.
 	Assets bool
+	// AssetPolicy, when set, picks the security headers that each asset
+	// must carry by its URL, as PagePolicy does for pages: usually
+	// [AssetPolicyFor](h) for the application's mw.Headers h, which
+	// expects the immutable Cache-Control of the files of an asset.Set,
+	// and nil for images that are no such files. Setting it fetches the
+	// assets as Assets does.
+	AssetPolicy func(u *url.URL) *Policy
+	// NoAssetCookies requires that no asset sets a cookie: a response of
+	// a file that every page loads should not change the browser's state.
+	// Setting it fetches the assets as Assets does.
+	NoAssetCookies bool
 	// Fragments fetches the target of every hx-get once as an htmx request
 	// ([HTMX]) and checks the fragment with FragmentContract (or
 	// [FragmentContract] with [Rules]()).
@@ -149,21 +197,22 @@ type CrawlOptions struct {
 	FragmentContract Contract
 	// FragmentContractFor, when set, picks the contract of each fragment
 	// of Fragments by the fragment's URL (the hx-get target, absolute on
-	// [BaseURL], a fresh copy for each call) as ContractFor does for
-	// pages. A nil result means FragmentContract.
+	// the site, a fresh copy for each call) as ContractFor does for pages.
+	// A nil result means FragmentContract.
 	FragmentContractFor func(u *url.URL) Contract
 }
 
 // pick returns the contract of a page key: the one that pickFor returns
-// for its URL, when pickFor is set and returns one, or def.
-func pick(key string, def Contract, pickFor func(u *url.URL) Contract) Contract {
+// for its URL on site, when pickFor is set and returns one, or def. It
+// reports whether it is def.
+func pick(site *url.URL, key string, def Contract, pickFor func(u *url.URL) Contract) (Contract, bool) {
 	if pickFor == nil {
-		return def
+		return def, true
 	}
-	if c := pickFor(mustResolve(key)); c != nil {
-		return c
+	if c := pickFor(resolve(site, key)); c != nil {
+		return c, false
 	}
-	return def
+	return def, true
 }
 
 // CrawlReport is the result of a [Crawl]: the pages crawled, the targets
@@ -248,11 +297,13 @@ type fragmentRef struct {
 }
 
 // assetRef is an asset with the integrity value of the first page that
-// loads it.
+// loads it, and what its response must carry.
 type assetRef struct {
-	kind      string // "stylesheet", "script", "icon" or "preload"
+	kind      string // "stylesheet", "script", "icon", "preload" or "image"
 	integrity string
 	page      string
+	policy    *Policy
+	noCookies bool
 }
 
 // Crawl follows the links of an application from the start pages, with
@@ -261,22 +312,35 @@ type assetRef struct {
 // instead of stopping at the first:
 //
 //   - every page answers 200 with HTML that satisfies its contract, from
-//     ContractFor or Contract (redirects are followed when they stay on
-//     the site, up to 20 in a row as browsers follow them: a longer
-//     chain, or one that comes back to a URL of the chain, is a problem;
-//     other statuses are problems);
+//     ContractFor or Contract, or redirects; other statuses are problems;
+//   - redirects on the site are followed, up to 20 in a row as browsers
+//     follow them: a longer chain, one that comes back to a URL of the
+//     chain, and a redirect without a Location that parses are problems;
+//   - a redirect that leaves the site for another one is not followed
+//     and is no problem: the report records it as a target of the kind
+//     [TargetOffsiteRedirect], with its absolute URL; with NoRedirects,
+//     every redirect is a problem;
 //   - every link, form action, formaction, htmx request URL, sse-connect
 //     URL and asset on the site is routed (with Routes);
 //   - every link to a fragment of another crawled page names an element
 //     of that page;
-//   - with Assets and Fragments, the assets and hx-get fragments, see
-//     [CrawlOptions].
+//   - with PagePolicy, the security headers of every page and redirect;
+//   - with Assets, AssetPolicy or NoAssetCookies, the assets, and with
+//     Fragments, the hx-get fragments, see [CrawlOptions].
 //
-// Only same-site links (paths, or absolute URLs on [BaseURL]'s host) are
-// followed; forms are route-checked, never submitted. Infrastructure
-// failures of s fail the test.
+// The site is that of s ([SiteSender], such as a Client with a Base), or
+// [BaseURL]; [MuxRoutes] still matches host patterns against BaseURL's
+// host (see there). Only links on the site (paths, or absolute URLs with
+// the site's scheme and host) are followed: the site's host over the
+// other scheme, such as http:// on an https site, is off the site, for
+// links and redirects alike. Forms are route-checked, never submitted.
+// Infrastructure failures of s fail the test.
 func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 	t.Helper()
+	site, ok := senderSite(t, s)
+	if !ok {
+		return &CrawlReport{Start: o.Start, Problems: []string{"the sender has no valid site"}}
+	}
 	start := o.Start
 	if len(start) == 0 {
 		start = []string{"/"}
@@ -290,6 +354,9 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 		shell := shellOrDefault(o.Shell)
 		contract = func(p *ct.Subject) assertion.Assertion { return PageContract(p, shell) }
 	}
+	// hint tells whether a failure of the default contract may still get
+	// the hint of a Shell: once per crawl.
+	hint := o.Contract == nil && o.Shell == nil
 	fragContract := o.FragmentContract
 	if fragContract == nil {
 		fragContract = func(f *ct.Subject) assertion.Assertion { return FragmentContract(f) }
@@ -311,7 +378,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 		}
 	}
 	for _, p := range start {
-		if key, _, ok := siteURL(defaultBase, p); ok {
+		if key, _, ok := siteURL(site, site, p); ok {
 			enqueue(key, "the start", nil)
 		} else {
 			problem("start page %q is not a path of the site", p)
@@ -340,10 +407,36 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			continue
 		}
 		code := res.StatusCode()
+		if o.PagePolicy != nil && (code == http.StatusOK || (code >= 300 && code < 400)) {
+			if p := o.PagePolicy(resolve(site, q.url)); p != nil {
+				if hp := headerProblems(res.Headers(), *p); len(hp) > 0 {
+					problem("security headers of %s: %s", q.url, strings.Join(hp, "; "))
+				}
+			}
+		}
 		if code >= 300 && code < 400 {
-			location := res.Headers().Get("Location")
-			key, _, ok := siteURL(mustResolve(q.url), location)
+			from := resolve(site, q.url)
+			location := strings.TrimSpace(res.Headers().Get("Location"))
+			ref, err := url.Parse(location)
+			switch {
+			case location == "":
+				problem("GET %s (from %s) answered %d without a Location", q.url, q.from, code)
+				continue
+			case err != nil:
+				problem("GET %s (from %s) answered %d with a Location that does not parse", q.url, q.from, code)
+				continue
+			}
+			key, _, ok := siteURL(site, from, location)
 			if !ok {
+				to := from.ResolveReference(ref)
+				to.Fragment, to.RawFragment = "", ""
+				key = to.String()
+			}
+			if o.NoRedirects {
+				problem("GET %s (from %s) redirects to %s (%d), want 200", q.url, q.from, key, code)
+			}
+			if !ok {
+				r.Targets = append(r.Targets, Target{Kind: TargetOffsiteRedirect, Method: http.MethodGet, URL: key, Page: q.url})
 				continue
 			}
 			r.Targets = append(r.Targets, Target{Kind: TargetRedirect, Method: http.MethodGet, URL: key, Page: q.url})
@@ -372,7 +465,12 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			continue
 		}
 		page := res.HTML()
-		if err := pick(q.url, contract, o.ContractFor)(page).Check(t.Context()); err != nil {
+		c, def := pick(site, q.url, contract, o.ContractFor)
+		if err := c(page).Check(t.Context()); err != nil {
+			if hint && def && loadsOtherAssets(t.Context(), page, DefaultShell()) {
+				err = fmt.Errorf("%w\n  %s", err, defaultShellHint("CrawlOptions.Shell"))
+				hint = false
+			}
 			problem("page %s: %v", q.url, err)
 		}
 		doc, err := page.Load(t.Context())
@@ -385,9 +483,9 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			ids[id] = true
 		}
 		pageIDs[q.url] = ids
-		base := mustResolve(q.url)
+		base := resolve(site, q.url)
 		for _, tg := range pageTargets(root) {
-			key, frag, ok := siteURL(base, tg.url)
+			key, frag, ok := siteURL(site, base, tg.url)
 			if !ok {
 				continue
 			}
@@ -426,9 +524,14 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			problem("link on %s to %s#%s: the page has no element with that id", f.from, f.page, f.id)
 		}
 	}
-	if o.Assets {
+	if o.Assets || o.AssetPolicy != nil || o.NoAssetCookies {
 		for _, key := range assetOrder {
-			if msg := checkAsset(t, s, key, assets[key]); msg != "" {
+			a := assets[key]
+			if o.AssetPolicy != nil {
+				a.policy = o.AssetPolicy(resolve(site, key))
+			}
+			a.noCookies = o.NoAssetCookies
+			if msg := checkAsset(t, s, key, a); msg != "" {
 				problem("%s", msg)
 			}
 		}
@@ -441,7 +544,8 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			}
 			switch code := res.StatusCode(); code {
 			case http.StatusOK:
-				if err := pick(key, fragContract, o.FragmentContractFor)(res.HTMLFragment("div")).Check(t.Context()); err != nil {
+				c, _ := pick(site, key, fragContract, o.FragmentContractFor)
+				if err := c(res.HTMLFragment("div")).Check(t.Context()); err != nil {
 					problem("fragment %s (hx-get on %s): %v", key, fragments[key], err)
 				}
 			case http.StatusNoContent:
@@ -534,29 +638,29 @@ func pageTargets(root ct.Node) []pageTarget {
 	return out
 }
 
-// mustResolve returns the URL of a page key on the base URL: a new value,
-// never the shared base.
-func mustResolve(key string) *url.URL {
+// resolve returns the URL of a page key on the site: a new value, never
+// the shared site.
+func resolve(site *url.URL, key string) *url.URL {
 	u, err := url.Parse(key)
 	if err != nil {
-		base := *defaultBase
-		return &base
+		s := *site
+		return &s
 	}
-	return defaultBase.ResolveReference(u)
+	return site.ResolveReference(u)
 }
 
 // siteURL resolves ref against base and returns its path and query (the
-// key of a page), its fragment, and whether it is an http(s) URL on the
-// site's host. An empty ref is the base itself, as for a form without an
-// action.
-func siteURL(base *url.URL, ref string) (key, fragment string, ok bool) {
+// key of a page), its fragment, and whether it is a URL of the origin of
+// site: its scheme and host. An empty ref is the base itself, as for a
+// form without an action.
+func siteURL(site, base *url.URL, ref string) (key, fragment string, ok bool) {
 	ref = strings.TrimSpace(ref)
 	r, err := url.Parse(ref)
 	if err != nil {
 		return "", "", false
 	}
 	u := base.ResolveReference(r)
-	if (u.Scheme != "http" && u.Scheme != "https") || !strings.EqualFold(u.Host, defaultBase.Host) {
+	if u.Scheme != site.Scheme || hostKey(u) != hostKey(site) {
 		return "", "", false
 	}
 	key = u.EscapedPath()
@@ -567,6 +671,14 @@ func siteURL(base *url.URL, ref string) (key, fragment string, ok bool) {
 		key += "?" + u.RawQuery
 	}
 	return key, u.Fragment, true
+}
+
+// hostKey returns the host of an http(s) URL as a Host header names it,
+// lower-cased and without the default port of the URL's scheme.
+func hostKey(u *url.URL) string {
+	o := urlOrigin(u)
+	_, host, _ := strings.Cut(o, "://")
+	return host
 }
 
 func pathOf(key string) string {
@@ -589,8 +701,15 @@ func checkAsset(t TB, s Sender, key string, a assetRef) string {
 	}
 	var problems []string
 	h := res.Headers()
-	if !strings.EqualFold(h.Get("X-Content-Type-Options"), "nosniff") {
+	switch {
+	case a.policy != nil:
+		// The policy checks nosniff too.
+		problems = append(problems, headerProblems(h, *a.policy)...)
+	case !strings.EqualFold(h.Get("X-Content-Type-Options"), "nosniff"):
 		problems = append(problems, "no X-Content-Type-Options: nosniff")
+	}
+	if n := len(h.Values("Set-Cookie")); a.noCookies && n > 0 {
+		problems = append(problems, fmt.Sprintf("sets %d cookies%s", n, cookieNames(res)))
 	}
 	ctype := mediaEssence(h.Get("Content-Type"))
 	switch a.kind {

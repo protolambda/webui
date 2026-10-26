@@ -175,6 +175,22 @@ func TestPreAuthForms(gt *testing.T) {
 	res = other.Post(t, "/forms", webuitest.Form(url.Values{session.CSRFField: {token}, "title": {"Stolen"}, "priority": {"low"}, "visibility": {"team"}}))
 	t.Must(res.Status(http.StatusForbidden))
 	t.Must(webuitest.NoCookies(res))
+
+	t.Run("client", func(t devtest.T) {
+		// A Client keeps no cookies: it sends the cookie of the page back
+		// with the form, and the form's token goes with that cookie only.
+		c := g.anonymous()
+		res := c.Get(t, "/forms")
+		p := c.Page(t, res, http.StatusOK)
+		form := p.Find(ct.ID("task-form"))
+		t.Must(webuitest.Location(c.Submit(t, p, form, nil, validTask("From a client"), webuitest.SendCookies(res)),
+			http.StatusSeeOther, ct.Exact("/forms?notice=task-saved")))
+		t.Must(c.Submit(t, p, form, nil, validTask("Without the cookie")).Status(http.StatusForbidden))
+		next := c.Get(t, "/forms")
+		t.Must(be.NotEqual(webuitest.CookieValue(t, res, "__Host-preauth"), webuitest.CookieValue(t, next, "__Host-preauth")))
+		t.Must(c.Submit(t, p, form, nil, validTask("With another cookie"), webuitest.SendCookies(next)).Status(http.StatusForbidden))
+		t.Must(g.logs.NotLogged(webuitest.CookieValue(t, res, "__Host-preauth")))
+	})
 }
 
 // anyElement matches every element.

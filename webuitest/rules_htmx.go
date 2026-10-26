@@ -17,7 +17,9 @@ var htmxTargetAttrs = []string{"hx-target", "hx-include", "hx-indicator", "hx-di
 //
 //   - "#id" names an element of the document; in a fragment (a subject
 //     without an html element), also one of documentTargets, the ids the
-//     page around the fragment provides (see [DocumentTargets]);
+//     page around the fragment provides (see [DocumentTargets]), which
+//     needs a fragment answer parsed with [cthttp.Result.HTMLFragment]:
+//     Result.HTML always makes the subject a document (see [Rules]);
 //   - "closest S", "find S", "next S" and "previous S" find an element
 //     matching S among the ancestors, descendants, following or preceding
 //     elements of each element that makes a request with the attribute,
@@ -389,6 +391,64 @@ func (s simpleSelector) match(n ct.Node) bool {
 	return true
 }
 
+// HXPreserveIDs requires a usable id on every element with hx-preserve
+// (also with a data- prefix, and whatever its value): htmx keeps such an
+// element of a swapped response by putting the element of the page with
+// the same id in its place, so without an id hx-preserve silently does
+// nothing. In browsers that move nodes with moveBefore, htmx then finds
+// the new element with the selector "#" + id, which it does not escape:
+// for an id that is not a CSS identifier (one that starts with a digit,
+// or holds a dot, a colon or a space), the lookup fails or finds another
+// element after the swap: "#1a" and "#a:b" are invalid selectors, which
+// throw, "#a.b" selects an element with the id "a" and the class "b", if
+// any, and "#a b" a b element inside #a. The kept element is then not put
+// back in its place, or takes the place of the element found, which htmx
+// removes. A data-id, which htmx reads when the id is missing, does not
+// count, as that second lookup reads the id. The rule cannot tell whether
+// the page has an element with the same id.
+func HXPreserveIDs() ct.Rule {
+	return ct.CustomRule("hxPreserveIDs()", func(root ct.Node) []string {
+		var out []string
+		for e := range ct.Elements(root) {
+			_, attr, ok := hxAttrOf(e, "hx-preserve")
+			if !ok {
+				continue
+			}
+			switch id, _ := attrOf(e, "id"); {
+			case id == "":
+				out = append(out, fmt.Sprintf("%s at %s has no id, so htmx keeps no element", attr, loc(e)))
+			case !cssIdent(id):
+				out = append(out, fmt.Sprintf("%s at %s has the id %q, which is not a CSS identifier: htmx selects it as \"#\" + id, without escaping", attr, loc(e), id))
+			}
+		}
+		return out
+	})
+}
+
+// cssIdent reports whether s is a CSS identifier that needs no escaping:
+// an optional "-", then a letter, "_" or a non-ASCII character (or a
+// second "-"), then identifier bytes.
+func cssIdent(s string) bool {
+	rest := strings.TrimPrefix(s, "-")
+	switch {
+	case rest == "":
+		return false
+	case strings.HasPrefix(rest, "-"):
+		rest = rest[1:]
+	default:
+		c := rest[0]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || c == '_' || c >= 0x80) {
+			return false
+		}
+	}
+	for i := 0; i < len(rest); i++ {
+		if !identByte(rest[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // SSEWiring checks the markup of htmx server-sent event regions (the SSE
 // extension, see the sse package): every element with sse-swap, or with an
 // hx-trigger on an "sse:" event, sits in an element with sse-connect (or is
@@ -397,7 +457,9 @@ func (s simpleSelector) match(n ct.Node) bool {
 // an sse-close event, without which the browser reconnects forever when
 // the stream ends; sse-swap names no empty event. In a fragment (a subject
 // without an html element), the connect element and hx-ext may be in the
-// page around it, so missing ancestors are not reported there.
+// page around it, so missing ancestors are not reported there. Parse a
+// fragment answer with [cthttp.Result.HTMLFragment] for that: Result.HTML
+// always makes the subject a document (see [Rules]).
 func SSEWiring() ct.Rule {
 	return ct.CustomRule("sseWiring()", func(root ct.Node) []string {
 		frag := isFragment(root)

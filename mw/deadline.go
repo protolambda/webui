@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/protolambda/webui/internal/flush"
 )
 
 // Default bounds for [BodyDeadline] and [WriteDeadline].
@@ -129,9 +131,10 @@ type deadlineWriter struct {
 }
 
 var (
-	_ http.Flusher  = (*deadlineWriter)(nil)
-	_ http.Hijacker = (*deadlineWriter)(nil)
-	_ io.ReaderFrom = (*deadlineWriter)(nil)
+	_ http.Flusher    = (*deadlineWriter)(nil)
+	_ http.Hijacker   = (*deadlineWriter)(nil)
+	_ io.ReaderFrom   = (*deadlineWriter)(nil)
+	_ flush.Forwarder = (*deadlineWriter)(nil)
 )
 
 // set sets the deadline timeout from now.
@@ -204,6 +207,10 @@ func (w *deadlineWriter) FlushError() error {
 
 // Flush is FlushError without the error, for [http.Flusher].
 func (w *deadlineWriter) Flush() { _ = w.FlushError() }
+
+// ForwardsFlush marks the writer as a [flush.Forwarder]: it can flush
+// when the underlying writer can.
+func (w *deadlineWriter) ForwardsFlush() {}
 
 // SetWriteDeadline sets the deadline for a handler, which takes it over.
 func (w *deadlineWriter) SetWriteDeadline(deadline time.Time) error {

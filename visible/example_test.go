@@ -3,13 +3,18 @@ package visible_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/protolambda/chord/core"
 	"github.com/protolambda/chord/core/attr"
+	"github.com/protolambda/chord/html/aria"
+	"github.com/protolambda/chord/html/form/button"
+	selectel "github.com/protolambda/chord/html/form/select"
 	"github.com/protolambda/chord/html/section"
 	"github.com/protolambda/chord/html/table"
 	"github.com/protolambda/chord/html/text"
 
+	"github.com/protolambda/webui/bi"
 	"github.com/protolambda/webui/visible"
 )
 
@@ -136,6 +141,64 @@ func ExampleCode() {
 	// <span class="badge text-bg-warning" title="Shown with escapes: the value has invisible, control or text direction characters, or spaces that would not show">escaped</span> <code dir="ltr">notes.example\u00A0</code>
 }
 
+// Prose shows text of several lines, such as a note: its line breaks stay
+// line breaks, and its spaces and tabs are left for HTML to collapse. The
+// marker shows only when something else is escaped.
+func ExampleProse() {
+	core.Dump(visible.Prose("Water the plants\r\n  on Friday"))
+	core.Dump(visible.Prose("Water the plants\non\u200BFriday"))
+	// Output:
+	// <bdi>Water the plants</bdi><br/><bdi>  on Friday</bdi>
+	// <span class="badge text-bg-warning" title="Shown with escapes: the value has invisible, control or text direction characters, or spaces that would not show">escaped</span> <code dir="ltr">Water the plants<br/>on\u200BFriday</code>
+}
+
+// EscapeProse keeps line breaks, spaces and tabs as they are, and escapes
+// everything else that EscapeText escapes.
+func ExampleEscapeProse() {
+	for _, s := range []string{
+		"First line\n  indented,  with two spaces\n",
+		"C:\\notes\nline\u2028separator",
+	} {
+		out, escaped := visible.EscapeProse(s)
+		fmt.Println(escaped)
+		for line := range strings.Lines(out) {
+			fmt.Print("| ", line)
+		}
+		fmt.Println()
+	}
+	// Output:
+	// false
+	// | First line
+	// |   indented,  with two spaces
+	//
+	// true
+	// | C:\\notes
+	// | line\u2028separator
+}
+
+// TextString names a value where only text fits, such as the label of an
+// option or an aria-label: an escaped value keeps the marker, as a word.
+func ExampleTextString() {
+	for _, title := range []string{"Quarterly report", "invoice\u202Efdp.exe"} {
+		core.Dump(selectel.Option(selectel.Value("7"))(text.Text(visible.TextString(title))))
+		core.Dump(button.Button(button.Type(button.TypeSubmit), aria.Label("Delete "+visible.TextString(title)))(bi.Trash))
+	}
+	// Output:
+	// <option value="7">Quarterly report</option>
+	// <button type="submit" aria-label="Delete Quarterly report"><i class="bi bi-trash" aria-hidden="true"></i></button>
+	// <option value="7">escaped invoice\u202Efdp.exe</option>
+	// <button type="submit" aria-label="Delete escaped invoice\u202Efdp.exe"><i class="bi bi-trash" aria-hidden="true"></i></button>
+}
+
+// CodeString is strict, as Code is.
+func ExampleCodeString() {
+	fmt.Println(visible.CodeString("notes.example"))
+	fmt.Println(visible.CodeString("notes.example\u00A0"))
+	// Output:
+	// notes.example
+	// escaped notes.example\u00A0
+}
+
 // Marker goes before escaped text in markup of the application's own. A
 // [visible.Marking] renders it with other words.
 func ExampleMarker() {
@@ -158,9 +221,11 @@ func ExampleMarking() {
 	core.Dump(de.Text("ad\u200Bmin"))
 	core.Dump(de.Code("notes.example\u00A0"))
 	core.Dump(visible.Marking{Label: "maskiert"}.Marker()) // a blank title means MarkerTitle
+	fmt.Println(de.TextString("ad\u200Bmin"))
 	// Output:
 	// <bdi>Ada Lovelace</bdi>
 	// <span class="badge text-bg-warning" title="Mit Escapes gezeigt: der Wert hat unsichtbare Zeichen">maskiert</span> <code dir="ltr">ad\u200Bmin</code>
 	// <span class="badge text-bg-warning" title="Mit Escapes gezeigt: der Wert hat unsichtbare Zeichen">maskiert</span> <code dir="ltr">notes.example\u00A0</code>
 	// <span class="badge text-bg-warning" title="Shown with escapes: the value has invisible, control or text direction characters, or spaces that would not show">maskiert</span>
+	// maskiert ad\u200Bmin
 }

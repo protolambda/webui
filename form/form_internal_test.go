@@ -109,6 +109,7 @@ func TestReadClearsEverythingOnError(gt *testing.T) {
 		{"multipart field too large", multipartContentType, testMultipart(testPart("a", secret), testPart("b", secret+secret)), ErrTooLarge},
 		{"multipart too many fields", multipartContentType, testMultipart(testPart("a", secret), testPart("b", secret), testPart("c", secret), testPart("d", secret), testPart("e", secret)), ErrTooManyFields},
 		{"multipart truncated", multipartContentType, testPart("a", secret) + testPart("b", secret), ErrMalformed},
+		{"multipart truncated after a delimiter", multipartContentType, testPart("a", secret) + testPart("b", secret) + "--" + testBoundary + "\r\n", ErrMalformed},
 		{"multipart body too large", multipartContentType, testMultipart(testPart("a", secret), testPart("b", secret+strings.Repeat("x", 4096))), ErrTooLarge},
 	}
 	for _, c := range cases {

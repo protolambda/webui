@@ -29,9 +29,11 @@ func ErrorAlert(children ...elem.Node) elem.Node {
 
 // Notice renders the outcome of an action, such as "Saved.":
 // <div class="alert alert-{v}" role="status">. A status is announced
-// politely, without interrupting. An empty v means bs.VariantSuccess; an
-// unknown variant fails the render with [ErrInvalid] (which is
-// bs.ErrInvalidOption).
+// politely, without interrupting, and generally not as the page with it
+// loads. The role is the same for every variant, bs.VariantDanger
+// included: report a refused action, which the user must not miss, with
+// [ErrorAlert]. An empty v means bs.VariantSuccess; an unknown variant
+// fails the render with [ErrInvalid] (which is bs.ErrInvalidOption).
 //
 // Inside [AlertsContent] and [AlertsOOB] it renders no role, like
 // [ErrorAlert]: the live region it is swapped into announces it.

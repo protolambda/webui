@@ -362,8 +362,8 @@ func (st *Store[T]) endMatchingLocked(match func(T) bool, ended *[]ending[T]) {
 // flight with the old session see it ended, and forms rendered with the
 // old CSRF token are refused. The new session keeps the creation time of
 // the old one, so rotation does not extend the absolute lifetime. A
-// [Store.EndFunc] running at the same time checks the new session in place
-// of the old one.
+// [Store.EndFunc] or [Store.Each] running at the same time checks the new
+// session in place of the old one.
 //
 // r and its context still hold the old session, which has now ended: for
 // the rest of the request, [FromContext], [Forms] and [Store.Lookup] find
@@ -626,6 +626,42 @@ func (st *Store[T]) EndFunc(match func(data T) bool) int {
 		}
 	}
 	return n
+}
+
+// Each calls fn with a copy of the value of every live session, in no
+// particular order, to read them: to list the sessions of an account, say.
+// It ends and changes nothing: a visit does not count as use of the session
+// (its idle timer and its place in the eviction order stay as they were),
+// no OnEnd hook runs, and sessions that expired but were not swept yet are
+// skipped, not ended (see [Store.Sweep]). As in [Store.EndFunc], sessions
+// that [Store.Rotate] moves meanwhile are visited under their new token,
+// and sessions that [Store.New] creates meanwhile may not be visited.
+//
+// fn gets each copy, shallow as that of [Session.Data], while that session
+// is locked; it must not call methods of the session or the store, and
+// should return quickly. If fn panics, the panic goes on to the caller,
+// and the sessions stay live and usable.
+func (st *Store[T]) Each(fn func(data T)) {
+	now := st.now()
+	st.mu.Lock()
+	live := make([]*Session[T], 0, len(st.sessions))
+	for s := st.head; s != nil; s = s.next {
+		if st.expiryLocked(s, now) == 0 {
+			live = append(live, s)
+		}
+	}
+	st.mu.Unlock()
+	visit := func(data T) bool {
+		fn(data)
+		return false
+	}
+	for _, s := range live {
+		for s != nil {
+			// A session that ended meanwhile yields its successor, if a
+			// Rotate moved its value; any other end leaves nothing.
+			_, s = s.matches(visit)
+		}
+	}
 }
 
 // Sweep ends the expired sessions ([EndIdle] or [EndAbsolute]) and returns

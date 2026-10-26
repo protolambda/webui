@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/netip"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/protolambda/chord/ct/cthttp"
 
@@ -260,6 +264,8 @@ type reqSettings struct {
 	headers                           []headerOp
 	logger                            *slog.Logger
 	urlMethods                        map[string]bool // of PageHTMXConfig
+	// err is the first error of an option, which buildRequest reports.
+	err error
 }
 
 // settings applies opts, skipping nil ones.
@@ -286,6 +292,17 @@ func ptr(s string) *string { return &s }
 // requests of [Client.SubmitHTMX], [Browser.SubmitHTMX] and
 // [HTMXRequest.Request]. An htmx request ([HTMX]) sends the resolved page
 // URL as HX-Current-URL, as htmx does, unless [HXCurrentURL] sets another.
+//
+// The page is also where the request comes from: its origin is the
+// default Origin (see [Origin]), and Sec-Fetch-Site compares it with the
+// request's URL, as browsers do: "same-origin" for the same origin,
+// "same-site" for another origin of the same site, and "cross-site"
+// otherwise, unless [FetchSite] sets it. Two origins are of the same site
+// when they have the same scheme and the same host, or DNS names that end
+// in the same two labels: the registrable domain under a public suffix of
+// one label, such as com or test. Under a public suffix of more labels,
+// such as co.uk, that takes other sites for the same one: set FetchSite
+// there.
 func PageURL(u string) ReqOption { return func(s *reqSettings) { s.page = ptr(u) } }
 
 // PageHTMXConfig names the htmx configuration of the page that makes the
@@ -345,7 +362,18 @@ func EventSource() ReqOption {
 }
 
 // Origin sets the Origin header; "" removes it. By default, requests other
-// than GET and HEAD carry the origin of the base URL, as browsers send it.
+// than GET and HEAD carry the origin of the page that sends them, as
+// browsers send it: the origin of [PageURL], or else that of the request's
+// URL, the base URL for a path.
+//
+// It changes only the Origin: Sec-Fetch-Site stays as the page makes it
+// (see [PageURL]), "same-origin" for a page of the request's origin, which
+// mw.SameOrigin (like http.CrossOriginProtection) trusts before Origin,
+// so Origin([ForeignOrigin]) alone builds a request that no browser sends,
+// and it passes such a policy. For a cross-origin request of a current
+// browser, add [FetchSite]("cross-site") (or "same-site"); for one of a
+// client without fetch metadata, use [NoFetchMetadata] and set the Origin
+// with [Header]; [CrossSiteProbes] has both kinds.
 func Origin(origin string) ReqOption {
 	return func(s *reqSettings) { s.origin = ptr(origin) }
 }
@@ -357,7 +385,8 @@ func Referer(u string) ReqOption {
 }
 
 // FetchSite sets Sec-Fetch-Site, e.g. "cross-site", "same-site" or "none";
-// "" removes it. The default is "same-origin".
+// "" removes it. The default compares the page with the request's URL
+// (see [PageURL]): "same-origin" without a page of another origin.
 func FetchSite(site string) ReqOption {
 	return func(s *reqSettings) { s.fetchSite = ptr(site) }
 }
@@ -371,7 +400,7 @@ func NoFetchMetadata() ReqOption {
 
 // Host sets the Host header (and http.Request.Host), e.g. to a name of
 // another site for DNS rebinding tests. The URL and the default Origin
-// stay those of the base URL.
+// stay those of the request's site.
 func Host(host string) ReqOption {
 	return func(s *reqSettings) { s.host = ptr(host) }
 }
@@ -387,6 +416,79 @@ func RemoteAddr(addr string) ReqOption {
 // cookies of its jar as well. (The response assertion is [Cookie].)
 func SendCookie(name, value string) ReqOption {
 	return func(s *reqSettings) { s.cookies = append(s.cookies, &http.Cookie{Name: name, Value: value}) }
+}
+
+// SendCookies adds the cookies that res sets to the Cookie header, in
+// order, for a [Client], which keeps no cookies, to send them back as a
+// browser would: a cookie set twice goes with its last value, and one
+// that clears itself (Max-Age zero or less, or without Max-Age an Expires
+// date before the current time, as a cookie jar compares it) is left out.
+// Domain, Path and Secure are not matched against the request; a
+// [Browser] does that. A response that was not captured, or a Set-Cookie
+// header that does not parse, fails the test when the request is built.
+// [CookieValue] reads a single cookie.
+func SendCookies(res *cthttp.Result) ReqOption {
+	cookies, err := responseCookies(res)
+	if err == nil {
+		cookies = keptCookies(cookies, time.Now())
+	}
+	return func(s *reqSettings) {
+		if err != nil {
+			if s.err == nil {
+				s.err = err
+			}
+			return
+		}
+		s.cookies = append(s.cookies, cookies...)
+	}
+}
+
+// responseCookies returns the cookies that a captured response sets, in
+// order, or an error if it was not captured or a Set-Cookie header does
+// not parse. Errors never quote a header.
+func responseCookies(res *cthttp.Result) ([]*http.Cookie, error) {
+	if res == nil {
+		return nil, errors.New("no response to take cookies from")
+	}
+	if err := res.Captured().Check(context.Background()); err != nil {
+		return nil, fmt.Errorf("cookies of %s: %w", res.Describe(), err)
+	}
+	cookies, bad := setCookies(res)
+	if bad > 0 {
+		return nil, fmt.Errorf("cookies of %s: %d Set-Cookie headers do not parse", res.Describe(), bad)
+	}
+	return cookies, nil
+}
+
+// keptCookies returns name and value of the cookies that a cookie jar
+// keeps at now, the last of each name, in the order of their first
+// appearance.
+func keptCookies(cookies []*http.Cookie, now time.Time) []*http.Cookie {
+	var out []*http.Cookie
+	at := make(map[string]int)
+	for _, c := range cookies {
+		kept := &http.Cookie{Name: c.Name, Value: c.Value}
+		if cookieCleared(c, now) {
+			kept = nil
+		}
+		if i, ok := at[c.Name]; ok {
+			out[i] = kept
+			continue
+		}
+		at[c.Name] = len(out)
+		out = append(out, kept)
+	}
+	return slices.DeleteFunc(out, func(c *http.Cookie) bool { return c == nil })
+}
+
+// cookieCleared reports whether a parsed Set-Cookie deletes its cookie at
+// now: Max-Age zero or less, or, without a Max-Age, an Expires date that
+// is not after now. Max-Age takes precedence over Expires (RFC 6265,
+// section 5.3).
+func cookieCleared(c *http.Cookie, now time.Time) bool {
+	// http.ParseSetCookie reports a Max-Age of zero or less as -1, and a
+	// missing (or invalid, so ignored) one as 0.
+	return c.MaxAge < 0 || (c.MaxAge == 0 && !c.Expires.IsZero() && !c.Expires.After(now))
 }
 
 // Header sets a request header after every other option; an empty value
@@ -422,6 +524,9 @@ func safeMethod(m string) bool { return m == http.MethodGet || m == http.MethodH
 // it is a client request for an http.Client.
 func buildRequest(ctx context.Context, base *url.URL, method, target string, body Body, opts []ReqOption, server bool) (*http.Request, error) {
 	s := settings(opts)
+	if s.err != nil {
+		return nil, s.err
+	}
 	from := base
 	if s.page != nil {
 		p, err := url.Parse(*s.page)
@@ -457,7 +562,13 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 	}
 	h := req.Header
 	script := s.htmx || s.historyRestore || s.eventSource
-	h.Set("Sec-Fetch-Site", "same-origin")
+	// The page that sends the request: a page of the site that the
+	// request goes to, unless PageURL names the page.
+	page := u
+	if s.page != nil {
+		page = from
+	}
+	h.Set("Sec-Fetch-Site", fetchSite(page, u))
 	if script {
 		h.Set("Sec-Fetch-Mode", "cors")
 		h.Set("Sec-Fetch-Dest", "empty")
@@ -467,7 +578,7 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 		h.Set("Sec-Fetch-User", "?1")
 	}
 	if !safeMethod(method) {
-		h.Set("Origin", base.Scheme+"://"+base.Host)
+		h.Set("Origin", urlOrigin(page))
 	}
 	if s.htmx {
 		h.Set(hx2.HeaderRequest, "true")
@@ -543,6 +654,35 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 	return req, nil
 }
 
+// fetchSite returns the Sec-Fetch-Site of a request from a page to u, as
+// [PageURL] describes it.
+func fetchSite(page, u *url.URL) string {
+	switch {
+	case urlOrigin(page) == urlOrigin(u):
+		return "same-origin"
+	case page.Scheme == u.Scheme && sameSiteHosts(page.Hostname(), u.Hostname()):
+		return "same-site"
+	}
+	return "cross-site"
+}
+
+// sameSiteHosts reports whether two hosts are of the same site, as
+// [PageURL] approximates it: the same host, or DNS names of two labels or
+// more that end in the same two.
+func sameSiteHosts(a, b string) bool {
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	if a == b {
+		return true
+	}
+	_, errA := netip.ParseAddr(a)
+	_, errB := netip.ParseAddr(b)
+	if errA == nil || errB == nil {
+		return false
+	}
+	la, lb := strings.Split(a, "."), strings.Split(b, ".")
+	return len(la) >= 2 && len(lb) >= 2 && slices.Equal(la[len(la)-2:], lb[len(lb)-2:])
+}
+
 func setOrDel(h http.Header, name string, v *string) {
 	switch {
 	case v == nil:
@@ -556,11 +696,37 @@ func setOrDel(h http.Header, name string, v *string) {
 var defaultBase = mustParseBase(BaseURL)
 
 func mustParseBase(raw string) *url.URL {
-	u, err := url.Parse(raw)
+	u, err := parseBase(raw)
 	if err != nil {
 		panic(err)
 	}
 	return u
+}
+
+// parseBase parses the base URL of a [Client] or [Browser], a site URL as
+// mw.ParseSite takes it: an https origin, or an http one of a loopback
+// host, with an optional port and nothing else (a single "/" path is
+// allowed). The result is a new URL of the site's origin, normalized as
+// mw.ParseSite normalizes it and browsers serialize it: the scheme and
+// host lower-cased, IPv6 in its canonical form, a default port dropped,
+// other ports in plain decimal. So the requests name the host that
+// mw.HostCheck(mw.MustParseSite(raw)) accepts.
+func parseBase(raw string) (*url.URL, error) {
+	site, err := mw.ParseSite(raw)
+	if err != nil {
+		return nil, fmt.Errorf("base URL %q: %w", raw, err)
+	}
+	return url.Parse(site.Origin())
+}
+
+// baseOr returns the parsed base URL raw, or a copy of [BaseURL]'s when
+// raw is empty.
+func baseOr(raw string) (*url.URL, error) {
+	if raw == "" {
+		u := *defaultBase
+		return &u, nil
+	}
+	return parseBase(raw)
 }
 
 // Request builds a request as a browser on [BaseURL] sends it, for a
@@ -568,10 +734,13 @@ func mustParseBase(raw string) *url.URL {
 // BaseURL (or against [PageURL]), and the request is bound to
 // t.Context(). It carries:
 //
-//   - Sec-Fetch-Site: same-origin, and the Sec-Fetch-Mode, Sec-Fetch-Dest
+//   - Sec-Fetch-Site: same-origin (for a [PageURL] of another origin,
+//     same-site or cross-site), and the Sec-Fetch-Mode, Sec-Fetch-Dest
 //     and Sec-Fetch-User of a navigation (or of a script request for
 //     [HTMX], [HXHistoryRestore] and [EventSource]);
-//   - for methods other than GET and HEAD, Origin: BaseURL;
+//   - for methods other than GET and HEAD, the Origin of the page that
+//     sends it: of [PageURL], or else of the request's URL (BaseURL for a
+//     path);
 //   - the content type of body;
 //   - the server-side fields a handler sees: an origin-form URL,
 //     RequestURI, Host, RemoteAddr ([DefaultRemoteAddr]) and, for https,

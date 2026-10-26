@@ -32,23 +32,32 @@ func TableHover(attrs ...attr.Node) elem.Scope {
 	return table.Table(attr.Cons(rawClass("table table-hover"), attrs...))
 }
 
-// TableResponsive creates a responsive table wrapper (div.table-responsive),
-// which scrolls a wide table horizontally. Add the position-relative class
-// when the table holds visually-hidden text (see [DataTable]).
+// TableResponsive creates a responsive table wrapper
+// (div.table-responsive.position-relative), which scrolls a wide table
+// horizontally. It is positioned because Bootstrap positions its
+// visually-hidden text absolutely (every element but a caption): in a
+// scroller that is not positioned, the containing block of such text, a
+// hidden column header or hidden text in a cell, is outside the scroller,
+// so the overflow does not clip it, and on a narrow screen text at the far
+// end of a wide table widens the whole page. Positioned, the scroller is
+// the containing block of such content, which then scrolls and is clipped
+// with the table.
 func TableResponsive(attrs ...attr.Node) elem.Scope {
-	return div.Div(attr.Cons(rawClass("table-responsive"), attrs...))
+	return div.Div(attr.Cons(rawClass("table-responsive position-relative"), attrs...))
 }
 
 // DataTable is a typed Bootstrap table: a caption, column headers with
-// scope="col", and rows of cells, in a horizontally scrolling wrapper:
+// scope="col", and rows of cells, in a horizontally scrolling wrapper
+// ([TableResponsive]):
 //
 //	div.table-responsive.position-relative > table.table > caption, thead, tbody
 //
 // The wrapper is position-relative because Bootstrap's visually-hidden
-// text (a hidden caption or header, or hidden text in a cell) is absolutely
-// positioned. Without a positioned wrapper its containing block is outside
-// the scrolling box, so the overflow does not clip it, and on a narrow
-// screen text at the far end of a wide table widens the whole page.
+// text (a hidden header, or hidden text in a cell; a hidden caption stays
+// in the flow) is absolutely positioned. Without a positioned wrapper its
+// containing block is outside the scrolling box, so the overflow does not
+// clip it, and on a narrow screen text at the far end of a wide table
+// widens the whole page.
 //
 // Every row must have one cell per column; Eval fails with
 // [ErrInvalidOption] otherwise, when there are no columns, and when a
@@ -194,6 +203,5 @@ func (t DataTable) Eval(ctx context.Context) (elem.Obj, error) {
 	parts = append(parts, table.Tbody()(rows...))
 
 	tableAttrs := append([]attr.Node{rawClass(class)}, userAttrs(t.Attrs)...)
-	wrapperAttrs := append([]attr.Node{rawClass("table-responsive position-relative")}, userAttrs(t.Wrapper)...)
-	return div.Div(wrapperAttrs...)(table.Table(tableAttrs...)(parts...)).Eval(ctx)
+	return TableResponsive(userAttrs(t.Wrapper)...)(table.Table(tableAttrs...)(parts...)).Eval(ctx)
 }

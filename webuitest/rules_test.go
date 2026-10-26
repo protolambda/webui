@@ -11,6 +11,7 @@ import (
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthtml"
+	"github.com/protolambda/chord/html/form/button"
 	"github.com/protolambda/chord/html/group/div"
 	"github.com/protolambda/chord/html/text"
 	"github.com/protolambda/devtest"
@@ -240,6 +241,45 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 		{name: "this in a list", body: `<div hx-include="this, #nope">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
 		{name: "this with a space", body: `<div hx-include=" this">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
 		{name: "include disinherited", body: `<div hx-include="this" hx-disinherit="hx-include">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
+		// The server reads the first csrf value of a submission: the field
+		// must come before every other control that sends one.
+		{name: "select before the field", body: `<form method="post"><select name="csrf"><option>a</option></select>` + csrf + `</form>`, want: []string{`post form at html[1]/body[1]/form[0] sends a "csrf" value from the select at html[1]/body[1]/form[0]/select[0] before its "csrf" field, and the server reads the first`}},
+		{name: "textarea before the field", body: `<form method="post"><textarea name="csrf"></textarea>` + csrf + `</form>`, want: []string{`from the textarea at html[1]/body[1]/form[0]/textarea[0] before`}},
+		{name: "submit button before the field", body: `<form method="post"><button name="csrf" value="go">Go</button>` + csrf + `</form>`, want: []string{`from the submit button at html[1]/body[1]/form[0]/button[0] before`}},
+		{name: "dirname before the field", body: `<form method="post"><input name="title" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "textarea dirname before the field", body: `<form method="post"><textarea name="body" dirname="csrf"></textarea>` + csrf + `</form>`, want: []string{`from the dirname of the textarea at`}},
+		{name: "hidden dirname before the field", body: `<form method="post"><input type="hidden" name="v" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "email dirname before the field", body: `<form method="post"><input type="email" name="mail" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "submit dirname before the field", body: `<form method="post"><input type="submit" name="go" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "dirname without an entry before the field", body: `<form method="post"><input type="number" name="n" dirname="csrf"><input type="submit" name="go" dirname="csrf" formmethod="get"><button name="b" dirname="csrf">Go</button>` + csrf + `</form>`},
+		{name: "associated select before the field", body: `<select form="f" name="csrf"><option>a</option></select><form id="f" method="post">` + csrf + `</form>`, want: []string{`from the select at html[1]/body[1]/select[0] before`}},
+		// A select sends what FormData sends for it: nothing without an
+		// option to submit.
+		{name: "selects that send nothing before the field", body: `<form method="post"><select name="csrf"></select><select name="csrf" multiple><option>a</option></select><select name="csrf"><option disabled>a</option></select><select name="csrf" size="2"><option>a</option></select>` + csrf + `</form>`},
+		{name: "associated select without options before the field", body: `<select form="f" name="csrf"></select><form id="f" method="post">` + csrf + `</form>`},
+		{name: "controls after the field", body: `<form method="post">` + csrf + `<select name="csrf"><option>a</option></select><textarea name="csrf"></textarea><button name="csrf">Go</button><input name="t" dirname="csrf"></form>`},
+		{name: "controls that send nothing before the field", body: `<form method="post"><button type="button" name="csrf">x</button><button type="reset" name="csrf">x</button><select name="csrf" disabled></select><fieldset disabled><textarea name="csrf"></textarea></fieldset><datalist id="l"><select name="csrf"></select></datalist><textarea dirname="csrf"></textarea><select name="CSRF"></select>` + csrf + `</form>`},
+		{name: "get submit button before the field", body: `<form method="post"><button name="csrf" formmethod="get">Search</button>` + csrf + `</form>`},
+		{name: "formmethod post submitter", body: `<form><button name="csrf" formmethod="post">Save</button>` + csrf + `</form>`, want: []string{"button at html[1]/body[1]/form[0]/button[0] submits with POST, but its form at html[1]/body[1]/form[0] sends a \"csrf\" value from the submit button at html[1]/body[1]/form[0]/button[0] before"}},
+		{name: "formmethod post other button", body: `<form><button name="csrf">Search</button>` + csrf + `<button formmethod="post">Save</button></form>`},
+		{name: "hx-post form with a button before the field", body: `<form hx-post="/x"><button name="csrf">Go</button>` + csrf + `</form>`},
+		{name: "hx-post form with a select before the field", body: `<form hx-post="/x"><select name="csrf"><option>a</option></select>` + csrf + `</form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends a "csrf" value other than the token first, and the server reads the first`}},
+		{name: "hx-post form with a select without options before the field", body: `<form hx-post="/x"><select name="csrf"></select>` + csrf + `</form>`},
+		// htmx sends the value of an included select, also without options.
+		{name: "hx-include with a select before the field", body: `<div id="d"><select name="csrf"></select>` + csrf + `</div><button type="button" hx-post="/x" hx-include="#d">x</button>`, want: []string{`hx-post at html[1]/body[1]/button[1] sends a "csrf" value other than the token first`}},
+		{name: "hx-include with a select after the field", body: `<div id="d">` + csrf + `<select name="csrf"></select><button name="csrf">x</button></div><button type="button" hx-post="/x" hx-include="#d">x</button>`},
+		// The parameters of the request decide, as HTMXData collects them:
+		// hx-vals replace the fields of their names, the elements of an
+		// hx-include send their values in tree order, and the fields of the
+		// related form replace those of the includes.
+		{name: "form field and other vals", body: `<form hx-post="/x" hx-vals='{"csrf":"other"}'>` + csrf + `</form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends a "csrf" value other than the token first`}},
+		{name: "post form field and other vals", body: `<form method="post" hx-post="/x" hx-vals='{"csrf":"other"}'>` + csrf + `</form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends a "csrf" value other than the token first`}},
+		{name: "form field and vals of the token", body: `<form hx-post="/x" hx-vals='{"csrf":"` + testToken + `"}'><select name="csrf"><option>a</option></select>` + csrf + `</form>`},
+		{name: "includes with a select first", body: `<div id="a"><select name="csrf"><option>x</option></select></div><div id="b">` + csrf + `</div><button type="button" hx-post="/x" hx-include="#a, #b">x</button>`, want: []string{`hx-post at html[1]/body[1]/button[2] sends a "csrf" value other than the token first`}},
+		{name: "includes with the field first", body: `<div id="b">` + csrf + `</div><div id="a"><select name="csrf"><option>x</option></select></div><button type="button" hx-post="/x" hx-include="#a, #b">x</button>`},
+		{name: "form fields over includes", body: `<form>` + csrf + `<button type="button" hx-post="/x" hx-include="#a">x</button></form><div id="a"><select name="csrf"><option>x</option></select></div>`},
+		{name: "button of the request after the form's fields", body: `<form>` + csrf + `<button name="csrf" value="go" hx-post="/x">x</button></form>`},
+		{name: "parts of an include", body: `<div id="d">` + csrf + `</div><button type="button" hx-post="/x" hx-include="inherit, #d, div > input">x</button>`},
 	}
 	checkRule(gt, webuitest.PostFormsCarryCSRF(testToken), cases)
 	gt.Run("no token", func(gt *testing.T) {
@@ -247,6 +287,7 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 			{name: "any value", body: `<form method="post"><input type="hidden" name="csrf" value="x"></form>`},
 			{name: "empty", body: `<form method="post"><input type="hidden" name="csrf" value=""></form>`, want: []string{`has an empty "csrf" field`}},
 			{name: "hx-post", body: `<button type="button" hx-post="/x">x</button>`, want: []string{`sends no "csrf" field`}},
+			{name: "hx-post with an empty value first", body: `<form hx-post="/x"><select name="csrf"><option value="">-</option></select><input type="hidden" name="csrf" value="x"></form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends an empty "csrf" value first`}},
 		})
 	})
 	gt.Run("never shows the token", func(gt *testing.T) {
@@ -270,6 +311,9 @@ func TestNoTokenLeaks(gt *testing.T) {
 		{name: "hx-get form", body: `<form method="post" hx-get="/x">` + csrf + `</form>`, want: []string{`hx-get at html[1]/body[1]/form[0] sends the "csrf" field in the URL`}},
 		{name: "hx-get include", body: `<div id="d">` + csrf + `</div><button type="button" hx-get="/x" hx-include="#d">x</button>`, want: []string{`hx-get at html[1]/body[1]/button[1]`}},
 		{name: "visible field", body: `<form method="post"><input type="text" name="csrf" value="` + testToken + `"></form>`, want: []string{`"csrf" field at html[1]/body[1]/form[0]/input[0] is not hidden`}},
+		{name: "other controls of the name", body: `<form method="post">` + csrf + `<select name="csrf"></select><textarea name="csrf"></textarea><button type="button" name="csrf">x</button><select name="CSRF"></select></form>`, want: []string{
+			`"csrf" field at html[1]/body[1]/form[0]/select[1] is not hidden`, `"csrf" field at html[1]/body[1]/form[0]/textarea[2] is not hidden`, `"csrf" field at html[1]/body[1]/form[0]/button[3] is not hidden`,
+		}},
 		{name: "link", body: `<a href="/x?csrf=` + testToken + `">x</a>`, want: []string{"href at html[1]/body[1]/a[0] has the token in a URL"}},
 		{name: "encoded", body: `<a href="/x?t=` + strings.ReplaceAll(testToken, "-", "%2D") + `">x</a>`},
 		{name: "attribute", body: `<div data-x="` + testToken + `"></div>`, want: []string{"data-x at html[1]/body[1]/div[0] has the token"}},
@@ -488,6 +532,28 @@ func TestSSEWiring(gt *testing.T) {
 	})
 }
 
+func TestHXPreserveIDs(gt *testing.T) {
+	checkRule(gt, webuitest.HXPreserveIDs(), []ruleCase{
+		{name: "valid", body: `<div id="player" hx-preserve></div><video id="clip-1" data-hx-preserve="true"></video><p id="--x" hx-preserve></p><p id="_y" hx-preserve></p><p id="-z" hx-preserve></p><p id="é" hx-preserve></p><p>no preserve</p>`},
+		{name: "no id", body: `<div hx-preserve></div>`, want: []string{"hx-preserve at html[1]/body[1]/div[0] has no id, so htmx keeps no element"}},
+		{name: "data prefix", body: `<div data-hx-preserve></div>`, want: []string{"data-hx-preserve at html[1]/body[1]/div[0] has no id"}},
+		{name: "empty id", body: `<div id="" hx-preserve="true"></div>`, want: []string{"has no id"}},
+		{name: "false is preserved too", body: `<div hx-preserve="false"></div>`, want: []string{"has no id"}},
+		{name: "data-id", body: `<div data-id="x" hx-preserve></div>`, want: []string{"has no id"}},
+		{name: "digit", body: `<div id="1row" hx-preserve></div>`, want: []string{`hx-preserve at html[1]/body[1]/div#1row[0] has the id "1row", which is not a CSS identifier`}},
+		{name: "dot", body: `<div id="a.b" hx-preserve></div>`, want: []string{`the id "a.b"`}},
+		{name: "dash digit", body: `<div id="-1" hx-preserve></div>`, want: []string{`the id "-1"`}},
+		{name: "space", body: `<div id="a b" hx-preserve></div>`, want: []string{`the id "a b"`}},
+		{name: "fragment", fragment: true, body: `<audio hx-preserve></audio>`, want: []string{"hx-preserve at audio[0] has no id"}},
+	})
+	gt.Run("view", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		t.Must(ct.View(div.Div(attr.KV("ID", "kept"), attr.KV("HX-Preserve", ""))()).Valid(webuitest.HXPreserveIDs()))
+		got := violations(t, ct.View(div.Div(hx2.Preserve())()), webuitest.HXPreserveIDs())
+		t.Must(be.Len(got, 1))
+	})
+}
+
 // dialogPage is a valid page with a no-JS dialog, in the markup of the
 // dialog contract.
 const dialogPage = `<button type="button" commandfor="d" command="show-modal" popovertarget="d">Open</button>` +
@@ -533,6 +599,32 @@ func TestModalDialogs(gt *testing.T) {
 		{name: "fragment opener", fragment: true, body: `<button type="button" commandfor="d" command="show-modal" popovertarget="d">Open</button>`},
 		{name: "fragment dialog", fragment: true, body: strings.TrimPrefix(dialogPage, `<button type="button" commandfor="d" command="show-modal" popovertarget="d">Open</button>`)},
 		{name: "fragment checks", fragment: true, body: `<button commandfor="d" command="show-modal">Open</button>`, want: []string{"is not on a button of type button", "has no popovertarget naming the same dialog"}},
+	})
+	// A dialog that every page renders for the openers that fragments
+	// bring needs no opener on the page; the other checks stay.
+	noOpener := mutate(`<button type="button" commandfor="d" command="show-modal" popovertarget="d">Open</button>`, ``)
+	gt.Run("shared", func(gt *testing.T) {
+		checkRule(gt, webuitest.ModalDialogs("d"), []ruleCase{
+			{name: "no opener", body: noOpener},
+			{name: "with opener", body: dialogPage},
+			{name: "other dialog", body: noOpener + `<dialog id="e" class="modal" popover aria-label="E"><button type="button" commandfor="e" command="close" popovertarget="e" popovertargetaction="hide" autofocus>x</button></dialog>`, want: []string{`dialog at html[1]/body[1]/dialog#e[1] has no opener (command="show-modal")`}},
+			{name: "other checks", body: strings.Replace(noOpener, ` autofocus`, ``, 1), want: []string{"has no autofocus control"}},
+			{name: "no close button", body: `<div id="dialogs"><dialog id="d" class="modal" popover aria-label="D"><input name="a" autofocus></dialog></div>`, want: []string{`has no close button (command="close")`}},
+		})
+	})
+	gt.Run("shared in Rules", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		page := func() *ct.Subject { return cthtml.PageString(htmlPage(noOpener)) }
+		t.Must(be.ErrorContains(page().Valid(webuitest.Rules()...).Check(t.Context()), "has no opener"))
+		t.Must(page().Valid(webuitest.Rules(webuitest.WithSharedDialogs("x"), webuitest.WithSharedDialogs("d"))...))
+		var desc string
+		for _, r := range webuitest.Rules(webuitest.WithSharedDialogs("x", "d")) {
+			if webuitest.RuleName(r) == "modalDialogs" {
+				desc = r.String()
+			}
+		}
+		t.Must(be.Equal(`modalDialogs("x", "d")`, desc))
+		t.Must(be.Equal("modalDialogs()", webuitest.ModalDialogs().String()))
 	})
 }
 
@@ -617,6 +709,59 @@ func TestRectangularTables(gt *testing.T) {
 	})
 }
 
+func TestScrollersClipHiddenText(gt *testing.T) {
+	hidden := `<span class="visually-hidden">Actions</span>`
+	table := func(cell string) string {
+		return `<table class="table"><tr><td>a</td><td>` + cell + `</td></tr></table>`
+	}
+	checkRule(gt, webuitest.ScrollersClipHiddenText(), []ruleCase{
+		{name: "positioned scroller", body: `<div class="table-responsive position-relative">` + table(hidden) + `</div>`},
+		{name: "no hidden text", body: `<div class="table-responsive">` + table("x") + `</div>`},
+		{name: "hidden caption", body: `<div class="table-responsive"><table class="table"><caption class="visually-hidden">Tasks</caption><tr><td>a</td></tr></table></div>`},
+		{name: "hidden text outside scrollers", body: `<div class="table">` + hidden + `</div><a class="visually-hidden-focusable" href="#main">Skip</a>`},
+		{name: "positioned between", body: `<div class="overflow-x-auto"><div class="btn-group">` + hidden + `</div><div class="dropdown"><span class="visually-hidden-focusable">x</span></div><p><sup>1<span class="visually-hidden">note</span></sup></p></div>`},
+		{name: "position utility between", body: `<div class="overflow-auto"><div><p class="position-sticky">` + hidden + `</p></div></div>`},
+		{name: "dialog and popover between", body: `<div class="overflow-auto"><dialog id="d">` + hidden + `</dialog><div id="m" popover>` + hidden + `</div></div>`},
+		{name: "visible overflow", body: `<div class="table-responsive overflow-visible">` + table(hidden) + `</div><div class="overflow-auto overflow-visible">` + hidden + `</div>`},
+		{name: "template", body: `<div class="table-responsive"><template>` + hidden + `</template></div>`},
+		{name: "bare scroller", body: `<div class="table-responsive">` + table(hidden) + `</div>`, want: []string{
+			"div at html[1]/body[1]/div[0] scrolls, but the visually hidden text at html[1]/body[1]/div[0]/table[0]/tbody[0]/tr[0]/td[1]/span[0] escapes it: Bootstrap positions that text absolutely, and neither the scroller nor an element between them is positioned or transformed (add position-relative to the scroller)",
+		}},
+		{name: "once per scroller", body: `<div class="table-responsive-md">` + table(hidden) + table(hidden) + table(`<span class="visually-hidden-focusable">x</span>`) + `</div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls, but the visually hidden text at html[1]/body[1]/div[0]/table[0]/tbody[0]/tr[0]/td[1]/span[0] (and 2 more) escapes it"}},
+		{name: "hidden in hidden", body: `<div class="overflow-hidden"><span class="visually-hidden">a <span class="visually-hidden">b</span></span></div>`, want: []string{"visually hidden text at html[1]/body[1]/div[0]/span[0] escapes"}},
+		{name: "axis variants", body: `<div class="overflow-y-scroll">` + hidden + `</div><div class="overflow-x-visible overflow-y-auto">` + hidden + `</div><div class="overflow-visible overflow-x-hidden">` + hidden + `</div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls", "div at html[1]/body[1]/div[1] scrolls", "div at html[1]/body[1]/div[2] scrolls"}},
+		{name: "static override", body: `<div class="overflow-auto"><div class="dropdown position-static">` + hidden + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls"}},
+		{name: "responsive sticky", body: `<div class="overflow-auto"><div class="sticky-md-top">` + hidden + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls"}},
+		{name: "inner scroller", body: `<div class="overflow-auto position-relative"><div class="table-responsive">` + table(hidden) + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0]/div[0] scrolls"}},
+		{name: "fragment", fragment: true, body: `<div class="table-responsive">` + table(hidden) + `</div>`, want: []string{"div at div[0] scrolls"}},
+		// Transforms make containing blocks too: the spinners' animation
+		// and the translate utilities, whatever the position.
+		{name: "spinners", body: `<div class="overflow-auto"><div class="spinner-border" role="status">` + hidden + `</div><div class="spinner-grow position-static" role="status">` + hidden + `</div></div>`},
+		{name: "translated between", body: `<div class="overflow-auto"><span class="badge translate-middle-y">` + hidden + `</span></div>`},
+		// Components that hide or scroll their overflow.
+		{name: "component scrollers", body: `<div class="text-truncate">` + hidden + `</div><div class="progress"><div class="progress-bar">` + hidden + `</div></div><ul class="navbar-nav navbar-nav-scroll"><li>` + hidden + `</li></ul><div class="navbar-expand-lg"><ul class="navbar-nav-scroll">` + hidden + `</ul></div>`, want: []string{
+			"div at html[1]/body[1]/div[0] scrolls", "div at html[1]/body[1]/div[1]/div[0] scrolls", "ul at html[1]/body[1]/ul[2] scrolls", "ul at html[1]/body[1]/div[3]/ul[0] scrolls",
+		}},
+		{name: "stacked progress", body: `<div class="progress-stacked"><div class="progress">` + hidden + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls"}},
+		{name: "visible component overflow", body: `<div class="text-truncate overflow-visible">` + hidden + `</div><div class="navbar-expand"><ul class="navbar-nav-scroll">` + hidden + `</ul></div><div class="progress position-relative">` + hidden + `</div>`},
+	})
+	gt.Run("bs.Spinner", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		view := div.Div(attr.Class("overflow-auto"))(bs.Spinner()(), bs.SpinnerGrow()(text.Text("Saving...")), bs.TableResponsive()(text.Span(attr.Class("visually-hidden"))(text.Text("x"))))
+		t.Must(ct.View(view).Valid(webuitest.ScrollersClipHiddenText()))
+	})
+	gt.Run("bs.DataTable", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		view := bs.DataTable{
+			Caption:       text.Text("Projects"),
+			CaptionHidden: true,
+			Columns:       []bs.Column{{Header: text.Text("Name")}, {Header: text.Text("Actions"), HeaderHidden: true}},
+			Rows:          []bs.TableRow{{Cells: []elem.Node{text.Text("Website"), text.A(text.Href("/projects/1"))(text.Text("Open"))}}},
+		}
+		t.Must(ct.View(view).Valid(webuitest.ScrollersClipHiddenText()))
+	})
+}
+
 func TestExternalLinksSafe(gt *testing.T) {
 	checkRule(gt, webuitest.ExternalLinksSafe(), []ruleCase{
 		{name: "valid", body: `<a href="https://x.example" target="_blank" rel="noopener noreferrer">x</a><a href="/y" target="_self">y</a><a href="https://z.example" target="_blank" rel="NoReferrer">z</a><a href="/w">w</a>`},
@@ -653,7 +798,7 @@ func TestRules(gt *testing.T) {
 			t.Mustf(be.False(names[name]), "duplicate rule %s", name)
 			names[name] = true
 		}
-		for _, want := range []string{"uniqueIDs", "noRaw", "noInlineScripts", "postFormsCarryCSRF", "noTokenLeaks", "hxTargets", "modalDialogs", "noBootstrapJSHooks", "externalLinksSafe"} {
+		for _, want := range []string{"uniqueIDs", "noRaw", "noInlineScripts", "postFormsCarryCSRF", "noTokenLeaks", "hxTargets", "hxPreserveIDs", "modalDialogs", "noBootstrapJSHooks", "scrollersClipHiddenText", "externalLinksSafe"} {
 			t.Mustf(be.True(names[want]), "missing rule %s", want)
 		}
 		t.Must(be.False(names["secretsHidden"]))
@@ -699,6 +844,58 @@ func TestRules(gt *testing.T) {
 		got = violations(t, ct.View(view), webuitest.NoInlineStyles())
 		t.Must(be.Len(got, 1))
 	})
+}
+
+// TestRulesAttributeCase checks that the rules read attributes whose
+// names are not lower case: views keep the case in which attributes were
+// written, and the HTML parser writes SVG attributes such as viewBox in
+// mixed case, so the other attributes of an SVG element are looked up
+// case-insensitively too.
+func TestRulesAttributeCase(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	cases := []struct {
+		name    string
+		subject *ct.Subject
+		rule    ct.Rule
+		want    []string
+	}{
+		{"view target found", ct.View(elem.Bundle{
+			div.Div(attr.KV("ID", "list"))(),
+			button.Button(button.Type(button.TypeButton), attr.KV("HX-Get", "/items"), attr.KV("HX-Target", "#list"))(text.Text("Load")),
+		}), webuitest.HXTargets(), nil},
+		{"view target missing", ct.View(
+			button.Button(button.Type(button.TypeButton), attr.KV("Data-HX-Get", "/items"), attr.KV("HX-Target", "#gone"))(text.Text("Load")),
+		), webuitest.HXTargets(), []string{`hx-target at button[0] targets missing id "gone"`}},
+		{"view inherited target", ct.View(
+			div.Div(attr.KV("HX-Target", "find tr"))(button.Button(button.Type(button.TypeButton), attr.KV("HX-Get", "/x"))(text.Text("x"))),
+		), webuitest.HXTargets(), []string{`hx-target at div[0], inherited by div[0]/button[0], finds no "tr" descendant`}},
+		{"view post without csrf", ct.View(
+			button.Button(button.Type(button.TypeButton), attr.KV("HX-Post", "/x"))(text.Text("x")),
+		), webuitest.PostFormsCarryCSRF(""), []string{`hx-post at button[0] sends no "csrf" field`}},
+		{"view csrf in vals", ct.View(
+			div.Div(attr.KV("HX-Vals", `{"csrf":"t"}`))(button.Button(button.Type(button.TypeButton), attr.KV("HX-Post", "/x"))(text.Text("x"))),
+		), webuitest.PostFormsCarryCSRF("t"), nil},
+		{"view sse", ct.View(
+			div.Div(attr.KV("HX-Ext", "sse"), attr.KV("SSE-Connect", "/live"))(div.Div(attr.KV("SSE-Swap", "tick"))()),
+		), webuitest.SSEWiring(), []string{"sse-connect at div[0] has no sse-close event"}},
+		{"view icon class", ct.View(text.Span(attr.KV("Class", "bi bi-x"))()), webuitest.IconsHidden(), []string{"icon at span[0] is neither"}},
+		{"view dialog opener", ct.View(button.Button(attr.KV("CommandFor", "d"), attr.KV("Command", "show-modal"))(text.Text("x"))), webuitest.ModalDialogs(), []string{
+			"commandfor at button[0] is not on a button of type button", "commandfor at button[0] has no popovertarget naming the same dialog",
+		}},
+		{"svg request host", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" hx-get="https://other.example/x"><path d="M0 0"/></svg>`)), webuitest.LocalResources(), []string{"hx-get at html[1]/body[1]/svg[0] names a host"}},
+		{"svg post without csrf", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" data-hx-post="/x"></svg>`)), webuitest.PostFormsCarryCSRF(""), []string{`data-hx-post at html[1]/body[1]/svg[0] sends no "csrf" field`}},
+		{"svg icon", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" class="bi"></svg><svg viewBox="0 0 1 1" class="bi" aria-hidden="true"></svg>`)), webuitest.IconsHidden(), []string{"icon at html[1]/body[1]/svg[0] is neither"}},
+		{"svg style", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" style="fill: red"></svg>`)), webuitest.NoInlineStyles(), []string{"style attribute at html[1]/body[1]/svg[0]"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			got := violations(t, c.subject, c.rule)
+			t.Mustf(be.Len(got, len(c.want)), "violations %q", got)
+			for i, w := range c.want {
+				t.Must(be.Substring(got[i], w))
+			}
+		})
+	}
 }
 
 func TestNodeHelpers(gt *testing.T) {

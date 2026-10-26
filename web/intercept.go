@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/internal/flush"
 	"github.com/protolambda/webui/mw"
 )
 
@@ -121,9 +122,10 @@ type interceptor struct {
 }
 
 var (
-	_ http.Flusher  = (*interceptor)(nil)
-	_ http.Hijacker = (*interceptor)(nil)
-	_ io.ReaderFrom = (*interceptor)(nil)
+	_ http.Flusher    = (*interceptor)(nil)
+	_ http.Hijacker   = (*interceptor)(nil)
+	_ io.ReaderFrom   = (*interceptor)(nil)
+	_ flush.Forwarder = (*interceptor)(nil)
 )
 
 func (w *interceptor) WriteHeader(code int) {
@@ -186,6 +188,10 @@ func (w *interceptor) FlushError() error {
 
 // Flush is FlushError without the error, for [http.Flusher].
 func (w *interceptor) Flush() { _ = w.FlushError() }
+
+// ForwardsFlush marks the interceptor as a [flush.Forwarder]: it can
+// flush when the underlying writer can.
+func (w *interceptor) ForwardsFlush() {}
 
 // Hijack hands the connection to the handler.
 func (w *interceptor) Hijack() (net.Conn, *bufio.ReadWriter, error) {

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+
+	"github.com/protolambda/webui/internal/flush"
 )
 
 // tracker records whether a handler started its response: wrote a final
@@ -25,9 +27,10 @@ type tracker struct {
 }
 
 var (
-	_ http.Flusher  = (*tracker)(nil)
-	_ http.Hijacker = (*tracker)(nil)
-	_ io.ReaderFrom = (*tracker)(nil)
+	_ http.Flusher    = (*tracker)(nil)
+	_ http.Hijacker   = (*tracker)(nil)
+	_ io.ReaderFrom   = (*tracker)(nil)
+	_ flush.Forwarder = (*tracker)(nil)
 )
 
 // track wraps w in a tracker, or returns w itself when it is one.
@@ -96,6 +99,10 @@ func (t *tracker) FlushError() error {
 
 // Flush is FlushError without the error, for [http.Flusher].
 func (t *tracker) Flush() { _ = t.FlushError() }
+
+// ForwardsFlush marks the tracker as a [flush.Forwarder]: it can flush
+// when the underlying writer can.
+func (t *tracker) ForwardsFlush() {}
 
 // Hijack hands the connection to the handler.
 func (t *tracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {

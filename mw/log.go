@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/protolambda/webui/internal/flush"
 )
 
 type loggerKey struct{}
@@ -168,9 +170,10 @@ type statusWriter struct {
 }
 
 var (
-	_ http.Flusher  = (*statusWriter)(nil)
-	_ http.Hijacker = (*statusWriter)(nil)
-	_ io.ReaderFrom = (*statusWriter)(nil)
+	_ http.Flusher    = (*statusWriter)(nil)
+	_ http.Hijacker   = (*statusWriter)(nil)
+	_ io.ReaderFrom   = (*statusWriter)(nil)
+	_ flush.Forwarder = (*statusWriter)(nil)
 )
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -236,6 +239,10 @@ func (w *statusWriter) FlushError() error {
 
 // Flush is FlushError without the error, for [http.Flusher].
 func (w *statusWriter) Flush() { _ = w.FlushError() }
+
+// ForwardsFlush marks the writer as a [flush.Forwarder]: it can flush
+// when the underlying writer can.
+func (w *statusWriter) ForwardsFlush() {}
 
 // Hijack hands the connection to the handler, and records that it did.
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {

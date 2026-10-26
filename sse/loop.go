@@ -230,8 +230,10 @@ func (l Loop) check(writeWindow time.Duration) (Timing, error) {
 // an invalid loop returns an error wrapping [ErrInvalidConfig] with the
 // response untouched. A stream that already ended returns [ErrEnded]. A response
 // writer that cannot flush returns an error wrapping
-// [http.ErrNotSupported], also with nothing written, so the handler can
-// still answer with an error (see [Stream]).
+// [http.ErrNotSupported], also with nothing written (behind the writers of
+// web and mw too), so the handler can still answer with an error; only a
+// writer that reports it when it is flushed has started the response (see
+// [Stream]).
 //
 // Otherwise Run returns nil, except for failures worth logging: an update
 // that failed (joined with any failure to render the end fragment), and an

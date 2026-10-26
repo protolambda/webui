@@ -82,8 +82,13 @@ const (
 	TargetStream
 	// TargetAsset is a stylesheet, icon, preload, script or image.
 	TargetAsset
-	// TargetRedirect is the Location of a redirect.
+	// TargetRedirect is the Location of a redirect on the site, which the
+	// crawl follows.
 	TargetRedirect
+	// TargetOffsiteRedirect is the Location of a redirect that leaves the
+	// site for another one, which the crawl does not follow. Its URL is
+	// absolute.
+	TargetOffsiteRedirect
 )
 
 // String returns the lowercase name of the kind, such as "link", or
@@ -102,6 +107,8 @@ func (k TargetKind) String() string {
 		return "asset"
 	case TargetRedirect:
 		return "redirect"
+	case TargetOffsiteRedirect:
+		return "offsite redirect"
 	}
 	return fmt.Sprintf("TargetKind(%d)", uint8(k))
 }
@@ -110,7 +117,8 @@ func (k TargetKind) String() string {
 type Target struct {
 	Kind   TargetKind
 	Method string
-	// URL is the path and query of the target, without the fragment.
+	// URL is the path and query of the target, without the fragment; for
+	// a [TargetOffsiteRedirect], the absolute URL without the fragment.
 	URL string
 	// Page is the URL of the page with the target.
 	Page string
@@ -148,6 +156,11 @@ type CrawlOptions struct {
 	// crawl that reaches the bound reports it. Redirects do not count as
 	// pages: a chain of them is bounded by itself, see [Crawl].
 	MaxPages int
+	// NoRedirects reports every redirect of a crawled page as a problem,
+	// on the site or off it, a start page's too, for applications whose
+	// pages must answer 200 themselves. Redirects on the site are still
+	// followed, so that the crawl goes on.
+	NoRedirects bool
 	// Assets fetches every stylesheet, icon, preload and script once and
 	// checks that it is served with status 200, nosniff and the content
 	// type of its kind, and that its bytes match the integrity value of
@@ -274,10 +287,14 @@ type assetRef struct {
 // instead of stopping at the first:
 //
 //   - every page answers 200 with HTML that satisfies its contract, from
-//     ContractFor or Contract (redirects are followed when they stay on
-//     the site, up to 20 in a row as browsers follow them: a longer
-//     chain, or one that comes back to a URL of the chain, is a problem;
-//     other statuses are problems);
+//     ContractFor or Contract, or redirects; other statuses are problems;
+//   - redirects on the site are followed, up to 20 in a row as browsers
+//     follow them: a longer chain, one that comes back to a URL of the
+//     chain, and a redirect without a Location that parses are problems;
+//   - a redirect that leaves the site for another one is not followed
+//     and is no problem: the report records it as a target of the kind
+//     [TargetOffsiteRedirect], with its absolute URL; with NoRedirects,
+//     every redirect is a problem;
 //   - every link, form action, formaction, htmx request URL, sse-connect
 //     URL and asset on the site is routed (with Routes);
 //   - every link to a fragment of another crawled page names an element
@@ -360,9 +377,28 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 		}
 		code := res.StatusCode()
 		if code >= 300 && code < 400 {
-			location := res.Headers().Get("Location")
-			key, _, ok := siteURL(site, resolve(site, q.url), location)
+			from := resolve(site, q.url)
+			location := strings.TrimSpace(res.Headers().Get("Location"))
+			ref, err := url.Parse(location)
+			switch {
+			case location == "":
+				problem("GET %s (from %s) answered %d without a Location", q.url, q.from, code)
+				continue
+			case err != nil:
+				problem("GET %s (from %s) answered %d with a Location that does not parse", q.url, q.from, code)
+				continue
+			}
+			key, _, ok := siteURL(site, from, location)
 			if !ok {
+				to := from.ResolveReference(ref)
+				to.Fragment, to.RawFragment = "", ""
+				key = to.String()
+			}
+			if o.NoRedirects {
+				problem("GET %s (from %s) redirects to %s (%d), want 200", q.url, q.from, key, code)
+			}
+			if !ok {
+				r.Targets = append(r.Targets, Target{Kind: TargetOffsiteRedirect, Method: http.MethodGet, URL: key, Page: q.url})
 				continue
 			}
 			r.Targets = append(r.Targets, Target{Kind: TargetRedirect, Method: http.MethodGet, URL: key, Page: q.url})

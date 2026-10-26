@@ -290,6 +290,67 @@ func TestCrawlRedirects(gt *testing.T) {
 		t.Must(be.ErrorContains(err, "GET /b (from /a): the redirects loop back to /a"))
 		t.Must(be.ErrorContains(err, "GET /self (from the start): the redirects loop back to /self"))
 	})
+	t.Run("off the site", func(t devtest.T) {
+		// A link that redirects to another site, a start page that does,
+		// and a scheme-relative one.
+		mux := site(text.A(text.Href("/out"))(text.Text("Out")), text.A(text.Href("/help"))(text.Text("Help")))
+		mux.HandleFunc("GET /out", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://other.example/tasks?from=app#top", http.StatusSeeOther)
+		})
+		mux.HandleFunc("GET /help", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "//docs.example/tasks", http.StatusFound)
+		})
+		mux.HandleFunc("GET /away", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://other.example/", http.StatusFound)
+		})
+		c := &webuitest.Client{Handler: mux}
+		report := webuitest.Crawl(t, c, webuitest.CrawlOptions{Start: []string{"/", "/away"}, Routes: webuitest.MuxRoutes(mux)})
+		t.Must(report)
+		var off []webuitest.Target
+		for _, tg := range report.Targets {
+			if tg.Kind == webuitest.TargetOffsiteRedirect {
+				off = append(off, tg)
+			}
+		}
+		t.Must(be.DeepEqual([]webuitest.Target{
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "https://other.example/", Page: "/away"},
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "https://other.example/tasks?from=app", Page: "/out"},
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "https://docs.example/tasks", Page: "/help"},
+		}, off))
+		t.Must(report.Uses(http.MethodGet, "https://other.example/tasks?from=app"))
+		t.Must(be.DeepEqual([]string{"/", "/tasks"}, report.Pages))
+		t.Must(be.Equal("offsite redirect", webuitest.TargetOffsiteRedirect.String()))
+
+		// Pages that must answer 200 themselves.
+		strict := webuitest.Crawl(t, c, webuitest.CrawlOptions{Start: []string{"/", "/away"}, NoRedirects: true})
+		t.Must(be.DeepEqual([]string{
+			"GET /away (from the start) redirects to https://other.example/ (302), want 200",
+			"GET /old (from /) redirects to /tasks (301), want 200",
+			"GET /out (from /) redirects to https://other.example/tasks?from=app (303), want 200",
+			"GET /help (from /) redirects to https://docs.example/tasks (302), want 200",
+		}, strict.Problems))
+		// The redirect on the site is still followed.
+		t.Must(strict.Covers("/tasks"))
+	})
+	t.Run("no usable location", func(t devtest.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /none", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusFound) })
+		mux.HandleFunc("GET /blank", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", " ")
+			w.WriteHeader(http.StatusSeeOther)
+		})
+		mux.HandleFunc("GET /bad", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "http://%zz/")
+			w.WriteHeader(http.StatusFound)
+		})
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{Start: []string{"/none", "/blank", "/bad"}})
+		t.Must(be.DeepEqual([]string{
+			"GET /none (from the start) answered 302 without a Location",
+			"GET /blank (from the start) answered 303 without a Location",
+			"GET /bad (from the start) answered 302 with a Location that does not parse",
+		}, report.Problems))
+		t.Must(be.Empty(report.Targets))
+	})
 	t.Run("short chains are followed", func(t devtest.T) {
 		mux := site()
 		mux.HandleFunc("GET /older", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/old", http.StatusFound) })

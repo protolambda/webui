@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,8 +12,10 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/protolambda/chord/ct/cthttp"
 
@@ -260,6 +263,8 @@ type reqSettings struct {
 	headers                           []headerOp
 	logger                            *slog.Logger
 	urlMethods                        map[string]bool // of PageHTMXConfig
+	// err is the first error of an option, which buildRequest reports.
+	err error
 }
 
 // settings applies opts, skipping nil ones.
@@ -397,6 +402,79 @@ func SendCookie(name, value string) ReqOption {
 	return func(s *reqSettings) { s.cookies = append(s.cookies, &http.Cookie{Name: name, Value: value}) }
 }
 
+// SendCookies adds the cookies that res sets to the Cookie header, in
+// order, for a [Client], which keeps no cookies, to send them back as a
+// browser would: a cookie set twice goes with its last value, and one
+// that clears itself (Max-Age zero or less, or without Max-Age an Expires
+// date before the current time, as a cookie jar compares it) is left out.
+// Domain, Path and Secure are not matched against the request; a
+// [Browser] does that. A response that was not captured, or a Set-Cookie
+// header that does not parse, fails the test when the request is built.
+// [CookieValue] reads a single cookie.
+func SendCookies(res *cthttp.Result) ReqOption {
+	cookies, err := responseCookies(res)
+	if err == nil {
+		cookies = keptCookies(cookies, time.Now())
+	}
+	return func(s *reqSettings) {
+		if err != nil {
+			if s.err == nil {
+				s.err = err
+			}
+			return
+		}
+		s.cookies = append(s.cookies, cookies...)
+	}
+}
+
+// responseCookies returns the cookies that a captured response sets, in
+// order, or an error if it was not captured or a Set-Cookie header does
+// not parse. Errors never quote a header.
+func responseCookies(res *cthttp.Result) ([]*http.Cookie, error) {
+	if res == nil {
+		return nil, errors.New("no response to take cookies from")
+	}
+	if err := res.Captured().Check(context.Background()); err != nil {
+		return nil, fmt.Errorf("cookies of %s: %w", res.Describe(), err)
+	}
+	cookies, bad := setCookies(res)
+	if bad > 0 {
+		return nil, fmt.Errorf("cookies of %s: %d Set-Cookie headers do not parse", res.Describe(), bad)
+	}
+	return cookies, nil
+}
+
+// keptCookies returns name and value of the cookies that a cookie jar
+// keeps at now, the last of each name, in the order of their first
+// appearance.
+func keptCookies(cookies []*http.Cookie, now time.Time) []*http.Cookie {
+	var out []*http.Cookie
+	at := make(map[string]int)
+	for _, c := range cookies {
+		kept := &http.Cookie{Name: c.Name, Value: c.Value}
+		if cookieCleared(c, now) {
+			kept = nil
+		}
+		if i, ok := at[c.Name]; ok {
+			out[i] = kept
+			continue
+		}
+		at[c.Name] = len(out)
+		out = append(out, kept)
+	}
+	return slices.DeleteFunc(out, func(c *http.Cookie) bool { return c == nil })
+}
+
+// cookieCleared reports whether a parsed Set-Cookie deletes its cookie at
+// now: Max-Age zero or less, or, without a Max-Age, an Expires date that
+// is not after now. Max-Age takes precedence over Expires (RFC 6265,
+// section 5.3).
+func cookieCleared(c *http.Cookie, now time.Time) bool {
+	// http.ParseSetCookie reports a Max-Age of zero or less as -1, and a
+	// missing (or invalid, so ignored) one as 0.
+	return c.MaxAge < 0 || (c.MaxAge == 0 && !c.Expires.IsZero() && !c.Expires.After(now))
+}
+
 // Header sets a request header after every other option; an empty value
 // removes it.
 func Header(name, value string) ReqOption {
@@ -430,6 +508,9 @@ func safeMethod(m string) bool { return m == http.MethodGet || m == http.MethodH
 // it is a client request for an http.Client.
 func buildRequest(ctx context.Context, base *url.URL, method, target string, body Body, opts []ReqOption, server bool) (*http.Request, error) {
 	s := settings(opts)
+	if s.err != nil {
+		return nil, s.err
+	}
 	from := base
 	if s.page != nil {
 		p, err := url.Parse(*s.page)

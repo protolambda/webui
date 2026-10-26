@@ -167,6 +167,56 @@ func TestCookie(gt *testing.T) {
 	})
 }
 
+func TestCookieValue(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	res := respond(t, func(w http.ResponseWriter) {
+		http.SetCookie(w, &http.Cookie{Name: "theme", Value: "dark"})
+		http.SetCookie(w, &http.Cookie{Name: "__Host-preauth", Value: cookieValue, Path: "/", Secure: true})
+	})
+	t.Must(be.Equal(cookieValue, webuitest.CookieValue(t, res, "__Host-preauth")))
+	t.Must(be.Equal("dark", webuitest.CookieValue(t, res, "theme")))
+	cleared := respond(t, func(w http.ResponseWriter) { http.SetCookie(w, &http.Cookie{Name: "s", MaxAge: -1}) })
+	t.Must(be.Equal("", webuitest.CookieValue(t, cleared, "s")))
+
+	cases := []struct {
+		name string
+		set  func(w http.ResponseWriter)
+		msg  string
+	}{
+		{"missing", func(w http.ResponseWriter) {
+			http.SetCookie(w, &http.Cookie{Name: "theme", Value: cookieValue})
+			w.Header().Add("Set-Cookie", "=broken")
+		}, `webuitest.CookieValue: GET /x sets no cookie "s" (it sets theme); 1 Set-Cookie headers do not parse`},
+		{"twice", func(w http.ResponseWriter) {
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue + "2"})
+		}, `GET /x sets cookie "s" 2 times`},
+		{"does not parse", func(w http.ResponseWriter) {
+			w.Header().Add("Set-Cookie", `s="`+cookieValue+`"x`)
+			http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+		}, `GET /x has a Set-Cookie header for "s" that does not parse`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			r := newRecordT(t.Context())
+			t.Must(be.Equal("", webuitest.CookieValue(r, respond(t, c.set), "s")))
+			t.Must(be.True(r.failed))
+			t.Must(be.Substring(r.output(), c.msg))
+			t.Must(be.False(strings.Contains(r.output(), cookieValue)))
+		})
+	}
+	r := newRecordT(t.Context())
+	webuitest.CookieValue(r, nil, "s")
+	t.Must(be.Substring(r.output(), "webuitest.CookieValue: no response"))
+	r = newRecordT(t.Context())
+	tooLong := cthttp.Serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "s", Value: cookieValue})
+		_, _ = w.Write([]byte("too long"))
+	}), webuitest.Get(t, "/x"), cthttp.WithMaxBody(1))
+	t.Must(be.Equal("", webuitest.CookieValue(r, tooLong, "s")))
+	t.Must(be.True(r.failed))
+}
+
 func TestNoCookies(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Must(webuitest.NoCookies(respond(t, func(http.ResponseWriter) {})))

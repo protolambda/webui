@@ -51,15 +51,15 @@
 // ([HTMXData], [Client.SubmitHTMX]: method and URL of hx-post, hx-delete
 // and the others, hx-vals, hx-include, hx-params, and the HX-* headers). A
 // Client keeps no cookies: attach state to its requests (Prepare,
-// [SendCookie]). [Browser] is the same harness over a real test server
-// with TLS and a cookie jar, for full-stack tests and for flows that need
-// cookies, such as logins.
+// [SendCookie], or [SendCookies] with the cookies of an earlier response,
+// which [CookieValue] reads one by one). [Browser] is the same harness
+// over a real test server with TLS and a cookie jar, for full-stack tests
+// and for flows that need cookies, such as logins.
 //
 // [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookie],
 // [NoCookies] and [SecurityHeaders] assert responses; cookie values are
-// never printed.
-// [StrictPolicy] and [PolicyFor] are the security headers of pages,
-// [AssetPolicy] and [AssetPolicyFor] those of asset files.
+// never printed. [StrictPolicy] and [PolicyFor] are the security headers
+// of pages, [AssetPolicy] and [AssetPolicyFor] those of asset files.
 // [CrossSiteProbes], [RejectsCrossSite], [OpenRedirectVectors] and
 // [Hostile] supply attack inputs. [Crawl] follows an application's links
 // and checks every page and target it finds, with a contract per page

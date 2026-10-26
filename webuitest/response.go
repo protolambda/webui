@@ -196,9 +196,7 @@ func (a cookieAssertion) Check(ctx context.Context) error {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	// http.ParseSetCookie reports a Max-Age of zero or less as -1, and a
-	// missing (or invalid, so ignored) one as 0.
-	cleared := c.MaxAge < 0 || (c.MaxAge == 0 && !c.Expires.IsZero() && !c.Expires.After(now))
+	cleared := cookieCleared(c, now)
 	switch {
 	case w.Cleared && !cleared:
 		problems = append(problems, "not cleared (no Max-Age<=0, or no Max-Age and a past Expires)")
@@ -215,6 +213,60 @@ func (a cookieAssertion) Check(ctx context.Context) error {
 		return fmt.Errorf("%w: cookie %q of %s: %s", ct.ErrMismatch, a.name, a.res.Describe(), strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// CookieValue returns the value of the cookie called name that the
+// response sets, for a [Client], which keeps no cookies, to send a
+// cookie of the server back ([SendCookie]; [SendCookies] sends all of
+// them). As [Cookie], it requires exactly one such cookie: it fails the
+// test when the response was not captured, sets no cookie or several
+// cookies of that name, or has a Set-Cookie header for the name that
+// does not parse. A cookie that clears itself has a value too, usually
+// empty; check the attributes with Cookie. Messages never show the
+// value.
+func CookieValue(t TB, res *cthttp.Result, name string) string {
+	t.Helper()
+	if res == nil {
+		fatalf(t, "webuitest.CookieValue: no response")
+		return ""
+	}
+	if err := res.Captured().Check(t.Context()); err != nil {
+		fatalf(t, "webuitest.CookieValue: %v", err)
+		return ""
+	}
+	var found []*http.Cookie
+	var names []string
+	bad := 0
+	for _, line := range res.Headers().Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		switch {
+		case err != nil && rawCookieName(line) == name:
+			fatalf(t, "webuitest.CookieValue: %s has a Set-Cookie header for %q that does not parse", res.Describe(), name)
+			return ""
+		case err != nil:
+			bad++
+		case c.Name == name:
+			found = append(found, c)
+		default:
+			names = append(names, c.Name)
+		}
+	}
+	switch {
+	case len(found) == 0:
+		msg := fmt.Sprintf("%s sets no cookie %q", res.Describe(), name)
+		if len(names) > 0 {
+			msg += " (it sets " + strings.Join(names, ", ") + ")"
+		}
+		if bad > 0 {
+			msg += fmt.Sprintf("; %d Set-Cookie headers do not parse", bad)
+		}
+		fatalf(t, "webuitest.CookieValue: %s", msg)
+		return ""
+	case len(found) > 1:
+		fatalf(t, "webuitest.CookieValue: %s sets cookie %q %d times", res.Describe(), name, len(found))
+		return ""
+	}
+	return found[0].Value
 }
 
 func sameSiteName(s http.SameSite) string {

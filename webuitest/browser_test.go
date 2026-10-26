@@ -227,6 +227,10 @@ func TestCookieKeeping(gt *testing.T) {
 		t.Must(c.Get(t, "/set").Status(http.StatusNoContent))
 		t.Must(c.Get(t, "/get").Status(http.StatusNotFound))
 		t.Must(c.Get(t, "/get", webuitest.SendCookie("__Host-items", "sent")).Body(ct.Exact("sent")))
+		// It sends the cookies of a response back when told to.
+		set := c.Get(t, "/set")
+		t.Must(c.Get(t, "/get", webuitest.SendCookies(set)).Body(ct.Exact("kept")))
+		t.Must(be.Equal("kept", webuitest.CookieValue(t, set, "__Host-items")))
 	})
 	for name, o := range map[string]webuitest.BrowserOptions{"https": {}, "insecure": {Insecure: true}} {
 		t.Run("browser "+name, func(t devtest.T) {

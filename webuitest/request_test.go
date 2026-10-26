@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
@@ -129,6 +130,37 @@ func TestRequestOptions(gt *testing.T) {
 		r = newRecordT(t.Context())
 		t.Must(be.True(webuitest.Request(r, "BAD METHOD", "/", webuitest.Body{}) == nil))
 		t.Must(be.True(r.failed))
+	})
+}
+
+func TestSendCookies(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	res := webuitest.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "a", Value: "1", Path: "/", Secure: true, HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "b", Value: "2", Domain: "other.example.test"})
+		http.SetCookie(w, &http.Cookie{Name: "a", Value: "3"})
+		http.SetCookie(w, &http.Cookie{Name: "gone", Value: "x", MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: "expired", Value: "x", Expires: time.Unix(1, 0)})
+		http.SetCookie(w, &http.Cookie{Name: "kept", Value: "x", MaxAge: 60, Expires: time.Unix(1, 0)})
+		http.SetCookie(w, &http.Cookie{Name: "b", Value: "4", MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: "c", Value: "5"})
+	}), webuitest.Get(t, "/"))
+	req := webuitest.Get(t, "/", webuitest.SendCookie("x", "y"), webuitest.SendCookies(res))
+	t.Must(be.Equal("x=y; a=3; kept=x; c=5", req.Header.Get("Cookie")))
+
+	t.Run("failures", func(t devtest.T) {
+		const secret = "cookie-value-never-printed"
+		broken := webuitest.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Add("Set-Cookie", `s="`+secret+`"x`)
+		}), webuitest.Get(t, "/x"))
+		r := newRecordT(t.Context())
+		t.Must(be.True(webuitest.Get(r, "/", webuitest.SendCookies(broken)) == nil))
+		t.Must(be.True(r.failed))
+		t.Must(be.Substring(r.output(), "webuitest: cookies of GET /x: 1 Set-Cookie headers do not parse"))
+		t.Must(be.False(strings.Contains(r.output(), secret)))
+		r = newRecordT(t.Context())
+		t.Must(be.True(webuitest.Get(r, "/", webuitest.SendCookies(nil)) == nil))
+		t.Must(be.Substring(r.output(), "no response to take cookies from"))
 	})
 }
 

@@ -331,3 +331,39 @@ func TestFormDataValues(gt *testing.T) {
 	t.Must(be.DeepEqual([]string{"Go"}, s.Values()["s"]))
 	t.Must(be.Len(s.Values()["x"], 0))
 }
+
+// TestFormDataDirname pins the controls whose dirname adds an entry: the
+// auto-directionality form-associated elements of the HTML standard.
+func TestFormDataDirname(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	page := cthtml.PageString(htmlPage(`<form id="f">
+<input type="hidden" name="h" value="1" dirname="h.dir">
+<input name="t" value="2" dirname="t.dir">
+<input type="search" name="q" value="3" dirname="q.dir">
+<input type="tel" name="tel" value="4" dirname="tel.dir">
+<input type="url" name="u" value="5" dirname="u.dir">
+<input type="email" name="e" value="6" dirname="e.dir">
+<input type="password" name="p" value="7" dirname="p.dir">
+<textarea name="ta" dirname="ta.dir">8</textarea>
+<input type="number" name="n" value="9" dirname="n.dir">
+<input type="checkbox" name="c" checked dirname="c.dir">
+<input type="text" name="empty" value="10" dirname="">
+<input type="text" value="nameless" dirname="nameless.dir">
+<button type="submit" name="b" value="11" dirname="b.dir" id="b">B</button>
+<input type="submit" name="s" value="12" dirname="s.dir" id="s">
+</form>`))
+	s, err := webuitest.FormData(t.Context(), page, page.Find(ct.ID("f")), page.Find(ct.ID("s")))
+	t.Must(be.NoError(err))
+	t.Must(be.DeepEqual([][2]string{
+		{"h", "1"}, {"h.dir", "ltr"}, {"t", "2"}, {"t.dir", "ltr"}, {"q", "3"}, {"q.dir", "ltr"},
+		{"tel", "4"}, {"tel.dir", "ltr"}, {"u", "5"}, {"u.dir", "ltr"}, {"e", "6"}, {"e.dir", "ltr"},
+		{"p", "7"}, {"p.dir", "ltr"}, {"ta", "8"}, {"ta.dir", "ltr"}, {"n", "9"}, {"c", "on"},
+		{"empty", "10"}, {"s", "12"}, {"s.dir", "ltr"},
+	}, formFields(s.Fields)))
+	// A button element has no dirname entry.
+	s, err = webuitest.FormData(t.Context(), page, page.Find(ct.ID("f")), page.Find(ct.ID("b")))
+	t.Must(be.NoError(err))
+	t.Must(be.DeepEqual([]string{"11"}, s.Values()["b"]))
+	t.Must(be.Len(s.Values()["b.dir"], 0))
+	t.Must(be.Len(s.Values()["s.dir"], 0))
+}

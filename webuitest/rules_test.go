@@ -248,6 +248,10 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 		{name: "submit button before the field", body: `<form method="post"><button name="csrf" value="go">Go</button>` + csrf + `</form>`, want: []string{`from the submit button at html[1]/body[1]/form[0]/button[0] before`}},
 		{name: "dirname before the field", body: `<form method="post"><input name="title" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
 		{name: "textarea dirname before the field", body: `<form method="post"><textarea name="body" dirname="csrf"></textarea>` + csrf + `</form>`, want: []string{`from the dirname of the textarea at`}},
+		{name: "hidden dirname before the field", body: `<form method="post"><input type="hidden" name="v" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "email dirname before the field", body: `<form method="post"><input type="email" name="mail" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "submit dirname before the field", body: `<form method="post"><input type="submit" name="go" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "dirname without an entry before the field", body: `<form method="post"><input type="number" name="n" dirname="csrf"><input type="submit" name="go" dirname="csrf" formmethod="get"><button name="b" dirname="csrf">Go</button>` + csrf + `</form>`},
 		{name: "associated select before the field", body: `<select form="f" name="csrf"><option>a</option></select><form id="f" method="post">` + csrf + `</form>`, want: []string{`from the select at html[1]/body[1]/select[0] before`}},
 		// A select sends what FormData sends for it: nothing without an
 		// option to submit.

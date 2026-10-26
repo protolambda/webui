@@ -192,6 +192,39 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // [Render], which takes any status; webui's htmx configuration swaps it
 // as a 2xx answer (see the polling example).
 //
+// # Browser console
+//
+// Error answers leave messages in the browser's console, which browser
+// checks that fail on console messages must allow. Under webui's htmx
+// configuration (hx2.DefaultResponseHandling, whose rule for 4xx and 5xx
+// statuses has the error flag), every error answer to an htmx request,
+// the alerts of [Errors.Write], [Errors.Answer] and [Errors.Intercept] and
+// the 500 of [Errors.Recover] alike, makes Chromium log two errors:
+//
+//	Failed to load resource: the server responded with a status of 404 (Not Found)
+//	Response Status Error Code 404 from /tasks/7, [object HTMLDivElement]
+//
+// The first is the browser's own, for every response with a 4xx or 5xx
+// status: also for the error page of a plain request and for a 422 answer
+// to a form with problems, and under any htmx configuration. The second
+// is htmx's (2.0.10), with the path of the request and the element that
+// the answer is swapped into. htmx logs nothing for a 422, whose rule has
+// no error flag, nor for the 401 of [Errors.RequireAuth], whose
+// HX-Redirect it follows before it looks at the status. A
+// ResponseHandling of the application's own (hx2.Config) whose "[45].."
+// rule has Error false removes htmx's line, and changes what script
+// sees: the detail of htmx:afterRequest then reports the request as
+// successful (successful true, failed false), and htmx:responseError
+// does not fire.
+//
+// bs.Dialog adds two messages of Chromium's: the warning "popovertarget
+// is ignored on elements with commandfor." whenever an opener or a closer
+// of a dialog is used, and the info "Autofocus processing was blocked
+// because a document's URL has a fragment '#main'." when a page with a
+// dialog loads at a URL with a fragment, such as #main after the skip
+// link; the info quotes whatever fragment the URL has, so checks allow it
+// for any fragment. Both are expected.
+//
 // # Logging
 //
 // Errors are logged to mw.Logger of the request context, with the status

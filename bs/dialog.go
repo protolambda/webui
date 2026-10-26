@@ -48,6 +48,13 @@ import (
 // The warning is expected: it is the price of the fallback, and browser
 // checks that fail on console messages should allow it.
 //
+// The close button's autofocus has a message of its own: a page with a
+// dialog that loads at a URL with a fragment, such as #main after the skip
+// link, makes Chromium log the info "Autofocus processing was blocked
+// because a document's URL has a fragment '#main'.", which quotes whatever
+// fragment the URL has. It is expected too, and browser checks should
+// allow it as well, for any fragment rather than only '#main'.
+//
 // The dialog needs the webui theme CSS: Bootstrap hides .modal elements
 // (display: none), and the theme shows an open dialog.modal and resets the
 // browser's own dialog box. The dialog is never rendered open, which would

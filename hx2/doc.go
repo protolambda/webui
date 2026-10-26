@@ -39,8 +39,10 @@
 // error fragments show without script. htmx treats a swapped error like a
 // success, so a handler that retargets an error fragment also opts out of
 // the history update and of an inherited hx-select: see
-// [DefaultResponseHandling]. A 422 answer to a form with problems swaps
-// without being logged as an error.
+// [DefaultResponseHandling]. A 422 answer to a form with problems swaps,
+// and htmx does not log it as an error; the browser still logs its own
+// "Failed to load resource" error for it, as for every 4xx and 5xx
+// response.
 //
 // # Error responses are page markup
 //

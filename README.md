@@ -126,6 +126,11 @@ accessibility rules, CSP, and CSRF wiring.
 Start with the [application test](./example_test.go), then see the
 [testing examples](./webuitest/example_test.go) and [gallery tests](./internal/gallery/app/app_test.go).
 
+Checks in a real browser that fail on console messages need to allow the ones that webui causes by design: every
+4xx or 5xx answer logs the browser's "Failed to load resource" error, an error answer to an htmx request adds
+htmx's "Response Status Error Code", and dialogs add two Chromium messages. The "Browser console" section of
+`go doc github.com/protolambda/webui/web Errors` lists them.
+
 ## Browser support
 
 webui targets current evergreen browsers. Native dialogs use invoker commands with a Popover API fallback;

@@ -285,11 +285,15 @@ type ResponseRule struct {
 // For a response with the error flag, htmx logs "Response Status Error
 // Code ..." as an error to the browser console, fires htmx:responseError,
 // and reports the request as failed in the details of its events; for every
-// validation answer, that would bury real errors in noise and fail browser
-// checks that watch the console. Without the flag, the detail of
-// htmx:afterRequest reports a 422 response as successful: a listener that
-// needs to tell validation answers apart reads the status of detail.xhr.
-// Every other 4xx and 5xx status stays an error.
+// validation answer, that would bury real errors in noise. Without the
+// flag, the detail of htmx:afterRequest reports a 422 response as
+// successful: a listener that needs to tell validation answers apart reads
+// the status of detail.xhr. Every other 4xx and 5xx status stays an error.
+// The browser logs a console error of its own, "Failed to load resource:
+// the server responded with a status of 422 (Unprocessable Entity)", for
+// a 422 as for every 4xx and 5xx response, which no rule removes: browser
+// checks that watch the console allow those (see "Browser console" at
+// [github.com/protolambda/webui/web.Errors]).
 //
 // htmx handles a swapped error response like a successful one, whatever its
 // status. It updates the browser history for boosted elements, elements

@@ -51,16 +51,12 @@ func dialogAlertsTarget(r *http.Request) string {
 }
 
 func (a *App) dialogs(w http.ResponseWriter, r *http.Request) error {
-	token, err := a.forms.PageToken(w, r)
-	if err != nil {
-		return err
-	}
-	return web.Render(w, r, http.StatusOK, a.dialogsPage(r, token, a.project.get(), ""))
+	return web.Render(w, r, http.StatusOK, a.forms.WithPageToken(w, r, a.dialogsPage(r, a.project.get(), "")))
 }
 
 // dialogsPage renders the dialogs page, with the value and problem of a
 // rename submission.
-func (a *App) dialogsPage(r *http.Request, token, name, problem string) elem.Node {
+func (a *App) dialogsPage(r *http.Request, name, problem string) elem.Node {
 	var alerts []elem.Node
 	if problem != "" {
 		alerts = append(alerts, page.ErrorAlert(text.Text(problem+" Open the rename dialog to try again.")))
@@ -74,7 +70,7 @@ func (a *App) dialogsPage(r *http.Request, token, name, problem string) elem.Nod
 			para("Dialogs are native dialog elements opened by buttons with invoker commands; browsers without them fall back to popovers. No script runs. Dialogs sit in the dialogs region of the layout, outside every form."),
 			projectSection(a.project.get(), false),
 		},
-		Dialogs: dialogList(token, name, problem),
+		Dialogs: dialogList(name, problem),
 	})
 }
 
@@ -96,8 +92,9 @@ func projectSection(name string, focus bool) elem.Node {
 
 // dialogList renders the dialogs of the dialogs page, for the page and for
 // the htmx answer that closes them (page.DialogsOOB), which renders every
-// dialog that the page's openers name.
-func dialogList(token, name, problem string) []elem.Node {
+// dialog that the page's openers name. Their forms take the token of the
+// render context (session.PostFormFromContext).
+func dialogList(name, problem string) []elem.Node {
 	return []elem.Node{
 		bs.Dialog{
 			ID:    renameDialog,
@@ -106,7 +103,7 @@ func dialogList(token, name, problem string) []elem.Node {
 				// The dialog's own alerts region, rendered with it, so
 				// that it is in the page when an error answer arrives.
 				div.Div(attr.ID(renameAlerts), aria.Live("polite"))(),
-				renameProjectForm(token, name, problem),
+				renameProjectForm(name, problem),
 			},
 			Footer: elem.Bundle{
 				bs.BtnSecondary(bs.DialogClose(renameDialog))(text.Text("Cancel")),
@@ -121,7 +118,7 @@ func dialogList(token, name, problem string) []elem.Node {
 			Body:     para("The name goes back to \"" + defaultProject + "\"."),
 			Footer: elem.Bundle{
 				bs.BtnSecondary(bs.DialogClose(resetDialog))(text.Text("Cancel")),
-				session.PostForm("/dialogs/reset", token)(submit(bs.VariantDanger, "Reset")),
+				session.PostFormFromContext("/dialogs/reset")(submit(bs.VariantDanger, "Reset")),
 			},
 		},
 		bs.Dialog{
@@ -143,8 +140,8 @@ func dialogList(token, name, problem string) []elem.Node {
 
 // renameProjectForm renders the form of the rename dialog. Its submit
 // button sits in the dialog's footer and names the form by its id.
-func renameProjectForm(token, name, problem string) elem.Node {
-	return session.PostForm("/dialogs/rename", token,
+func renameProjectForm(name, problem string) elem.Node {
+	return session.PostFormFromContext("/dialogs/rename",
 		attr.ID(renameForm), form.Novalidate(),
 		hx2.Post("/dialogs/rename"), hx2.Target("this"), hx2.Swap(hx2.SwapOuterHTML),
 	)(
@@ -176,11 +173,11 @@ func (a *App) renameProject(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	defer f.Zero()
-	token := f.String(session.CSRFField)
 	name, ok := cleanLine(f.String("name"), maxProjectName)
 	if !ok {
 		return web.Choose(w, r, http.StatusUnprocessableEntity,
-			renameProjectForm(token, name, renameProblem), a.dialogsPage(r, token, name, renameProblem))
+			a.forms.WithFragmentToken(w, r, renameProjectForm(name, renameProblem)),
+			a.forms.WithPageToken(w, r, a.dialogsPage(r, name, renameProblem)))
 	}
 	a.project.set(name)
 	if !web.IsHTMX(r) {
@@ -189,11 +186,11 @@ func (a *App) renameProject(w http.ResponseWriter, r *http.Request) error {
 	}
 	hx2.SetRetarget(w.Header(), "#"+projectID)
 	hx2.SetReswap(w.Header(), hx2.SwapOuterHTML+" "+page.ShowAlerts)
-	return web.Render(w, r, http.StatusOK, elem.Bundle{
+	return web.Render(w, r, http.StatusOK, a.forms.WithFragmentToken(w, r, elem.Bundle{
 		projectSection(name, true),
-		page.DialogsOOB(dialogList(token, name, "")...),
+		page.DialogsOOB(dialogList(name, "")...),
 		page.AlertsOOB(page.Notice("", text.Text("Project renamed."))),
-	})
+	}))
 }
 
 func (a *App) resetProject(w http.ResponseWriter, r *http.Request) error {

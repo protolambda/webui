@@ -155,6 +155,24 @@
 // which accept far larger bodies (up to 10 MB of urlencoded text, more for
 // multipart) unless a body limit middleware runs first.
 //
+// Views whose forms sit deep in their tree need not pass the token down:
+// the handler wraps what it renders with [Forms.WithPageToken],
+// [Forms.WithFragmentToken] or [Forms.WithToken], stating the kind of
+// answer, and the views render [PostFormFromContext], which takes the token
+// from the render context when it renders. The token is taken once, for
+// the first form, so a page without forms sets no cookie; a form without a
+// token fails the render instead of going out with an empty one. A token
+// node below another one takes the outer node's token: the outermost node
+// decides the one token of a response. The pre-authentication cookie of a
+// page or fragment is set during the render, so render into a buffer
+// before the header is written, as web.Render does; event streams take
+// WithToken, which sets nothing. A fragment that had to issue a new cookie
+// renders the fresh copies of the page's other forms within [IfRenewed].
+// Error pages render outside the token node of the handler (the Errors
+// policy of package web renders them itself): the forms of a layout that
+// they share take an explicit token, or WithToken (see
+// [PostFormFromContext]).
+//
 // # Concurrency
 //
 // [Store], [Session], [PreAuth] and [Forms] are safe for concurrent use. A session's

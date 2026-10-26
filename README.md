@@ -88,9 +88,11 @@ func taskForm(token string) elem.Node {
 ```
 
 [`session.Forms`](./session/forms.go) supplies CSRF tokens and reads submissions within bounds, checking the token
-before the handler uses the values. `web.Choose` returns a fragment or a full page as appropriate, and
-`web.Redirect` handles navigation after a successful submission. See the [form examples](./session/forms_example_test.go)
-for the complete flow.
+before the handler uses the values. Views with forms deep in their tree need no token parameter: the handler wraps
+what it renders with `forms.WithPageToken` (`WithFragmentToken` for fragments, `WithToken` for event streams), and
+`session.PostFormFromContext` takes the token from the render context. `web.Choose` returns a fragment or a full
+page as appropriate, and `web.Redirect` handles navigation after a successful submission. See the
+[form examples](./session/forms_example_test.go) for the complete flow.
 
 For live views, [`sse`](./sse/doc.go) streams rendered fragments to htmx regions and handles update coalescing,
 keep-alives, and stream lifetimes. Session and login helpers live in [`session`](./session/doc.go); your application

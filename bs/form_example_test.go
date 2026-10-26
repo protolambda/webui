@@ -66,6 +66,21 @@ func ExampleField_password() {
 	// ERROR: render: at [0]: bs.Field: invalid option: a password field must not carry a value
 }
 
+// In a row of controls, such as a filter bar, WrapperClass replaces the
+// bottom margin (mb-3) of the field wrappers; the labels and their wiring
+// stay. Here the wrappers are grid columns, aligned at their bottom edge,
+// so that the button lines up with the controls.
+func ExampleField_row() {
+	core.Dump(form.Form(form.Method(form.MethodGet), form.Action("/tasks"), attr.Class("row g-2 align-items-end mb-3"))(
+		bs.Field{ID: "filter-q", Name: "q", Type: input.Search, Label: text.Text("Search"), WrapperClass: "col"},
+		bs.Select{ID: "filter-state", Name: "state", Label: text.Text("State"), WrapperClass: "col-auto", Options: []bs.SelectOption{
+			{Value: "", Label: "Any"}, {Value: "open", Label: "Open"}, {Value: "done", Label: "Done"},
+		}},
+		bs.ColAuto()(bs.BtnSecondary(button.Type(button.TypeSubmit))(text.Text("Filter"))),
+	))
+	// Output: <form method="get" action="/tasks" class="row g-2 align-items-end mb-3"><div class="col"><label class="form-label" for="filter-q">Search</label><input class="form-control" type="search" id="filter-q" name="q"/></div><div class="col-auto"><label class="form-label" for="filter-state">State</label><select class="form-select" id="filter-state" name="state"><option value="">Any</option><option value="open">Open</option><option value="done">Done</option></select></div><div class="col-auto"><button class="btn btn-secondary" type="submit">Filter</button></div></form>
+}
+
 func ExampleTextarea() {
 	core.Dump(bs.Textarea{
 		ID:    "body",

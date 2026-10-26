@@ -95,6 +95,12 @@
 // submitted values (never a secret), for example as the answer to an htmx
 // request that replaces the form in place.
 //
+// [Field], [Textarea] and [Select] sit in a div.mb-3, a block with a bottom
+// margin, as fields stacked in a form do. In a row of controls, such as a
+// filter bar or the cells of a table, give them another class with
+// WrapperClass, such as "col-auto" or "mb-0" (see the row example of
+// [Field]): a margin class in Wrapper cannot undo mb-3.
+//
 // Such a swap removes the element that has the keyboard focus, often the
 // submit button. htmx then focuses the element of the new content that
 // has the same id, if there is one; otherwise the focus falls back to the

@@ -80,9 +80,18 @@ type Field struct {
 	// replace the aria-invalid default, but must not set an attribute that
 	// a field above renders (such as id, name, type or value).
 	Attrs attr.Node
-	// Wrapper holds additional attributes of the wrapping div.mb-3, e.g. a
-	// grid column class.
+	// Wrapper holds additional attributes of the wrapping div. Its classes
+	// add to the wrapper's class; a grid column class, or another class
+	// that takes the place of mb-3, goes in WrapperClass instead.
 	Wrapper attr.Node
+	// WrapperClass, when not empty, replaces the wrapper's class, mb-3 (a
+	// bottom margin), for a field in a row of controls: "col-auto" in a
+	// grid row, "mb-0" or "flex-grow-1" in a filter bar with
+	// align-items-end. A margin class in Wrapper cannot undo mb-3:
+	// Bootstrap's spacing classes are all !important, and its stylesheet
+	// has mb-0 to mb-5 and then mb-auto in that order, so mb-3 comes after
+	// mb-0, mb-1 and mb-2.
+	WrapperClass string
 }
 
 // fieldClass returns the control class of an input type, and false for a
@@ -175,7 +184,7 @@ func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 		children = append(children, c.feedback()...)
 	}
 	children = append(children, c.helpText()...)
-	return wrapper(rawClass("mb-3"), f.Wrapper)(children...).Eval(ctx)
+	return wrapper(wrapperClass(f.WrapperClass), f.Wrapper)(children...).Eval(ctx)
 }
 
 // Textarea is a labelled multi-line text field, with help text and a
@@ -197,7 +206,8 @@ type Textarea struct {
 	Help         elem.Node // help text (div.form-text#ID-help); nil leaves it out
 	Error        elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
 	Attrs        attr.Node // additional attributes of the textarea; see Field.Attrs
-	Wrapper      attr.Node // additional attributes of the wrapping div.mb-3
+	Wrapper      attr.Node // additional attributes of the wrapping div; classes add to its class
+	WrapperClass string    // replaces the wrapper's class, mb-3, when not empty; see Field.WrapperClass
 }
 
 // Eval builds the textarea field. It fails with [ErrInvalidID] for an
@@ -242,7 +252,7 @@ func (t Textarea) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 	children = append(children, c.feedback()...)
 	children = append(children, c.helpText()...)
-	return wrapper(rawClass("mb-3"), t.Wrapper)(children...).Eval(ctx)
+	return wrapper(wrapperClass(t.WrapperClass), t.Wrapper)(children...).Eval(ctx)
 }
 
 // SelectOption is an option of a [Select]. The value attribute is always
@@ -258,18 +268,19 @@ type SelectOption struct {
 // Select is a labelled select box, with help text and a server-side
 // validation error wired like those of a [Field].
 type Select struct {
-	ID          string         // the select's id: a token, see ValidID
-	Name        string         // form field name; empty renders no name
-	Label       elem.Node      // label content; without it, Attrs must give an aria-label
-	LabelHidden bool           // visually hidden label
-	Options     []SelectOption // the options, in order
-	Multiple    bool           // allow several selected options
-	Required    bool
-	Disabled    bool
-	Help        elem.Node // help text (div.form-text#ID-help); nil leaves it out
-	Error       elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
-	Attrs       attr.Node // additional attributes of the select; see Field.Attrs
-	Wrapper     attr.Node // additional attributes of the wrapping div.mb-3
+	ID           string         // the select's id: a token, see ValidID
+	Name         string         // form field name; empty renders no name
+	Label        elem.Node      // label content; without it, Attrs must give an aria-label
+	LabelHidden  bool           // visually hidden label
+	Options      []SelectOption // the options, in order
+	Multiple     bool           // allow several selected options
+	Required     bool
+	Disabled     bool
+	Help         elem.Node // help text (div.form-text#ID-help); nil leaves it out
+	Error        elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
+	Attrs        attr.Node // additional attributes of the select; see Field.Attrs
+	Wrapper      attr.Node // additional attributes of the wrapping div; classes add to its class
+	WrapperClass string    // replaces the wrapper's class, mb-3, when not empty; see Field.WrapperClass
 }
 
 // Eval builds the select field. It fails with [ErrInvalidID] for an
@@ -323,7 +334,7 @@ func (s Select) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 	children = append(children, c.feedback()...)
 	children = append(children, c.helpText()...)
-	return wrapper(rawClass("mb-3"), s.Wrapper)(children...).Eval(ctx)
+	return wrapper(wrapperClass(s.WrapperClass), s.Wrapper)(children...).Eval(ctx)
 }
 
 // Checkbox is a labelled checkbox (or switch), with help text and a
@@ -586,6 +597,15 @@ func appendStates(own []attr.Node, required, disabled, readOnly bool) []attr.Nod
 		own = append(own, attr.Name("readonly").Bool())
 	}
 	return own
+}
+
+// wrapperClass returns the class of the wrapper of a [Field], [Textarea] or
+// [Select]: the caller's class, escaped, or mb-3 when it is empty.
+func wrapperClass(class string) attr.Node {
+	if class == "" {
+		return rawClass("mb-3")
+	}
+	return attr.Class(class)
 }
 
 // wrapper returns a div with the class and the caller's wrapper attributes.

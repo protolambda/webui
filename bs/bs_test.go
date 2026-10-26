@@ -755,6 +755,42 @@ func TestFieldTypesAndStates(gt *testing.T) {
 		render(t, bs.Field{ID: "b", Label: text.Text("B"), Attrs: attr.Name("aria-describedby").Bool()})))
 }
 
+// WrapperClass replaces the mb-3 of the field wrappers, and the classes of
+// Wrapper add to it; the label and ARIA wiring stay.
+func TestFieldWrapperClass(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	opts := []bs.SelectOption{{Value: "a", Label: "A"}}
+	for name, c := range map[string]struct {
+		node elem.Node
+		want string
+	}{
+		"field default":    {bs.Field{ID: "f", Label: text.Text("F")}, "mb-3"},
+		"field":            {bs.Field{ID: "f", Label: text.Text("F"), WrapperClass: "mb-0"}, "mb-0"},
+		"field wrapper":    {bs.Field{ID: "f", Label: text.Text("F"), WrapperClass: "col-auto", Wrapper: attr.Class("flex-grow-1")}, "col-auto flex-grow-1"},
+		"textarea default": {bs.Textarea{ID: "t", Label: text.Text("T")}, "mb-3"},
+		"textarea":         {bs.Textarea{ID: "t", Label: text.Text("T"), WrapperClass: "col"}, "col"},
+		"select default":   {bs.Select{ID: "s", Label: text.Text("S"), Options: opts}, "mb-3"},
+		"select":           {bs.Select{ID: "s", Label: text.Text("S"), Options: opts, WrapperClass: "col-md-4 mb-2"}, "col-md-4 mb-2"},
+	} {
+		t.Run(name, func(t devtest.T) {
+			out := render(t, c.node)
+			t.Must(be.True(strings.HasPrefix(out, `<div class="`+c.want+`">`)))
+		})
+	}
+
+	// The wiring of a field with an error and help stays the same.
+	page := ct.View(bs.Field{ID: "q", Label: text.Text("Search"), Error: text.Text("Too short."), Help: text.Text("Two letters or more."),
+		WrapperClass: "col-auto"})
+	t.Must(page.Find(ct.Tag("div")).First().Matches(ct.Class("col-auto"), ct.Class("mb-3").Not()))
+	t.Must(page.Find(ct.Role("textbox", ct.Named("Search"))).
+		Matches(ct.Attr("aria-invalid", "true"), ct.Attr("aria-describedby", "q-error q-help")))
+
+	// The class is escaped, as attr.Class escapes it.
+	page = ct.View(bs.Field{ID: "f", Label: text.Text("F"), WrapperClass: `x" onclick="alert(1)`})
+	t.Must(page.Find(ct.HasAttr("onclick")).None())
+	t.Must(page.Find(ct.Tag("div")).First().Matches(ct.Attr("class", `x" onclick="alert(1)`)))
+}
+
 func TestCardImage(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Must(be.Equal(

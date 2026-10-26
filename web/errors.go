@@ -63,8 +63,8 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 //
 // An error is classified into a status and a public message, in this order:
 //
-//   - Classify, when set, maps the application's own errors first;
 //   - an [*Error] (also wrapped) gives its status and message;
+//   - Classify, when set, maps the application's own errors;
 //   - sse.ErrWrite means the client of a stream went away: nothing is
 //     written, and it is logged at debug level only;
 //   - context.Canceled and context.DeadlineExceeded give 503 with
@@ -76,6 +76,17 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 //   - Fallback, when set, maps what is left;
 //   - anything else gives 500 with the [DefaultMessage], which never
 //     reveals the error.
+//
+// An [*Error] is the answer that the handler chose, and it keeps that
+// answer whatever its cause: Classify does not see an error that carries
+// an *Error (errors.As finds one), also when the cause is one of the
+// errors that Classify maps. Conflict(msg, fmt.Errorf("move: %w",
+// errNotFound)) answers 409 although Classify maps errNotFound to 404, and
+// Internal(err) answers 500, logged as a server failure, whatever err
+// wraps. webui's own answers that are *Error values, the 404 and 405 of
+// [Errors.Mux], the 404 of [Errors.NotFound] and the 403 of
+// [Errors.RequireAuth], pass Classify by as well: change their look with
+// the Document and Fragment hooks, which see their status.
 //
 // The hooks that render the answer see the error too ([ErrorView.Err]),
 // so a Document can render a page of its own for one of the
@@ -178,9 +189,11 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // errors after the response started at debug level unless they are server
 // errors.
 type Errors struct {
-	// Classify maps an error to its answer before the default
-	// classification. It returns nil for an error it does not know. Its
-	// Message must not contain request data.
+	// Classify maps the application's own errors to their answers, ahead
+	// of webui's defaults but after an explicit [*Error] (see
+	// Classification above): it is not called for an error that carries
+	// an *Error, whose answer the handler chose. It returns nil for an
+	// error it does not know. Its Message must not contain request data.
 	Classify func(err error) *Error
 	// Fallback maps an error that neither Classify nor the default
 	// classification knows, which is otherwise answered with 500 and the
@@ -501,14 +514,16 @@ func internalAnswer() answer {
 }
 
 func (e Errors) classify(err error) answer {
+	// The handler's own answer comes first: Classify matches the cause of
+	// an *Error too, which would replace the status the handler chose.
+	var pe *Error
+	if errors.As(err, &pe) && pe != nil {
+		return errorAnswer(pe)
+	}
 	if e.Classify != nil {
 		if pe := e.Classify(err); pe != nil {
 			return errorAnswer(pe)
 		}
-	}
-	var pe *Error
-	if errors.As(err, &pe) && pe != nil {
-		return errorAnswer(pe)
 	}
 	var tooLarge *http.MaxBytesError
 	switch {

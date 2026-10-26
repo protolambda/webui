@@ -325,22 +325,30 @@ func ExampleErrors_dialog() {
 	// <div class="alert alert-danger">The item changed meanwhile. Reload the page and try again.</div>
 }
 
-// Applications map their own errors before the defaults.
+// Applications map their own errors ahead of webui's defaults. An *Error
+// keeps the answer that its handler chose, whatever its cause.
 func ExampleErrors_classify() {
-	errStale := errors.New("stale revision")
+	errNotFound := errors.New("not found")
 	errs := web.Errors{Classify: func(err error) *web.Error {
-		if errors.Is(err, errStale) {
-			return web.Conflict("The task changed meanwhile. Reload it and try again.", err)
+		if errors.Is(err, errNotFound) {
+			return web.NotFound("There is no such task.", err)
 		}
 		return nil
 	}}
-	save := errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
-		return fmt.Errorf("save task 7: %w", errStale)
+	show := errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return fmt.Errorf("load task 7: %w", errNotFound)
 	})
-	serve(save, htmxRequest(http.MethodPost, "/tasks/7", "https://app.example/tasks/7"))
+	// The task is there, the project that it moves to is not.
+	move := errs.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		return web.Conflict("The project was deleted meanwhile.", fmt.Errorf("move task 7 to project 3: %w", errNotFound))
+	})
+	serve(show, htmxRequest(http.MethodGet, "/tasks/7", "https://app.example/tasks"))
+	serve(move, htmxRequest(http.MethodPost, "/tasks/7/project", "https://app.example/tasks/7"))
 	// Output:
+	// 404
+	// <div class="alert alert-danger">There is no such task.</div>
 	// 409
-	// <div class="alert alert-danger">The task changed meanwhile. Reload it and try again.</div>
+	// <div class="alert alert-danger">The project was deleted meanwhile.</div>
 }
 
 // Pages behind the guard send visitors without a session to the login

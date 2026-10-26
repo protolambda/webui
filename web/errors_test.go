@@ -185,6 +185,64 @@ func TestClassifyHook(gt *testing.T) {
 	}
 }
 
+// TestErrorBeforeClassify checks that an *Error keeps the answer that the
+// handler chose when its cause is an error that Classify maps, and that
+// Classify still maps the plain error ahead of webui's own classes.
+func TestErrorBeforeClassify(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	errNotFound := errors.New("not found")
+	var classified []error
+	errs := web.Errors{Classify: func(err error) *web.Error {
+		classified = append(classified, err)
+		if errors.Is(err, errNotFound) {
+			return web.NotFound("There is no such task.", err)
+		}
+		return nil
+	}}
+	cause := fmt.Errorf("load project 3: %w", errNotFound)
+	cases := []struct {
+		name    string
+		err     error
+		status  int
+		message string
+		level   slog.Level
+	}{
+		{"conflict", web.Conflict("The project was deleted meanwhile.", cause), 409, "The project was deleted meanwhile.", slog.LevelDebug},
+		// A server failure stays one, logged at error level.
+		{"internal", web.Internal(cause), 500, web.DefaultMessage(500), slog.LevelError},
+		{"wrapped error", fmt.Errorf("move task 7: %w", web.Conflict("", cause)), 409, web.DefaultMessage(409), slog.LevelDebug},
+		{"plain", fmt.Errorf("show task 7: %w", errNotFound), 404, "There is no such task.", slog.LevelDebug},
+		{"csrf", fmt.Errorf("read: %w", session.ErrCSRF), 403, web.MessageForged, slog.LevelDebug},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			l := new(logs)
+			res := cthttp.Serve(errs.Handle(failWith(c.err)), request(t, l, http.MethodPost, "/tasks/7", nil))
+			t.Must(res.Status(c.status))
+			t.Must(res.HTML().Find(ct.Role("alert")).Texts(c.message))
+
+			htmx := cthttp.Serve(errs.Handle(failWith(c.err)), asHTMX(request(t, nil, http.MethodPost, "/tasks/7", nil), ""))
+			t.Must(htmx.Status(c.status))
+			t.Must(htmx.HTMLFragment("div").Find(ct.Class("alert-danger")).Texts(c.message))
+
+			recs := l.all()
+			t.Must(be.Equal(1, len(recs)))
+			t.Must(be.Equal(c.level, recs[0].level))
+		})
+	}
+	// webui's own answers are *Error values too.
+	res := cthttp.Serve(errs.Mux(http.NewServeMux()), request(t, nil, http.MethodGet, "/missing", nil))
+	t.Must(res.Status(http.StatusNotFound))
+	t.Must(res.HTML().Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusNotFound)))
+	// Classify saw only the errors without an *Error, twice each: for the
+	// page and for the htmx answer.
+	t.Must(be.Len(classified, 4))
+	for _, err := range classified {
+		var pe *web.Error
+		t.Must(be.False(errors.As(err, &pe)))
+	}
+}
+
 func TestFallbackHook(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	errStale := errors.New("stale revision")
@@ -212,7 +270,7 @@ func TestFallbackHook(gt *testing.T) {
 	}{
 		{unknown, 400, "The request was not understood."},
 		{errKeep, 500, web.DefaultMessage(500)},
-		// Classify, an *Error and webui's own classes come first.
+		// An *Error, Classify and webui's own classes come first.
 		{errStale, 409, "The task changed meanwhile."},
 		{web.Internal(unknown), 500, web.DefaultMessage(500)},
 		{form.ErrTooLarge, 413, web.DefaultMessage(413)},

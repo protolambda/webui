@@ -705,6 +705,59 @@ func TestRectangularTables(gt *testing.T) {
 	})
 }
 
+func TestScrollersClipHiddenText(gt *testing.T) {
+	hidden := `<span class="visually-hidden">Actions</span>`
+	table := func(cell string) string {
+		return `<table class="table"><tr><td>a</td><td>` + cell + `</td></tr></table>`
+	}
+	checkRule(gt, webuitest.ScrollersClipHiddenText(), []ruleCase{
+		{name: "positioned scroller", body: `<div class="table-responsive position-relative">` + table(hidden) + `</div>`},
+		{name: "no hidden text", body: `<div class="table-responsive">` + table("x") + `</div>`},
+		{name: "hidden caption", body: `<div class="table-responsive"><table class="table"><caption class="visually-hidden">Tasks</caption><tr><td>a</td></tr></table></div>`},
+		{name: "hidden text outside scrollers", body: `<div class="table">` + hidden + `</div><a class="visually-hidden-focusable" href="#main">Skip</a>`},
+		{name: "positioned between", body: `<div class="overflow-x-auto"><div class="btn-group">` + hidden + `</div><div class="dropdown"><span class="visually-hidden-focusable">x</span></div><p><sup>1<span class="visually-hidden">note</span></sup></p></div>`},
+		{name: "position utility between", body: `<div class="overflow-auto"><div><p class="position-sticky">` + hidden + `</p></div></div>`},
+		{name: "dialog and popover between", body: `<div class="overflow-auto"><dialog id="d">` + hidden + `</dialog><div id="m" popover>` + hidden + `</div></div>`},
+		{name: "visible overflow", body: `<div class="table-responsive overflow-visible">` + table(hidden) + `</div><div class="overflow-auto overflow-visible">` + hidden + `</div>`},
+		{name: "template", body: `<div class="table-responsive"><template>` + hidden + `</template></div>`},
+		{name: "bare scroller", body: `<div class="table-responsive">` + table(hidden) + `</div>`, want: []string{
+			"div at html[1]/body[1]/div[0] scrolls, but the visually hidden text at html[1]/body[1]/div[0]/table[0]/tbody[0]/tr[0]/td[1]/span[0] escapes it: Bootstrap positions that text absolutely, and neither the scroller nor an element between them is positioned or transformed (add position-relative to the scroller)",
+		}},
+		{name: "once per scroller", body: `<div class="table-responsive-md">` + table(hidden) + table(hidden) + table(`<span class="visually-hidden-focusable">x</span>`) + `</div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls, but the visually hidden text at html[1]/body[1]/div[0]/table[0]/tbody[0]/tr[0]/td[1]/span[0] (and 2 more) escapes it"}},
+		{name: "hidden in hidden", body: `<div class="overflow-hidden"><span class="visually-hidden">a <span class="visually-hidden">b</span></span></div>`, want: []string{"visually hidden text at html[1]/body[1]/div[0]/span[0] escapes"}},
+		{name: "axis variants", body: `<div class="overflow-y-scroll">` + hidden + `</div><div class="overflow-x-visible overflow-y-auto">` + hidden + `</div><div class="overflow-visible overflow-x-hidden">` + hidden + `</div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls", "div at html[1]/body[1]/div[1] scrolls", "div at html[1]/body[1]/div[2] scrolls"}},
+		{name: "static override", body: `<div class="overflow-auto"><div class="dropdown position-static">` + hidden + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls"}},
+		{name: "responsive sticky", body: `<div class="overflow-auto"><div class="sticky-md-top">` + hidden + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls"}},
+		{name: "inner scroller", body: `<div class="overflow-auto position-relative"><div class="table-responsive">` + table(hidden) + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0]/div[0] scrolls"}},
+		{name: "fragment", fragment: true, body: `<div class="table-responsive">` + table(hidden) + `</div>`, want: []string{"div at div[0] scrolls"}},
+		// Transforms make containing blocks too: the spinners' animation
+		// and the translate utilities, whatever the position.
+		{name: "spinners", body: `<div class="overflow-auto"><div class="spinner-border" role="status">` + hidden + `</div><div class="spinner-grow position-static" role="status">` + hidden + `</div></div>`},
+		{name: "translated between", body: `<div class="overflow-auto"><span class="badge translate-middle-y">` + hidden + `</span></div>`},
+		// Components that hide or scroll their overflow.
+		{name: "component scrollers", body: `<div class="text-truncate">` + hidden + `</div><div class="progress"><div class="progress-bar">` + hidden + `</div></div><ul class="navbar-nav navbar-nav-scroll"><li>` + hidden + `</li></ul><div class="navbar-expand-lg"><ul class="navbar-nav-scroll">` + hidden + `</ul></div>`, want: []string{
+			"div at html[1]/body[1]/div[0] scrolls", "div at html[1]/body[1]/div[1]/div[0] scrolls", "ul at html[1]/body[1]/ul[2] scrolls", "ul at html[1]/body[1]/div[3]/ul[0] scrolls",
+		}},
+		{name: "stacked progress", body: `<div class="progress-stacked"><div class="progress">` + hidden + `</div></div>`, want: []string{"div at html[1]/body[1]/div[0] scrolls"}},
+		{name: "visible component overflow", body: `<div class="text-truncate overflow-visible">` + hidden + `</div><div class="navbar-expand"><ul class="navbar-nav-scroll">` + hidden + `</ul></div><div class="progress position-relative">` + hidden + `</div>`},
+	})
+	gt.Run("bs.Spinner", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		view := div.Div(attr.Class("overflow-auto"))(bs.Spinner()(), bs.SpinnerGrow()(text.Text("Saving...")), bs.TableResponsive()(text.Span(attr.Class("visually-hidden"))(text.Text("x"))))
+		t.Must(ct.View(view).Valid(webuitest.ScrollersClipHiddenText()))
+	})
+	gt.Run("bs.DataTable", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		view := bs.DataTable{
+			Caption:       text.Text("Projects"),
+			CaptionHidden: true,
+			Columns:       []bs.Column{{Header: text.Text("Name")}, {Header: text.Text("Actions"), HeaderHidden: true}},
+			Rows:          []bs.TableRow{{Cells: []elem.Node{text.Text("Website"), text.A(text.Href("/projects/1"))(text.Text("Open"))}}},
+		}
+		t.Must(ct.View(view).Valid(webuitest.ScrollersClipHiddenText()))
+	})
+}
+
 func TestExternalLinksSafe(gt *testing.T) {
 	checkRule(gt, webuitest.ExternalLinksSafe(), []ruleCase{
 		{name: "valid", body: `<a href="https://x.example" target="_blank" rel="noopener noreferrer">x</a><a href="/y" target="_self">y</a><a href="https://z.example" target="_blank" rel="NoReferrer">z</a><a href="/w">w</a>`},
@@ -741,7 +794,7 @@ func TestRules(gt *testing.T) {
 			t.Mustf(be.False(names[name]), "duplicate rule %s", name)
 			names[name] = true
 		}
-		for _, want := range []string{"uniqueIDs", "noRaw", "noInlineScripts", "postFormsCarryCSRF", "noTokenLeaks", "hxTargets", "hxPreserveIDs", "modalDialogs", "noBootstrapJSHooks", "externalLinksSafe"} {
+		for _, want := range []string{"uniqueIDs", "noRaw", "noInlineScripts", "postFormsCarryCSRF", "noTokenLeaks", "hxTargets", "hxPreserveIDs", "modalDialogs", "noBootstrapJSHooks", "scrollersClipHiddenText", "externalLinksSafe"} {
 			t.Mustf(be.True(names[want]), "missing rule %s", want)
 		}
 		t.Must(be.False(names["secretsHidden"]))

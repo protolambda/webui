@@ -125,7 +125,8 @@ func RuleName(r ct.Rule) string {
 //     (see [WithSharedDialogs]) and [NoBootstrapJSHooks] (see
 //     [WithBootstrapJS]);
 //   - accessibility and HTML quality: [IconsHidden], [ControlsNamed],
-//     [NoNestedInteractive], [RectangularTables] and [ExternalLinksSafe];
+//     [NoNestedInteractive], [RectangularTables],
+//     [ScrollersClipHiddenText] and [ExternalLinksSafe];
 //   - with [WithSecrets]: [SecretsHidden] and [NotInURLs].
 //
 // [Without] drops rules by name. Each call returns a new slice.
@@ -159,6 +160,7 @@ func Rules(opts ...RuleOption) []ct.Rule {
 		ControlsNamed(),
 		NoNestedInteractive(),
 		RectangularTables(),
+		ScrollersClipHiddenText(),
 		ExternalLinksSafe(),
 	}
 	if !cfg.bootstrapJS {

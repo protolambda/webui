@@ -104,10 +104,14 @@ type Layout struct {
 	// the main column the rest.
 	SidebarColumn string
 	MainColumn    string
-	// MainAttrs are extra attributes of the main element, such as a class
-	// that lets wide content scroll inside the main column
-	// ("overflow-x-auto"). Classes add to those of the layout. The element
-	// has the id [MainID], so another id fails the render.
+	// MainAttrs are extra attributes of the main element, such as classes
+	// that let wide content scroll inside the main column
+	// ("overflow-x-auto position-relative": a scroller must be positioned
+	// to keep visually-hidden text, which Bootstrap positions absolutely,
+	// from escaping it and widening the page; see
+	// [github.com/protolambda/webui/webuitest.ScrollersClipHiddenText]).
+	// Classes add to those of the layout. The element has the id
+	// [MainID], so another id fails the render.
 	MainAttrs attr.Node
 	// Fluid makes the containers full width (container-fluid) instead of
 	// Bootstrap's responsive fixed widths. With a Sidebar the layout is

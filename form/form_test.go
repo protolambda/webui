@@ -601,11 +601,11 @@ func TestReadErrorsDoNotQuoteInput(gt *testing.T) {
 // Formatting or logging a form shows neither names nor values.
 func TestValuesFormatRedacts(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	v, err := readString(t, form.URLEncoded, "account=ada&password=hunter2", form.Limits{})
+	v, err := readString(t, form.URLEncoded, "account=lovelace&password=hunter2", form.Limits{})
 	t.Must(be.NoError(err))
 	defer v.Zero()
 	leaks := func(s string) bool {
-		for _, secret := range []string{"hunter2", "68756e74657232", "68 75 6e", "104 117 110", "password", "ada"} {
+		for _, secret := range []string{"hunter2", "68756e74657232", "68 75 6e", "104 117 110", "password", "lovelace"} {
 			if strings.Contains(s, secret) {
 				return true
 			}

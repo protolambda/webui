@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/netip"
 	"net/textproto"
 	"net/url"
 	"slices"
@@ -291,6 +292,17 @@ func ptr(s string) *string { return &s }
 // requests of [Client.SubmitHTMX], [Browser.SubmitHTMX] and
 // [HTMXRequest.Request]. An htmx request ([HTMX]) sends the resolved page
 // URL as HX-Current-URL, as htmx does, unless [HXCurrentURL] sets another.
+//
+// The page is also where the request comes from: its origin is the
+// default Origin (see [Origin]), and Sec-Fetch-Site compares it with the
+// request's URL, as browsers do: "same-origin" for the same origin,
+// "same-site" for another origin of the same site, and "cross-site"
+// otherwise, unless [FetchSite] sets it. Two origins are of the same site
+// when they have the same scheme and the same host, or DNS names that end
+// in the same two labels: the registrable domain under a public suffix of
+// one label, such as com or test. Under a public suffix of more labels,
+// such as co.uk, that takes other sites for the same one: set FetchSite
+// there.
 func PageURL(u string) ReqOption { return func(s *reqSettings) { s.page = ptr(u) } }
 
 // PageHTMXConfig names the htmx configuration of the page that makes the
@@ -350,9 +362,12 @@ func EventSource() ReqOption {
 }
 
 // Origin sets the Origin header; "" removes it. By default, requests other
-// than GET and HEAD carry the origin of the base URL, as browsers send it.
+// than GET and HEAD carry the origin of the page that sends them, as
+// browsers send it: the origin of [PageURL], or else that of the request's
+// URL, the base URL for a path.
 //
-// It changes only the Origin: Sec-Fetch-Site stays "same-origin", which
+// It changes only the Origin: Sec-Fetch-Site stays as the page makes it
+// (see [PageURL]), "same-origin" for a page of the request's origin, which
 // mw.SameOrigin (like http.CrossOriginProtection) trusts before Origin,
 // so Origin([ForeignOrigin]) alone builds a request that no browser sends,
 // and it passes such a policy. For a cross-origin request of a current
@@ -370,7 +385,8 @@ func Referer(u string) ReqOption {
 }
 
 // FetchSite sets Sec-Fetch-Site, e.g. "cross-site", "same-site" or "none";
-// "" removes it. The default is "same-origin".
+// "" removes it. The default compares the page with the request's URL
+// (see [PageURL]): "same-origin" without a page of another origin.
 func FetchSite(site string) ReqOption {
 	return func(s *reqSettings) { s.fetchSite = ptr(site) }
 }
@@ -384,7 +400,7 @@ func NoFetchMetadata() ReqOption {
 
 // Host sets the Host header (and http.Request.Host), e.g. to a name of
 // another site for DNS rebinding tests. The URL and the default Origin
-// stay those of the base URL.
+// stay those of the request's site.
 func Host(host string) ReqOption {
 	return func(s *reqSettings) { s.host = ptr(host) }
 }
@@ -546,7 +562,13 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 	}
 	h := req.Header
 	script := s.htmx || s.historyRestore || s.eventSource
-	h.Set("Sec-Fetch-Site", "same-origin")
+	// The page that sends the request: a page of the site that the
+	// request goes to, unless PageURL names the page.
+	page := u
+	if s.page != nil {
+		page = from
+	}
+	h.Set("Sec-Fetch-Site", fetchSite(page, u))
 	if script {
 		h.Set("Sec-Fetch-Mode", "cors")
 		h.Set("Sec-Fetch-Dest", "empty")
@@ -556,7 +578,7 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 		h.Set("Sec-Fetch-User", "?1")
 	}
 	if !safeMethod(method) {
-		h.Set("Origin", base.Scheme+"://"+base.Host)
+		h.Set("Origin", urlOrigin(page))
 	}
 	if s.htmx {
 		h.Set(hx2.HeaderRequest, "true")
@@ -632,6 +654,35 @@ func buildRequest(ctx context.Context, base *url.URL, method, target string, bod
 	return req, nil
 }
 
+// fetchSite returns the Sec-Fetch-Site of a request from a page to u, as
+// [PageURL] describes it.
+func fetchSite(page, u *url.URL) string {
+	switch {
+	case urlOrigin(page) == urlOrigin(u):
+		return "same-origin"
+	case page.Scheme == u.Scheme && sameSiteHosts(page.Hostname(), u.Hostname()):
+		return "same-site"
+	}
+	return "cross-site"
+}
+
+// sameSiteHosts reports whether two hosts are of the same site, as
+// [PageURL] approximates it: the same host, or DNS names of two labels or
+// more that end in the same two.
+func sameSiteHosts(a, b string) bool {
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	if a == b {
+		return true
+	}
+	_, errA := netip.ParseAddr(a)
+	_, errB := netip.ParseAddr(b)
+	if errA == nil || errB == nil {
+		return false
+	}
+	la, lb := strings.Split(a, "."), strings.Split(b, ".")
+	return len(la) >= 2 && len(lb) >= 2 && slices.Equal(la[len(la)-2:], lb[len(lb)-2:])
+}
+
 func setOrDel(h http.Header, name string, v *string) {
 	switch {
 	case v == nil:
@@ -657,10 +708,13 @@ func mustParseBase(raw string) *url.URL {
 // BaseURL (or against [PageURL]), and the request is bound to
 // t.Context(). It carries:
 //
-//   - Sec-Fetch-Site: same-origin, and the Sec-Fetch-Mode, Sec-Fetch-Dest
+//   - Sec-Fetch-Site: same-origin (for a [PageURL] of another origin,
+//     same-site or cross-site), and the Sec-Fetch-Mode, Sec-Fetch-Dest
 //     and Sec-Fetch-User of a navigation (or of a script request for
 //     [HTMX], [HXHistoryRestore] and [EventSource]);
-//   - for methods other than GET and HEAD, Origin: BaseURL;
+//   - for methods other than GET and HEAD, the Origin of the page that
+//     sends it: of [PageURL], or else of the request's URL (BaseURL for a
+//     path);
 //   - the content type of body;
 //   - the server-side fields a handler sees: an origin-form URL,
 //     RequestURI, Host, RemoteAddr ([DefaultRemoteAddr]) and, for https,

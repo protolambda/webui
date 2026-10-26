@@ -330,8 +330,10 @@ type assetRef struct {
 //
 // The site is that of s ([SiteSender], such as a Client with a Base), or
 // [BaseURL]; [MuxRoutes] still matches host patterns against BaseURL's
-// host (see there). Only same-site links (paths, or absolute URLs on the
-// site's host) are followed; forms are route-checked, never submitted.
+// host (see there). Only links on the site (paths, or absolute URLs with
+// the site's scheme and host) are followed: the site's host over the
+// other scheme, such as http:// on an https site, is off the site, for
+// links and redirects alike. Forms are route-checked, never submitted.
 // Infrastructure failures of s fail the test.
 func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 	t.Helper()
@@ -648,9 +650,9 @@ func resolve(site *url.URL, key string) *url.URL {
 }
 
 // siteURL resolves ref against base and returns its path and query (the
-// key of a page), its fragment, and whether it is an http(s) URL on the
-// host of site. An empty ref is the base itself, as for a form without an
-// action.
+// key of a page), its fragment, and whether it is a URL of the origin of
+// site: its scheme and host. An empty ref is the base itself, as for a
+// form without an action.
 func siteURL(site, base *url.URL, ref string) (key, fragment string, ok bool) {
 	ref = strings.TrimSpace(ref)
 	r, err := url.Parse(ref)
@@ -658,7 +660,7 @@ func siteURL(site, base *url.URL, ref string) (key, fragment string, ok bool) {
 		return "", "", false
 	}
 	u := base.ResolveReference(r)
-	if (u.Scheme != "http" && u.Scheme != "https") || hostKey(u) != hostKey(site) {
+	if u.Scheme != site.Scheme || hostKey(u) != hostKey(site) {
 		return "", "", false
 	}
 	key = u.EscapedPath()

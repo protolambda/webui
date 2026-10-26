@@ -238,6 +238,7 @@ func TestCrawlSite(gt *testing.T) {
 		text.A(text.Href(loopbackSite+"/tasks?from=home"))(text.Text("Tasks, absolute")),
 		text.A(text.Href("HTTP://127.0.0.1:8080/old"))(text.Text("Old, absolute")),
 		text.A(text.Href(webuitest.BaseURL+"/elsewhere"))(text.Text("Another site")),
+		text.A(text.Href("https://127.0.0.1:8080/tasks?from=tls"))(text.Text("Tasks, other scheme")),
 	)
 	var pages []string
 	opts := webuitest.CrawlOptions{
@@ -331,6 +332,27 @@ func TestCrawlRedirects(gt *testing.T) {
 		}, strict.Problems))
 		// The redirect on the site is still followed.
 		t.Must(strict.Covers("/tasks"))
+	})
+	t.Run("other scheme", func(t devtest.T) {
+		// The site's host over http is another origin than the https
+		// site: its links are not followed, and a redirect there leaves
+		// the site.
+		mux := site(text.A(text.Href("http://app.example.test/tasks?plain"))(text.Text("Plain")))
+		mux.HandleFunc("GET /plain", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "http://app.example.test/tasks", http.StatusFound)
+		})
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{Start: []string{"/", "/plain", "http://app.example.test/"}})
+		t.Must(be.DeepEqual([]string{`start page "http://app.example.test/" is not a path of the site`}, report.Problems))
+		t.Must(be.DeepEqual([]string{"/", "/tasks"}, report.Pages))
+		var off []webuitest.Target
+		for _, tg := range report.Targets {
+			if tg.Kind == webuitest.TargetOffsiteRedirect {
+				off = append(off, tg)
+			}
+		}
+		t.Must(be.DeepEqual([]webuitest.Target{
+			{Kind: webuitest.TargetOffsiteRedirect, Method: http.MethodGet, URL: "http://app.example.test/tasks", Page: "/plain"},
+		}, off))
 	})
 	t.Run("no usable location", func(t devtest.T) {
 		mux := http.NewServeMux()

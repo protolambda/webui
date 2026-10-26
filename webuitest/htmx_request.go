@@ -832,10 +832,7 @@ func mergeHTMXObject(e ct.Node, name string, into *jsObject) bool {
 		if p.Kind() != ct.KindElement {
 			continue
 		}
-		v, _ := attrOf(p, name)
-		if v == "" {
-			v, _ = attrOf(p, "data-"+name)
-		}
+		v, _ := hxValue(p, name)
 		v = strings.TrimSpace(v)
 		switch {
 		case v == "":

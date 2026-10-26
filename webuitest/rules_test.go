@@ -11,6 +11,7 @@ import (
 	"github.com/protolambda/chord/core/elem"
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/chord/ct/cthtml"
+	"github.com/protolambda/chord/html/form/button"
 	"github.com/protolambda/chord/html/group/div"
 	"github.com/protolambda/chord/html/text"
 	"github.com/protolambda/devtest"
@@ -699,6 +700,58 @@ func TestRules(gt *testing.T) {
 		got = violations(t, ct.View(view), webuitest.NoInlineStyles())
 		t.Must(be.Len(got, 1))
 	})
+}
+
+// TestRulesAttributeCase checks that the rules read attributes whose
+// names are not lower case: views keep the case in which attributes were
+// written, and the HTML parser writes SVG attributes such as viewBox in
+// mixed case, so the other attributes of an SVG element are looked up
+// case-insensitively too.
+func TestRulesAttributeCase(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	cases := []struct {
+		name    string
+		subject *ct.Subject
+		rule    ct.Rule
+		want    []string
+	}{
+		{"view target found", ct.View(elem.Bundle{
+			div.Div(attr.KV("ID", "list"))(),
+			button.Button(button.Type(button.TypeButton), attr.KV("HX-Get", "/items"), attr.KV("HX-Target", "#list"))(text.Text("Load")),
+		}), webuitest.HXTargets(), nil},
+		{"view target missing", ct.View(
+			button.Button(button.Type(button.TypeButton), attr.KV("Data-HX-Get", "/items"), attr.KV("HX-Target", "#gone"))(text.Text("Load")),
+		), webuitest.HXTargets(), []string{`hx-target at button[0] targets missing id "gone"`}},
+		{"view inherited target", ct.View(
+			div.Div(attr.KV("HX-Target", "find tr"))(button.Button(button.Type(button.TypeButton), attr.KV("HX-Get", "/x"))(text.Text("x"))),
+		), webuitest.HXTargets(), []string{`hx-target at div[0], inherited by div[0]/button[0], finds no "tr" descendant`}},
+		{"view post without csrf", ct.View(
+			button.Button(button.Type(button.TypeButton), attr.KV("HX-Post", "/x"))(text.Text("x")),
+		), webuitest.PostFormsCarryCSRF(""), []string{`hx-post at button[0] sends no "csrf" field`}},
+		{"view csrf in vals", ct.View(
+			div.Div(attr.KV("HX-Vals", `{"csrf":"t"}`))(button.Button(button.Type(button.TypeButton), attr.KV("HX-Post", "/x"))(text.Text("x"))),
+		), webuitest.PostFormsCarryCSRF("t"), nil},
+		{"view sse", ct.View(
+			div.Div(attr.KV("HX-Ext", "sse"), attr.KV("SSE-Connect", "/live"))(div.Div(attr.KV("SSE-Swap", "tick"))()),
+		), webuitest.SSEWiring(), []string{"sse-connect at div[0] has no sse-close event"}},
+		{"view icon class", ct.View(text.Span(attr.KV("Class", "bi bi-x"))()), webuitest.IconsHidden(), []string{"icon at span[0] is neither"}},
+		{"view dialog opener", ct.View(button.Button(attr.KV("CommandFor", "d"), attr.KV("Command", "show-modal"))(text.Text("x"))), webuitest.ModalDialogs(), []string{
+			"commandfor at button[0] is not on a button of type button", "commandfor at button[0] has no popovertarget naming the same dialog",
+		}},
+		{"svg request host", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" hx-get="https://other.example/x"><path d="M0 0"/></svg>`)), webuitest.LocalResources(), []string{"hx-get at html[1]/body[1]/svg[0] names a host"}},
+		{"svg post without csrf", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" data-hx-post="/x"></svg>`)), webuitest.PostFormsCarryCSRF(""), []string{`data-hx-post at html[1]/body[1]/svg[0] sends no "csrf" field`}},
+		{"svg icon", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" class="bi"></svg><svg viewBox="0 0 1 1" class="bi" aria-hidden="true"></svg>`)), webuitest.IconsHidden(), []string{"icon at html[1]/body[1]/svg[0] is neither"}},
+		{"svg style", cthtml.PageString(htmlPage(`<svg viewBox="0 0 1 1" style="fill: red"></svg>`)), webuitest.NoInlineStyles(), []string{"style attribute at html[1]/body[1]/svg[0]"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t devtest.T) {
+			got := violations(t, c.subject, c.rule)
+			t.Mustf(be.Len(got, len(c.want)), "violations %q", got)
+			for i, w := range c.want {
+				t.Must(be.Substring(got[i], w))
+			}
+		})
+	}
 }
 
 func TestNodeHelpers(gt *testing.T) {

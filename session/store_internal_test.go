@@ -187,6 +187,27 @@ func TestEndFuncPanicLeavesSessionsUnlocked(gt *testing.T) {
 	t.Must(be.Len(ended, 2))
 }
 
+func TestEachPanicLeavesSessionsUnlocked(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st, err := NewStore(Options[*item]{Rand: rand.NewChaCha8([32]byte{9})})
+	t.Must(be.NoError(err))
+	other, err := st.New(httptest.NewRecorder(), nil, &item{ID: 2})
+	t.Must(be.NoError(err))
+	empty, err := st.New(httptest.NewRecorder(), nil, nil) // the most recent: visited first
+	t.Must(be.NoError(err))
+
+	// A visitor that dereferences a nil value panics on the first session.
+	t.Must(be.Panic(func() { st.Each(func(v *item) { _ = v.ID }) }))
+	for _, s := range []*Session[*item]{empty, other} {
+		t.Must(be.True(s.mu.TryLock()))
+		s.mu.Unlock()
+		t.Must(be.False(s.Ended()))
+	}
+	t.Must(be.True(st.mu.TryLock()))
+	st.mu.Unlock()
+	checkList(t, st)
+}
+
 // timeLayout is the layout of [time.Time] in the Go releases this module
 // supports: when the hasMonotonic bit of wall is set, ext holds the
 // monotonic clock reading in nanoseconds.

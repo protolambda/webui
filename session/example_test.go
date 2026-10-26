@@ -280,6 +280,27 @@ func ExampleStore_EndFunc() {
 	// Output: 2 1 true revoked false
 }
 
+// Each reads the live sessions and changes nothing: here it counts the
+// sessions of each account, for a page that shows where an account is
+// signed in.
+func ExampleStore_Each() {
+	type Account struct{ ID int }
+	store, err := session.NewStore(session.Options[Account]{})
+	if err != nil {
+		panic(err)
+	}
+	for _, id := range []int{1, 1, 2} {
+		if _, err := store.New(httptest.NewRecorder(), nil, Account{ID: id}); err != nil {
+			panic(err)
+		}
+	}
+
+	sessions := make(map[int]int)
+	store.Each(func(a Account) { sessions[a.ID]++ })
+	fmt.Println(sessions[1], sessions[2], store.Len())
+	// Output: 2 1 3
+}
+
 // A login with Replace ends the earlier sessions of the account in the
 // same step, which keeps one session per account: logging in again and
 // again does not push the sessions of others out of the store, also when

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -591,6 +592,79 @@ func TestEndFunc(gt *testing.T) {
 	t.Must(be.False(b.Ended()))
 	t.Must(be.Equal(1, st.Len()))
 	t.Must(be.Equal(0, st.EndFunc(func(data account) bool { return data.ID == 1 })))
+}
+
+func TestEach(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	var e ended
+	st := newStore(t, session.Options[account]{Now: clk.Now, IdleTTL: 10 * time.Minute, MaxSessions: 3, OnEnd: e.hook})
+	idle, _ := login(t, st, nil, account{ID: 1})
+	clk.Advance(5 * time.Minute)
+	a, _ := login(t, st, nil, account{ID: 2})
+	b, _ := login(t, st, nil, account{ID: 3})
+	gone, _ := login(t, st, nil, account{ID: 4}) // evicts idle, the least recently used
+	t.Must(be.True(idle.Ended()))
+	gone.End()
+
+	// fn sees a copy of each live session's value.
+	var seen []int64
+	st.Each(func(data account) {
+		seen = append(seen, data.ID)
+		data.ID = 99
+	})
+	slices.Sort(seen)
+	t.Must(be.DeepEqual([]int64{2, 3}, seen))
+	data, _ := a.Data()
+	t.Must(be.Equal(int64(2), data.ID))
+
+	// Visits do not count as use: the least recently used session is
+	// still the first to go, and the idle timers run on.
+	login(t, st, nil, account{ID: 5})
+	login(t, st, nil, account{ID: 6})
+	t.Must(be.True(a.Ended()))
+	t.Must(be.False(b.Ended()))
+	clk.Advance(9 * time.Minute)
+	st.Each(func(account) {})
+	clk.Advance(time.Minute)
+	ends := len(e.list())
+
+	// Expired sessions are skipped, not ended: the sweep ends them.
+	seen = nil
+	st.Each(func(data account) { seen = append(seen, data.ID) })
+	t.Must(be.Empty(seen))
+	t.Must(be.False(b.Ended()))
+	t.Must(be.Equal(3, st.Len()))
+	t.Must(be.Len(e.list(), ends))
+	t.Must(be.Equal(3, st.Sweep()))
+	t.Must(be.Equal(session.EndIdle, b.EndReason()))
+}
+
+func TestEachVisitsRotatedSessions(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	st := newStore(t, session.Options[account]{})
+	_, bCookie := login(t, st, nil, account{ID: 2})
+	login(t, st, nil, account{ID: 1}) // the most recent: visited first
+
+	// While Each runs, session 2 rotates (fn calls the store here only to
+	// make the race deterministic: session 2 is not locked). Its value is
+	// visited once, in the new session.
+	var (
+		rotated *session.Session[account]
+		seen    []int64
+	)
+	st.Each(func(a account) {
+		seen = append(seen, a.ID)
+		if a.ID == 1 {
+			var err error
+			rotated, err = st.Rotate(httptest.NewRecorder(), get(t, "/", bCookie))
+			t.Must(be.NoError(err))
+		}
+	})
+	t.Must(be.DeepEqual([]int64{1, 2}, seen))
+	t.Must(be.NonNilPtr(rotated))
+	t.Must(be.False(rotated.Ended()))
+	t.Must(be.Equal(2, st.Len()))
 }
 
 func TestSweep(gt *testing.T) {

@@ -161,10 +161,10 @@
 // value is guarded by the session: [Session.Data] returns a copy, and
 // [Session.Update] runs a function with exclusive access to it. The
 // callbacks [Options.OnEnd], [Options.OnEndReason] and those given to
-// [Session.Update] and [Store.EndFunc] run while their session is locked:
-// they must not call methods of that session or of its store, and should
-// return quickly ([Store.Rotate] waits for the session's lock while holding
-// the store's).
+// [Session.Update], [Store.EndFunc] and [Store.Each] run while their
+// session is locked: they must not call methods of that session or of its
+// store, and should return quickly ([Store.Rotate] waits for the session's
+// lock while holding the store's).
 //
 // # Logging
 //

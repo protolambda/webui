@@ -43,8 +43,8 @@
 // are [Form], [Multipart] and [Parts]. [Serve] runs a handler on a request.
 // A [Client] and a [Browser] build their requests on [Client.Base] and
 // [BrowserOptions.Base] instead, for an application tested at another
-// site, such as a plain http loopback site; as [SiteSender]s, they report
-// it to [Crawl].
+// site, such as a plain http loopback site; as a [SiteSender] each, they
+// report it to [Crawl] and [RejectsCrossSite].
 //
 // [Client] is the handler-level harness: it serves requests through a
 // handler, prepares them (for example to attach a session), adds the
@@ -64,11 +64,12 @@
 // [NoCookies] and [SecurityHeaders] assert responses; cookie values are
 // never printed. [StrictPolicy] and [PolicyFor] are the security headers
 // of pages, [AssetPolicy] and [AssetPolicyFor] those of asset files.
-// [CrossSiteProbes], [RejectsCrossSite], [OpenRedirectVectors] and
-// [Hostile] supply attack inputs. [Crawl] follows an application's links
-// and checks every page and target it finds, with a contract per page
-// when [CrawlOptions.ContractFor] is set. [Logs] captures log records,
-// and [Logs.NotLogged] checks that no secret reached them.
+// [CrossSiteProbes], [CrossSiteProbesFor], [RejectsCrossSite],
+// [OpenRedirectVectors] and [Hostile] supply attack inputs. [Crawl]
+// follows an application's links and checks every page and target it
+// finds, with a contract per page when [CrawlOptions.ContractFor] is set.
+// [Logs] captures log records, and [Logs.NotLogged] checks that no secret
+// reached them.
 //
 // [AttrIs] and [HasClass] read ct nodes, for custom rules
 // ([ct.CustomRule]) next to [ct.Elements], [ct.Descendants] and

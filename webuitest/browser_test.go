@@ -431,6 +431,103 @@ func TestCrossSiteProbes(gt *testing.T) {
 	}
 }
 
+// probeRequests returns the probes as requests for "/x": the name, Host
+// and origin headers of each.
+func probeRequests(t devtest.T, probes []webuitest.Probe) []string {
+	var out []string
+	for _, p := range probes {
+		req := webuitest.Post(t, "/x", webuitest.Body{}, p.Options...)
+		out = append(out, strings.Join([]string{p.Name, req.Host, req.Header.Get("Sec-Fetch-Site"), req.Header.Get("Origin"), req.Header.Get("Referer")}, " | "))
+	}
+	return out
+}
+
+// TestCrossSiteProbesFor probes an application at a loopback site, whose
+// look-alikes the probes of BaseURL do not resemble.
+func TestCrossSiteProbesFor(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.DeepEqual(probeRequests(t, webuitest.CrossSiteProbes()), probeRequests(t, webuitest.CrossSiteProbesFor(webuitest.BaseURL))))
+	t.Must(be.DeepEqual([]string{
+		"cross-site | app.example.test | cross-site | https://evil.example | ",
+		"same-site | app.example.test | same-site | http://127.0.0.1:8443 | ",
+		"foreign origin without fetch metadata | app.example.test |  | https://evil.example | ",
+		"lookalike origin | app.example.test |  | http://127.0.0.1:8080.evil.example | ",
+		"suffix origin | app.example.test |  | http://evil127.0.0.1:8080 | ",
+		"other port origin | app.example.test |  | http://127.0.0.1:8443 | ",
+		"null origin | app.example.test |  | null | ",
+		"https origin | app.example.test |  | https://127.0.0.1:8080 | ",
+		"foreign referer only | app.example.test |  |  | https://evil.example/page",
+		"lookalike referer only | app.example.test |  |  | http://127.0.0.1:8080.evil.example/page",
+		"dns rebinding | evil.example:8080 | same-origin | http://evil.example:8080 | ",
+	}, probeRequests(t, webuitest.CrossSiteProbesFor(loopbackSite))))
+	for site, want := range map[string]string{
+		"https://example.com":                "https://other.example.com",
+		"https://other.example.com:8443":     "https://another.example.com:8443",
+		"http://localhost:3000":              "http://localhost:8443",
+		"http://[::1]:8443":                  "http://[::1]:8444",
+		"https://notes.app.example.test:443": "https://other.app.example.test",
+	} {
+		got := probeRequests(t, webuitest.CrossSiteProbesFor(site))[1]
+		t.Mustf(be.Substring(got, "| same-site | "+want+" |"), "same-site probe of %s", site)
+	}
+	t.Must(be.Panic(func() { webuitest.CrossSiteProbesFor("localhost:8080") }))
+
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /tasks", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	unchanged := func() error {
+		if n := calls.Load(); n != 0 {
+			return errStatus(http.StatusConflict)
+		}
+		return nil
+	}
+	site := mw.MustParseSite(loopbackSite)
+	body := webuitest.Form(url.Values{"title": {"x"}})
+
+	// webui's policy refuses every probe at the site, and accepts the
+	// requests of the site itself, also without origin headers.
+	strict := mw.Chain(mux, mw.HostCheck(site), mw.SameOrigin(mw.OriginPolicy{}))
+	c := &webuitest.Client{Handler: strict, Base: loopbackSite}
+	t.Must(webuitest.RejectsCrossSite(t, c, http.MethodPost, "/tasks", body, unchanged))
+	b := webuitest.NewBrowser(t, strict, webuitest.BrowserOptions{Base: loopbackSite})
+	t.Must(webuitest.RejectsCrossSite(t, b, http.MethodPost, "/tasks", body, unchanged))
+	t.Must(c.Post(t, "/tasks", body, webuitest.NoFetchMetadata()).Status(http.StatusNoContent))
+	// An application that refuses header-less requests there too checks
+	// it itself.
+	calls.Store(0)
+	deny := &webuitest.Client{Handler: mw.Chain(mux, mw.HostCheck(site), mw.SameOrigin(mw.OriginPolicy{Headerless: mw.HeaderlessDeny})), Base: loopbackSite}
+	t.Must(webuitest.RejectsCrossSite(t, deny, http.MethodPost, "/tasks", body, unchanged))
+	t.Must(deny.Post(t, "/tasks", body, webuitest.NoFetchMetadata()).Status(http.StatusForbidden))
+
+	// An origin check by prefix, behind fetch metadata, lets the
+	// look-alikes of the site through, which the probes of BaseURL miss.
+	prefix := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch fs := r.Header.Get("Sec-Fetch-Site"); {
+		case fs == "same-origin" || fs == "none":
+		case fs != "":
+			http.Error(w, "cross-site", http.StatusForbidden)
+			return
+		case !strings.HasPrefix(r.Header.Get("Origin"), loopbackSite) && !strings.HasPrefix(r.Header.Get("Referer"), loopbackSite):
+			http.Error(w, "no origin", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	lax := &webuitest.Client{Handler: mw.Chain(prefix, mw.HostCheck(site)), Base: loopbackSite}
+	calls.Store(0)
+	err := webuitest.RejectsCrossSite(t, lax, http.MethodPost, "/tasks", body, nil).Check(t.Context())
+	t.Must(be.ErrorIs(err, ct.ErrMismatch))
+	for _, want := range []string{`probe "lookalike origin"`, `probe "lookalike referer only"`} {
+		t.Must(be.ErrorContains(err, want))
+	}
+	for _, p := range webuitest.CrossSiteProbes() {
+		t.Mustf(be.False(lax.Post(t, "/tasks", body, p.Options...).StatusCode() == http.StatusNoContent), "probe %q of BaseURL", p.Name)
+	}
+}
+
 // safeNext is a reference check of a redirect target: a local path that
 // browsers cannot read as another host.
 func safeNext(v string) bool {

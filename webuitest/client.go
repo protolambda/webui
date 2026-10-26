@@ -22,8 +22,8 @@ type Sender interface {
 }
 
 // SiteSender is a [Sender] that reports the site of its requests, as
-// [Client] and [Browser] do: [Crawl] tests the site of a SiteSender, and
-// [BaseURL] for other Senders.
+// [Client] and [Browser] do: [Crawl] and [RejectsCrossSite] test the site
+// of a SiteSender, and [BaseURL] for other Senders.
 type SiteSender interface {
 	Sender
 	// URL returns the base URL of the requests, an http or https origin

@@ -13,6 +13,8 @@ import (
 
 	"github.com/protolambda/chord/ct"
 	"github.com/protolambda/mustbe/assertion"
+
+	"github.com/protolambda/webui/mw"
 )
 
 // ErrCrawl reports the problems that a [Crawl] found.
@@ -22,12 +24,17 @@ var ErrCrawl = errors.New("webuitest: crawl found problems")
 // method and path (with an optional query) to a handler of its own.
 type RouteChecker func(method, path string) bool
 
-// MuxRoutes returns the [RouteChecker] of mux: a request is routed when
-// the mux matches it to a pattern (on [BaseURL]'s host), the pattern is
-// not the catch-all "/" (unless the path is "/"), and the handler is not
-// a redirect that the mux generates (to add a trailing slash or clean the
-// path), which a page should not link to.
-func MuxRoutes(mux *http.ServeMux) RouteChecker {
+// MuxRoutes returns the [RouteChecker] of a mux, an [*http.ServeMux] or
+// another mw.Router: a request is routed when the router matches it to a
+// pattern (on [BaseURL]'s host), the pattern is not the catch-all "/"
+// (unless the path is "/"), and the handler is not a redirect that a mux
+// generates (to add a trailing slash or clean the path), which a page
+// should not link to.
+//
+// For a mux that an outer mux serves at its catch-all "/", the outer mux
+// routes every request of it to "/": pass mw.Mounted(outer, "/", mux),
+// which resolves those requests with the inner mux.
+func MuxRoutes(mux mw.Router) RouteChecker {
 	redirect := reflect.TypeOf(http.RedirectHandler("/", http.StatusMovedPermanently))
 	return func(method, path string) bool {
 		u, err := url.Parse(path)

@@ -21,6 +21,7 @@ import (
 	"github.com/protolambda/mustbe/be"
 
 	"github.com/protolambda/webui/hx2"
+	"github.com/protolambda/webui/mw"
 	"github.com/protolambda/webui/session"
 	"github.com/protolambda/webui/sse"
 	"github.com/protolambda/webui/theme"
@@ -284,6 +285,11 @@ func TestCrawlAssets(gt *testing.T) {
 	t.Must(be.Len(report.Problems, 1))
 }
 
+// routerFunc is the mw.Router of a function.
+type routerFunc func(r *http.Request) (http.Handler, string)
+
+func (f routerFunc) Handler(r *http.Request) (http.Handler, string) { return f(r) }
+
 func TestMuxRoutes(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	mux := http.NewServeMux()
@@ -304,6 +310,28 @@ func TestMuxRoutes(gt *testing.T) {
 	only := http.NewServeMux()
 	only.HandleFunc("GET /a", func(http.ResponseWriter, *http.Request) {})
 	t.Must(be.False(webuitest.MuxRoutes(only)(http.MethodPost, "/a")))
+
+	// A mux that an outer mux serves at its catch-all: the outer mux
+	// routes all of its requests to "/", Mounted to the mux's patterns.
+	outer := http.NewServeMux()
+	outer.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	outer.Handle("/", mux)
+	t.Must(be.False(webuitest.MuxRoutes(outer)(http.MethodGet, "/tasks/7")))
+	mounted := webuitest.MuxRoutes(mw.Mounted(outer, "/", mux))
+	t.Must(be.True(mounted(http.MethodGet, "/tasks/7")))
+	t.Must(be.True(mounted(http.MethodGet, "/healthz")))
+	t.Must(be.True(mounted(http.MethodGet, "/")))
+	t.Must(be.False(mounted(http.MethodGet, "/notes")))
+	t.Must(be.False(mounted(http.MethodGet, "/elsewhere")))
+	// Any router: here one that sends posts to another mux.
+	byMethod := routerFunc(func(r *http.Request) (http.Handler, string) {
+		if r.Method == http.MethodPost {
+			return only.Handler(r)
+		}
+		return mux.Handler(r)
+	})
+	t.Must(be.True(webuitest.MuxRoutes(byMethod)(http.MethodGet, "/tasks/7")))
+	t.Must(be.False(webuitest.MuxRoutes(byMethod)(http.MethodPost, "/tasks")))
 	t.Must(be.Equal("redirect", webuitest.TargetRedirect.String()))
 	t.Must(be.Equal("TargetKind(99)", webuitest.TargetKind(99).String()))
 }

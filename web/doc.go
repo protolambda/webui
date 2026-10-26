@@ -105,6 +105,14 @@
 // the code of its outcome in the query, and the page shows the registered
 // message. Nothing from the URL is reflected into the page.
 //
+// A notice is a polite status (role="status") whatever its color, a
+// danger notice too: screen readers do not interrupt for it, and generally
+// do not announce it as the page loads. Report a refused action with an
+// error alert (page.ErrorAlert, role="alert") instead: after a redirect,
+// look its code up with [Notices.Of] in a registry of refusals and render
+// the message with page.ErrorAlert; without a redirect, render the page
+// again with page.ErrorAlert and a 4xx status (see [Notices]).
+//
 // # Scrolling and focus
 //
 // htmx swaps content without moving the window, and content that replaces

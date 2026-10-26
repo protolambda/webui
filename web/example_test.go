@@ -415,6 +415,34 @@ func ExampleNotices() {
 	// <div id="alerts" aria-live="polite"></div>
 }
 
+// A refusal after a redirect is an error alert (role="alert"), which the
+// page renders from a registry of refusals: a notice is a polite status
+// whatever its color, and may go unannounced as the page loads.
+func ExampleNotices_refusal() {
+	notices := web.Notices{"saved": {Message: "Task saved."}}
+	refusals := web.Notices{"locked": {Message: "The task is locked. Nothing was changed."}}
+	save := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refusals.Redirect(w, r, "/tasks", "locked")
+	})
+	list := web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		alerts := []elem.Node{notices.Alert(r)}
+		if n, ok := refusals.Of(r); ok {
+			alerts = append(alerts, page.ErrorAlert(text.Text(n.Message)))
+		}
+		return web.Render(w, r, http.StatusOK, page.AlertsRegion(alerts...))
+	})
+	serve(save, httptest.NewRequest(http.MethodPost, "/tasks/7", nil), "Location")
+	serve(list, httptest.NewRequest(http.MethodGet, "/tasks?notice=locked", nil))
+	serve(list, httptest.NewRequest(http.MethodGet, "/tasks?notice=saved", nil))
+	// Output:
+	// 303
+	// Location: /tasks?notice=locked
+	// 200
+	// <div id="alerts" aria-live="polite"><div class="alert alert-danger" role="alert">The task is locked. Nothing was changed.</div></div>
+	// 200
+	// <div id="alerts" aria-live="polite"><div class="alert alert-success" role="status">Task saved.</div></div>
+}
+
 func ExampleWithParam() {
 	fmt.Println(web.WithParam("/tasks?notice=saved&page=2#list", "notice", "deleted"))
 	fmt.Println(web.WithParam("/login", web.NextParam, "/tasks?page=2"))

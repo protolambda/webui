@@ -28,8 +28,9 @@ type runConfig struct {
 }
 
 // ShutdownTimeout sets how long Run waits for requests in flight once
-// shutdown starts, before it closes the remaining connections. A
-// non-positive d means [DefaultShutdownTimeout].
+// shutdown starts, before it closes the remaining connections, whose
+// handlers may outlast Run (see [Run]). A non-positive d means
+// [DefaultShutdownTimeout].
 func ShutdownTimeout(d time.Duration) RunOption {
 	return func(c *runConfig) {
 		if d > 0 {
@@ -61,9 +62,11 @@ func OnShutdown(hooks ...func()) RunOption {
 }
 
 // Run serves srv on ln until ctx is done, then shuts down gracefully, and
-// returns once the server stopped. It takes ownership of ln, which is closed
-// (once) when Run returns, and of srv, which cannot serve again afterwards:
-// use a fresh server for every Run.
+// returns once the server stopped: its listener and its connections are
+// closed, which need not mean that every handler returned (see below). It
+// takes ownership of ln, which is closed (once) when Run returns, and of
+// srv, which cannot serve again afterwards: use a fresh server for every
+// Run.
 //
 // Run serves TLS when srv.TLSConfig is not nil (as [New] sets it for
 // Options.TLS), so ln must be a plain listener; it is wrapped in TLS after
@@ -84,7 +87,20 @@ func OnShutdown(hooks ...func()) RunOption {
 //     connections and waits for requests in flight, up to the
 //     [ShutdownTimeout] (by default [DefaultShutdownTimeout]);
 //  3. after the timeout, the request contexts are canceled and the remaining
-//     connections closed.
+//     connections closed ([http.Server.Close]).
+//
+// Run does not wait for every handler: Close does not wait for the
+// handlers of the connections that it closes after the timeout, and
+// Shutdown never waits for those of hijacked connections. A handler that
+// is slow to notice the cancellation of its context, such as one in a
+// long computation or in a call that ignores the context, may therefore
+// still run after Run returned, and race with what the program does next,
+// such as closing a database or another service that the handler uses.
+// After a timeout, Run's error wraps [context.DeadlineExceeded]; a
+// hijacked connection's handler leaves no trace in it. Make handlers stop
+// on the request's context, and close shared services only once no
+// handler can use them any more: for example after a [sync.WaitGroup]
+// that the handlers using them join, or only as the process exits.
 //
 // Shutdown alone counts a connection that has not started a request as busy
 // during its first 5 seconds, so a browser that opened a connection ahead of

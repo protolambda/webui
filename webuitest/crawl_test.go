@@ -378,6 +378,90 @@ func TestCrawlAssets(gt *testing.T) {
 	err := report.Check(t.Context())
 	t.Must(be.ErrorContains(err, "asset "+css+" (on /): no X-Content-Type-Options: nosniff; the served bytes do not match the integrity value of the page"))
 	t.Must(be.Len(report.Problems, 1))
+	// A policy checks nosniff in its place, with the other headers.
+	policy := webuitest.Policy{Headers: mw.Headers{CacheControl: "no-cache"}}
+	report = webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{AssetPolicy: func(u *url.URL) *webuitest.Policy {
+		if u.Path != css {
+			return nil
+		}
+		return &policy
+	}})
+	t.Must(be.Len(report.Problems, 1))
+	t.Must(be.Substring(report.Problems[0], "asset "+css+" (on /): has no Content-Security-Policy; "))
+	t.Must(be.Substring(report.Problems[0], `has no X-Content-Type-Options, want "nosniff"; `))
+	t.Must(be.Substring(report.Problems[0], `has no Cache-Control, want "no-cache"; `))
+	t.Must(be.False(strings.Contains(report.Problems[0], "no X-Content-Type-Options: nosniff")))
+}
+
+// TestCrawlPolicies checks the security headers of pages and assets, and
+// that assets set no cookies.
+func TestCrawlPolicies(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	mux := site()
+	mux.HandleFunc("GET /cached", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		render(w, r, http.StatusOK, validDoc().node())
+	})
+	page, asset := webuitest.StrictPolicy(), webuitest.AssetPolicy()
+	everyPage := func(*url.URL) *webuitest.Policy { return &page }
+	everyAsset := func(*url.URL) *webuitest.Policy { return &asset }
+	secured := mw.SecurityHeaders(mw.Headers{})(mux)
+	start := []string{"/", "/cached"}
+
+	report := webuitest.Crawl(t, &webuitest.Client{Handler: secured}, webuitest.CrawlOptions{
+		Start: start, PagePolicy: everyPage, AssetPolicy: everyAsset, NoAssetCookies: true,
+	})
+	t.Must(be.DeepEqual([]string{
+		`security headers of /cached: has Cache-Control "public, max-age=60", want "no-store"`,
+	}, report.Problems))
+	// Without the middleware, every page, redirect and asset lacks them.
+	var urls []string
+	report = webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{
+		PagePolicy: func(u *url.URL) *webuitest.Policy {
+			urls = append(urls, u.String())
+			defer func() { u.Path = "/changed" }()
+			return &page
+		},
+		AssetPolicy: everyAsset,
+	})
+	t.Must(be.DeepEqual([]string{webuitest.BaseURL + "/", webuitest.BaseURL + "/tasks", webuitest.BaseURL + "/old"}, urls))
+	err := report.Check(t.Context())
+	for _, want := range []string{
+		"security headers of /: has no Content-Security-Policy; has no X-Frame-Options",
+		"security headers of /tasks: ",
+		"security headers of /old: ",
+		"asset /assets/webui/",
+		`has no X-Content-Type-Options, want "nosniff"`,
+	} {
+		t.Must(be.ErrorContains(err, want))
+	}
+	t.Must(be.Len(report.Problems, 3+5))
+	// A nil policy checks no headers; the assets (whose set sends nosniff
+	// itself) are fetched and pass their own checks.
+	var assets atomic.Int32
+	report = webuitest.Crawl(t, &webuitest.Client{Handler: mux}, webuitest.CrawlOptions{
+		PagePolicy: func(*url.URL) *webuitest.Policy { return nil },
+		AssetPolicy: func(*url.URL) *webuitest.Policy {
+			assets.Add(1)
+			return nil
+		},
+	})
+	t.Must(report)
+	t.Must(be.Equal(int32(5), assets.Load()))
+
+	t.Run("asset cookies", func(t devtest.T) {
+		visits := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.SetCookie(w, &http.Cookie{Name: "visit", Value: "never-printed"})
+			secured.ServeHTTP(w, r)
+		})
+		report := webuitest.Crawl(t, &webuitest.Client{Handler: visits}, webuitest.CrawlOptions{NoAssetCookies: true})
+		t.Must(be.Len(report.Problems, 5))
+		t.Must(be.Substring(report.Problems[0], `asset /assets/webui/`))
+		t.Must(be.Substring(report.Problems[0], `sets 1 cookies: "visit"`))
+		t.Must(be.False(strings.Contains(report.Check(t.Context()).Error(), "never-printed")))
+		// Pages may set cookies, and assets too without NoAssetCookies.
+		t.Must(webuitest.Crawl(t, &webuitest.Client{Handler: visits}, webuitest.CrawlOptions{Assets: true}))
+	})
 }
 
 // routerFunc is the mw.Router of a function.

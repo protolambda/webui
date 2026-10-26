@@ -67,7 +67,9 @@
 // [CrossSiteProbes], [CrossSiteProbesFor], [RejectsCrossSite],
 // [OpenRedirectVectors] and [Hostile] supply attack inputs. [Crawl]
 // follows an application's links and checks every page and target it
-// finds, with a contract per page when [CrawlOptions.ContractFor] is set.
+// finds, with a contract per page when [CrawlOptions.ContractFor] is set,
+// and the security headers of pages and assets with
+// [CrawlOptions.PagePolicy] and [CrawlOptions.AssetPolicy].
 // [Logs] captures log records, and [Logs.NotLogged] checks that no secret
 // reached them.
 //

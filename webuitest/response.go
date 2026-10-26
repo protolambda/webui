@@ -303,19 +303,26 @@ func (a noCookies) Check(ctx context.Context) error {
 	if len(lines) == 0 {
 		return nil
 	}
-	cookies, bad := setCookies(a.res)
+	return fmt.Errorf("%w: %s sets %d cookies%s", ct.ErrMismatch, a.res.Describe(), len(lines), cookieNames(a.res))
+}
+
+// cookieNames lists the names of the cookies that res sets for a message,
+// as ": "a", "b"", with the number of Set-Cookie headers that do not
+// parse; "" when it sets none.
+func cookieNames(res *cthttp.Result) string {
+	cookies, bad := setCookies(res)
 	names := make([]string, 0, len(cookies))
 	for _, c := range cookies {
 		names = append(names, fmt.Sprintf("%q", c.Name))
 	}
-	msg := fmt.Sprintf("%s sets %d cookies", a.res.Describe(), len(lines))
+	msg := ""
 	if len(names) > 0 {
 		msg += ": " + strings.Join(names, ", ")
 	}
 	if bad > 0 {
 		msg += fmt.Sprintf(" (%d do not parse)", bad)
 	}
-	return fmt.Errorf("%w: %s", ct.ErrMismatch, msg)
+	return msg
 }
 
 // NoCookie asserts that the response sets no cookie called name, while it
@@ -470,8 +477,17 @@ func (a securityHeaders) Check(ctx context.Context) error {
 	if err := a.res.Captured().Check(ctx); err != nil {
 		return err
 	}
-	h := a.res.Headers()
-	cfg := a.p.Headers
+	problems := headerProblems(a.res.Headers(), a.p)
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: security headers of %s:\n  %s", ct.ErrMismatch, a.res.Describe(), strings.Join(problems, "\n  "))
+}
+
+// headerProblems describes every difference between the security headers
+// h and those of p, see [SecurityHeaders].
+func headerProblems(h http.Header, p Policy) []string {
+	cfg := p.Headers
 	var problems []string
 	single := func(name, want string) {
 		values := h.Values(name)
@@ -491,7 +507,7 @@ func (a securityHeaders) Check(ctx context.Context) error {
 	if want.IsZero() {
 		want = mw.StrictCSP()
 	}
-	problems = append(problems, a.cspProblems(h.Values("Content-Security-Policy"), want)...)
+	problems = append(problems, cspProblems(h.Values("Content-Security-Policy"), want, p.AllowUnsafe)...)
 	single("X-Frame-Options", frameOptions(want))
 	single("X-Content-Type-Options", "nosniff")
 	single("Referrer-Policy", or(cfg.ReferrerPolicy, "same-origin"))
@@ -500,10 +516,7 @@ func (a securityHeaders) Check(ctx context.Context) error {
 	single("Cross-Origin-Opener-Policy", or(cfg.CrossOriginOpenerPolicy, "same-origin"))
 	single("Cross-Origin-Resource-Policy", or(cfg.CrossOriginResourcePolicy, "same-origin"))
 	single("Strict-Transport-Security", cfg.HSTS.String())
-	if len(problems) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%w: security headers of %s:\n  %s", ct.ErrMismatch, a.res.Describe(), strings.Join(problems, "\n  "))
+	return problems
 }
 
 // frameOptions returns the X-Frame-Options that mw derives from the
@@ -524,7 +537,7 @@ func frameOptions(p mw.CSP) string {
 	return ""
 }
 
-func (a securityHeaders) cspProblems(values []string, want mw.CSP) []string {
+func cspProblems(values []string, want mw.CSP, allowUnsafe bool) []string {
 	switch {
 	case len(values) == 0:
 		return []string{"has no Content-Security-Policy"}
@@ -536,7 +549,7 @@ func (a securityHeaders) cspProblems(values []string, want mw.CSP) []string {
 		return []string{fmt.Sprintf("Content-Security-Policy does not parse: %v", err)}
 	}
 	var out []string
-	if !a.p.AllowUnsafe {
+	if !allowUnsafe {
 		for d, sources := range got.All() {
 			for _, s := range sources {
 				if contains(unsafeSources, strings.ToLower(s)) {

@@ -161,11 +161,30 @@ type CrawlOptions struct {
 	// pages must answer 200 themselves. Redirects on the site are still
 	// followed, so that the crawl goes on.
 	NoRedirects bool
-	// Assets fetches every stylesheet, icon, preload and script once and
-	// checks that it is served with status 200, nosniff and the content
-	// type of its kind, and that its bytes match the integrity value of
-	// the page that loads it.
+	// PagePolicy, when set, picks the security headers ([SecurityHeaders])
+	// that each crawled page must carry by the page's URL (absolute on
+	// the site, a fresh copy for each call, as for ContractFor); a nil
+	// result checks no headers of that page. A redirect is checked with
+	// the policy of its own URL. For one policy of every page:
+	//
+	//	PagePolicy: func(*url.URL) *webuitest.Policy { return &policy },
+	PagePolicy func(u *url.URL) *Policy
+	// Assets fetches every stylesheet, icon, preload, script and image
+	// once and checks that it is served with status 200, nosniff and the
+	// content type of its kind, and that its bytes match the integrity
+	// value of the page that loads it.
 	Assets bool
+	// AssetPolicy, when set, picks the security headers that each asset
+	// must carry by its URL, as PagePolicy does for pages: usually
+	// [AssetPolicyFor](h) for the application's mw.Headers h, which
+	// expects the immutable Cache-Control of the files of an asset.Set,
+	// and nil for images that are no such files. Setting it fetches the
+	// assets as Assets does.
+	AssetPolicy func(u *url.URL) *Policy
+	// NoAssetCookies requires that no asset sets a cookie: a response of
+	// a file that every page loads should not change the browser's state.
+	// Setting it fetches the assets as Assets does.
+	NoAssetCookies bool
 	// Fragments fetches the target of every hx-get once as an htmx request
 	// ([HTMX]) and checks the fragment with FragmentContract (or
 	// [FragmentContract] with [Rules]()).
@@ -274,11 +293,13 @@ type fragmentRef struct {
 }
 
 // assetRef is an asset with the integrity value of the first page that
-// loads it.
+// loads it, and what its response must carry.
 type assetRef struct {
-	kind      string // "stylesheet", "script", "icon" or "preload"
+	kind      string // "stylesheet", "script", "icon", "preload" or "image"
 	integrity string
 	page      string
+	policy    *Policy
+	noCookies bool
 }
 
 // Crawl follows the links of an application from the start pages, with
@@ -299,8 +320,9 @@ type assetRef struct {
 //     URL and asset on the site is routed (with Routes);
 //   - every link to a fragment of another crawled page names an element
 //     of that page;
-//   - with Assets and Fragments, the assets and hx-get fragments, see
-//     [CrawlOptions].
+//   - with PagePolicy, the security headers of every page and redirect;
+//   - with Assets, AssetPolicy or NoAssetCookies, the assets, and with
+//     Fragments, the hx-get fragments, see [CrawlOptions].
 //
 // The site is that of s ([SiteSender], such as a Client with a Base), or
 // [BaseURL]; [MuxRoutes] still matches host patterns against BaseURL's
@@ -376,6 +398,13 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			continue
 		}
 		code := res.StatusCode()
+		if o.PagePolicy != nil && (code == http.StatusOK || (code >= 300 && code < 400)) {
+			if p := o.PagePolicy(resolve(site, q.url)); p != nil {
+				if hp := headerProblems(res.Headers(), *p); len(hp) > 0 {
+					problem("security headers of %s: %s", q.url, strings.Join(hp, "; "))
+				}
+			}
+		}
 		if code >= 300 && code < 400 {
 			from := resolve(site, q.url)
 			location := strings.TrimSpace(res.Headers().Get("Location"))
@@ -481,9 +510,14 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			problem("link on %s to %s#%s: the page has no element with that id", f.from, f.page, f.id)
 		}
 	}
-	if o.Assets {
+	if o.Assets || o.AssetPolicy != nil || o.NoAssetCookies {
 		for _, key := range assetOrder {
-			if msg := checkAsset(t, s, key, assets[key]); msg != "" {
+			a := assets[key]
+			if o.AssetPolicy != nil {
+				a.policy = o.AssetPolicy(resolve(site, key))
+			}
+			a.noCookies = o.NoAssetCookies
+			if msg := checkAsset(t, s, key, a); msg != "" {
 				problem("%s", msg)
 			}
 		}
@@ -652,8 +686,15 @@ func checkAsset(t TB, s Sender, key string, a assetRef) string {
 	}
 	var problems []string
 	h := res.Headers()
-	if !strings.EqualFold(h.Get("X-Content-Type-Options"), "nosniff") {
+	switch {
+	case a.policy != nil:
+		// The policy checks nosniff too.
+		problems = append(problems, headerProblems(h, *a.policy)...)
+	case !strings.EqualFold(h.Get("X-Content-Type-Options"), "nosniff"):
 		problems = append(problems, "no X-Content-Type-Options: nosniff")
+	}
+	if n := len(h.Values("Set-Cookie")); a.noCookies && n > 0 {
+		problems = append(problems, fmt.Sprintf("sets %d cookies%s", n, cookieNames(res)))
 	}
 	ctype := mediaEssence(h.Get("Content-Type"))
 	switch a.kind {

@@ -69,6 +69,19 @@ type Field struct {
 	Disabled     bool
 	ReadOnly     bool
 
+	// Plaintext shows the value as text, for a value that the form shows
+	// but does not let the user change: the input gets Bootstrap's
+	// form-control-plaintext class instead of form-control (no border and
+	// no background), and is read-only whether or not ReadOnly is set. It
+	// keeps its label and stays focusable. With a Name, it is submitted as
+	// any read-only input is, so the server must not trust the value that
+	// comes back: leave Name empty for a value that is only shown. Only the
+	// text-like types other than password, and the date and time types, can
+	// be plaintext: another Type, or Before or After (an input group, in
+	// which the plaintext input would take a line of its own), fails with
+	// [ErrInvalidOption].
+	Plaintext bool
+
 	Help  elem.Node // help text (div.form-text#ID-help); nil leaves it out
 	Error elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
 
@@ -110,10 +123,22 @@ func fieldClass(t input.InputType) (string, bool) {
 	return "", false
 }
 
+// plaintextType reports whether an input of type t can show its value as
+// plain text (see Field.Plaintext): a text-like type other than password,
+// or a date or time type.
+func plaintextType(t input.InputType) bool {
+	switch t {
+	case input.Text, input.Email, input.Number, input.Tel, input.URL, input.Search,
+		input.Date, input.Time, input.DatetimeLocal, input.Month, input.Week:
+		return true
+	}
+	return false
+}
+
 // Eval builds the field. It fails with [ErrInvalidID] for an invalid ID,
 // with [ErrNoName] without a label, and with [ErrInvalidOption] for an
-// unsupported Type or InputMode, or a password field with a value (in
-// Value or in Attrs).
+// unsupported Type or InputMode, a password field with a value (in Value
+// or in Attrs), or Plaintext with another type or in an input group.
 func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	const component = "bs.Field"
 	if err := checkID(component, f.ID); err != nil {
@@ -132,6 +157,15 @@ func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	}
 	if !f.InputMode.Valid() {
 		return elem.Obj{}, fmt.Errorf("%s: %w: unknown input mode", component, ErrInvalidOption)
+	}
+	if f.Plaintext {
+		if !plaintextType(typ) {
+			return elem.Obj{}, fmt.Errorf("%s: %w: plaintext needs a text-like, date or time type", component, ErrInvalidOption)
+		}
+		if len(f.Before) > 0 || len(f.After) > 0 {
+			return elem.Obj{}, fmt.Errorf("%s: %w: a plaintext field cannot be in an input group", component, ErrInvalidOption)
+		}
+		class = "form-control-plaintext"
 	}
 	c, err := newControl(ctx, component, f.ID, f.Label, f.Help, f.Error, f.Attrs)
 	if err != nil {
@@ -163,7 +197,7 @@ func (f Field) Eval(ctx context.Context) (elem.Obj, error) {
 	if f.InputMode != "" {
 		own = append(own, attr.Name("inputmode").Raw(string(f.InputMode)))
 	}
-	own = appendStates(own, f.Required, f.Disabled, f.ReadOnly)
+	own = appendStates(own, f.Required, f.Disabled, f.ReadOnly || f.Plaintext)
 	own = append(own, c.aria()...)
 	control := input.Input(compose(c.user, own...))
 
@@ -203,6 +237,7 @@ type Textarea struct {
 	Required     bool
 	Disabled     bool
 	ReadOnly     bool
+	Plaintext    bool      // form-control-plaintext instead of form-control, and read-only; see Field.Plaintext
 	Help         elem.Node // help text (div.form-text#ID-help); nil leaves it out
 	Error        elem.Node // validation error (div.invalid-feedback#ID-error); nil means valid
 	Attrs        attr.Node // additional attributes of the textarea; see Field.Attrs
@@ -226,7 +261,11 @@ func (t Textarea) Eval(ctx context.Context) (elem.Obj, error) {
 		return elem.Obj{}, err
 	}
 
-	own := []attr.Node{c.class("form-control"), attr.ID(t.ID)}
+	class := "form-control"
+	if t.Plaintext {
+		class = "form-control-plaintext"
+	}
+	own := []attr.Node{c.class(class), attr.ID(t.ID)}
 	if t.Name != "" {
 		own = append(own, textarea.Name(t.Name))
 	}
@@ -239,7 +278,7 @@ func (t Textarea) Eval(ctx context.Context) (elem.Obj, error) {
 	if t.Autocomplete != "" {
 		own = append(own, textarea.Autocomplete(t.Autocomplete))
 	}
-	own = appendStates(own, t.Required, t.Disabled, t.ReadOnly)
+	own = appendStates(own, t.Required, t.Disabled, t.ReadOnly || t.Plaintext)
 	own = append(own, c.aria()...)
 
 	var content []elem.Node

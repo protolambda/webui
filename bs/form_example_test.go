@@ -81,6 +81,14 @@ func ExampleField_row() {
 	// Output: <form method="get" action="/tasks" class="row g-2 align-items-end mb-3"><div class="col"><label class="form-label" for="filter-q">Search</label><input class="form-control" type="search" id="filter-q" name="q"/></div><div class="col-auto"><label class="form-label" for="filter-state">State</label><select class="form-select" id="filter-state" name="state"><option value="">Any</option><option value="open">Open</option><option value="done">Done</option></select></div><div class="col-auto"><button class="btn btn-secondary" type="submit">Filter</button></div></form>
 }
 
+// A value that the form shows but does not let the user change renders as
+// plain text, read-only, with its label. Without a Name it is not
+// submitted.
+func ExampleField_plaintext() {
+	core.Dump(bs.Field{ID: "task-ref", Label: text.Text("Reference"), Value: "T-1024", Plaintext: true})
+	// Output: <div class="mb-3"><label class="form-label" for="task-ref">Reference</label><input class="form-control-plaintext" type="text" id="task-ref" value="T-1024" readonly/></div>
+}
+
 func ExampleTextarea() {
 	core.Dump(bs.Textarea{
 		ID:    "body",

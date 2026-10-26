@@ -15,6 +15,10 @@ import (
 
 type loggerKey struct{}
 
+// scopedKey is the context key of the request-scoped logger that
+// [LogRequests] attached, which carries the method of the request.
+type scopedKey struct{}
+
 // WithLogger returns a context that carries l for [Logger]. A nil l returns ctx
 // unchanged, so the logger already attached (or the default) stays in effect.
 func WithLogger(ctx context.Context, l *slog.Logger) context.Context {
@@ -105,7 +109,7 @@ func LogRequests(cfg RequestLog) Middleware {
 			if pattern != "" {
 				scoped = scoped.With(slog.String("pattern", pattern))
 			}
-			r = r.WithContext(WithLogger(ctx, scoped))
+			r = r.WithContext(context.WithValue(WithLogger(ctx, scoped), scopedKey{}, scoped))
 			if !base.Enabled(ctx, cfg.Level) {
 				next.ServeHTTP(w, r)
 				return
@@ -148,6 +152,15 @@ func LogRequests(cfg RequestLog) Middleware {
 			completed = true
 		})
 	}
+}
+
+// carriesMethod reports whether l is the request-scoped logger that
+// [LogRequests] attached to ctx, whose records carry the method of the
+// request already. A logger attached inside LogRequests, even one derived
+// from that logger, is not.
+func carriesMethod(ctx context.Context, l *slog.Logger) bool {
+	scoped, ok := ctx.Value(scopedKey{}).(*slog.Logger)
+	return ok && scoped == l
 }
 
 // sanitizeMethod bounds a request method for logs: methods are tokens, but any

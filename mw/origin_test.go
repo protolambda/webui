@@ -2,6 +2,7 @@ package mw_test
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -199,6 +200,72 @@ func TestSameOrigin(gt *testing.T) {
 	rec = post(map[string]string{"Sec-Fetch-Site": "same-origin"})
 	t.Must(be.Equal(http.StatusSeeOther, rec.Code))
 	t.Must(be.Equal(1, saved))
+}
+
+// Behind LogRequests, the request-scoped logger carries the method, so a
+// refusal does not repeat it; a logger attached inside LogRequests gets
+// the method from the refusal.
+func TestSameOriginLogsMethodOnce(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	site := mw.MustParseSite("https://app.example.com")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /tasks", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusSeeOther)
+	})
+	var out strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey || a.Key == "duration" {
+				return slog.Attr{} // for stable records
+			}
+			return a
+		},
+	}))
+	refuse := func(mws ...mw.Middleware) string {
+		out.Reset()
+		h := mw.Chain(mux, append([]mw.Middleware{mw.LogRequests(mw.RequestLog{Logger: logger, Routes: mux})}, mws...)...)
+		req := httptest.NewRequest(http.MethodPost, "https://app.example.com/tasks", strings.NewReader("title=x"))
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		t.Must(be.Equal(http.StatusForbidden, rec.Code))
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		t.Must(be.Len(lines, 2)) // the refusal, then the request
+		return lines[0]
+	}
+
+	line := refuse(mw.HostCheck(site), mw.SameOrigin(mw.OriginPolicy{}))
+	t.Must(be.DeepEqual([]string{"level", "msg", "method", "pattern", "reason"}, jsonKeys(t, line)))
+	t.Must(be.Substring(line, `"msg":"refused a cross-origin request","method":"POST","pattern":"POST /tasks","reason":`))
+
+	inner := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(mw.WithLogger(r.Context(), logger.With("app", "tasks"))))
+		})
+	}
+	line = refuse(mw.HostCheck(site), inner, mw.SameOrigin(mw.OriginPolicy{}))
+	t.Must(be.DeepEqual([]string{"level", "msg", "app", "method", "reason"}, jsonKeys(t, line)))
+	t.Must(be.Substring(line, `"app":"tasks","method":"POST","reason":`))
+}
+
+// jsonKeys returns the keys of the JSON object in line in their order,
+// repeated keys included, which a decoded map would merge.
+func jsonKeys(t devtest.T, line string) []string {
+	dec := json.NewDecoder(strings.NewReader(line))
+	tok, err := dec.Token()
+	t.Must(be.NoError(err))
+	t.Must(be.Equal[json.Token](json.Delim('{'), tok))
+	var keys []string
+	for dec.More() {
+		tok, err := dec.Token()
+		t.Must(be.NoError(err))
+		key, _ := tok.(string)
+		keys = append(keys, key)
+		var value json.RawMessage
+		t.Must(be.NoError(dec.Decode(&value)))
+	}
+	return keys
 }
 
 // WebSocket handshakes are GET requests whose responses pages of other

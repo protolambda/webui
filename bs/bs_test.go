@@ -695,7 +695,7 @@ func TestSimpleConstructors(gt *testing.T) {
 		{bs.TableStriped(), `<table class="table table-striped"></table>`},
 		{bs.TableBordered(), `<table class="table table-bordered"></table>`},
 		{bs.TableHover(), `<table class="table table-hover"></table>`},
-		{bs.TableResponsive(), `<div class="table-responsive"></div>`},
+		{bs.TableResponsive(x), `<div class="table-responsive position-relative" id="x"></div>`},
 		{bs.ListGroupItem(), `<li class="list-group-item"></li>`},
 		{bs.NavbarNav(), `<ul class="navbar-nav"></ul>`},
 		{bs.NavbarCollapse(x), `<div class="collapse navbar-collapse" id="x"></div>`},
@@ -925,6 +925,18 @@ func TestDataTableOptions(gt *testing.T) {
 			`<thead><tr><th scope="col"></th></tr></thead><tbody><tr id="row-1"><td></td></tr></tbody></table></div>`,
 		render(t, bs.DataTable{Striped: true, Bordered: true, Attrs: aria.Labelledby("h"), Wrapper: attr.Class("mb-0"),
 			Columns: []bs.Column{{}}, Rows: []bs.TableRow{{Cells: []elem.Node{nil}, Attrs: attr.ID("row-1")}}})))
+}
+
+// TableResponsive is positioned, as the wrapper of DataTable is, so that
+// visually hidden text in the table stays inside the scroller; a caller's
+// classes add to it.
+func TestTableResponsivePositioned(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal(`<div class="table-responsive position-relative mb-0"><table class="table"></table></div>`,
+		render(t, bs.TableResponsive(attr.Class("mb-0"))(bs.Table()()))))
+	page := ct.View(bs.DataTable{Columns: []bs.Column{{Header: text.Text("Actions"), HeaderHidden: true}}, Wrapper: attr.Class("mb-0")})
+	t.Must(page.Find(ct.Class("table-responsive")).Matches(
+		ct.Class("position-relative"), ct.Class("mb-0"), ct.HasDescendant(ct.Class("visually-hidden"))))
 }
 
 func TestHeadingLevels(gt *testing.T) {

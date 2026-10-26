@@ -21,17 +21,28 @@ const InsecureBaseURL = "http://localhost"
 
 // BrowserOptions configure [NewBrowser].
 type BrowserOptions struct {
-	// Insecure serves plain http at [InsecureBaseURL] instead of https at
-	// [BaseURL]: a loopback name, as plain http sites are loopback sites
-	// for mw.ParseSite, and mw.SameOrigin accepts requests without origin
-	// headers on loopback sites. Browsers treat localhost as a secure
-	// origin, and so does the cookie jar: Secure and __Host- cookies,
-	// which webui's sessions use by default, are kept and sent over plain
-	// http there. A test on it therefore cannot show that such cookies
-	// fail on a plain http site; configure the application as it is
-	// served (for example with insecure cookies) and check the cookie
-	// attributes with [Cookie], such as [CookieWant.NotSecure], and
-	// [NoCookie].
+	// Base is the site that the browser names, as [Client.Base]: an https
+	// origin, or an http one of a loopback host, such as
+	// "http://127.0.0.1:8080"; "" means [BaseURL], or [InsecureBaseURL]
+	// with Insecure. Its scheme decides between TLS and plain http. The
+	// browser connects to the test server whatever the host and port
+	// name.
+	//
+	// Browsers treat loopback hosts as secure origins, and so does the
+	// cookie jar (localhost, its subdomains and loopback addresses):
+	// Secure and __Host- cookies, which webui's sessions use by default,
+	// are kept and sent over a plain http Base. A test there therefore
+	// cannot show that such cookies fail on a plain http site; configure
+	// the application as it is served (for example with insecure cookies)
+	// and check the cookie attributes with [Cookie], such as
+	// [CookieWant.NotSecure], and [NoCookie]. A Base that mw.ParseSite
+	// refuses, or an https Base with Insecure, fails the test.
+	Base string
+	// Insecure serves plain http instead of https: at [InsecureBaseURL]
+	// when Base is "", a loopback name, as plain http sites are loopback
+	// sites for mw.ParseSite, and mw.SameOrigin accepts requests without
+	// origin headers on loopback sites. With an http Base, it changes
+	// nothing; the cookies of plain http sites behave as Base describes.
 	Insecure bool
 	// HTTP2 enables HTTP/2 (with TLS only).
 	HTTP2 bool
@@ -54,8 +65,9 @@ type BrowserOptions struct {
 // sends browser-realistic requests as [Request] builds them.
 //
 // The server listens on a loopback port, but the browser names it
-// [BaseURL] (or [InsecureBaseURL] with [BrowserOptions.Insecure]):
-// every connection goes to the server, so the Host header, the Origin
+// [BrowserOptions.Base], [BaseURL] by default (or [InsecureBaseURL] with
+// [BrowserOptions.Insecure]): every connection goes to the server
+// whatever the site's host and port, so the Host header, the Origin
 // header, cookies and the TLS server name (SNI, r.TLS.ServerName) all name
 // the application's site, as in production. Configure the application with
 // that site. The server's certificate is httptest's, which the browser
@@ -83,13 +95,24 @@ func NewBrowser(t TB, h http.Handler, o BrowserOptions) *Browser {
 		fatalf(t, "webuitest.NewBrowser: nil handler")
 		return nil
 	}
+	raw := o.Base
+	if raw == "" && o.Insecure {
+		raw = InsecureBaseURL
+	}
+	base, err := baseOr(raw)
+	switch {
+	case err != nil:
+		fatalf(t, "webuitest.NewBrowser: %v", err)
+		return nil
+	case o.Insecure && base.Scheme == "https":
+		fatalf(t, "webuitest.NewBrowser: Insecure with the https Base %q", o.Base)
+		return nil
+	}
 	srv := httptest.NewUnstartedServer(h)
 	if o.Configure != nil {
 		o.Configure(srv.Config)
 	}
-	base := *defaultBase
-	if o.Insecure {
-		base = *mustParseBase(InsecureBaseURL)
+	if base.Scheme == "http" {
 		srv.Start()
 	} else {
 		srv.EnableHTTP2 = o.HTTP2
@@ -127,7 +150,7 @@ func NewBrowser(t TB, h http.Handler, o BrowserOptions) *Browser {
 	if timeout <= 0 {
 		timeout = DefaultStreamTimeout
 	}
-	b := &Browser{srv: srv, base: &base, timeout: timeout}
+	b := &Browser{srv: srv, base: base, timeout: timeout}
 	b.client = newBrowserClient(tr)
 	return b
 }
@@ -147,8 +170,9 @@ func newBrowserClient(tr http.RoundTripper) *http.Client {
 	}
 }
 
-// URL returns the base URL of the browser's requests: [BaseURL] or
-// [InsecureBaseURL].
+// URL returns the base URL of the browser's requests: the origin of
+// [BrowserOptions.Base] as mw.ParseSite normalizes it (lower-case,
+// without a default port), [BaseURL] or [InsecureBaseURL].
 func (b *Browser) URL() string { return b.base.String() }
 
 // Server returns the test server.

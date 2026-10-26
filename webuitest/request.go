@@ -696,11 +696,37 @@ func setOrDel(h http.Header, name string, v *string) {
 var defaultBase = mustParseBase(BaseURL)
 
 func mustParseBase(raw string) *url.URL {
-	u, err := url.Parse(raw)
+	u, err := parseBase(raw)
 	if err != nil {
 		panic(err)
 	}
 	return u
+}
+
+// parseBase parses the base URL of a [Client] or [Browser], a site URL as
+// mw.ParseSite takes it: an https origin, or an http one of a loopback
+// host, with an optional port and nothing else (a single "/" path is
+// allowed). The result is a new URL of the site's origin, normalized as
+// mw.ParseSite normalizes it and browsers serialize it: the scheme and
+// host lower-cased, IPv6 in its canonical form, a default port dropped,
+// other ports in plain decimal. So the requests name the host that
+// mw.HostCheck(mw.MustParseSite(raw)) accepts.
+func parseBase(raw string) (*url.URL, error) {
+	site, err := mw.ParseSite(raw)
+	if err != nil {
+		return nil, fmt.Errorf("base URL %q: %w", raw, err)
+	}
+	return url.Parse(site.Origin())
+}
+
+// baseOr returns the parsed base URL raw, or a copy of [BaseURL]'s when
+// raw is empty.
+func baseOr(raw string) (*url.URL, error) {
+	if raw == "" {
+		u := *defaultBase
+		return &u, nil
+	}
+	return parseBase(raw)
 }
 
 // Request builds a request as a browser on [BaseURL] sends it, for a

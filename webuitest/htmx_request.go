@@ -1696,12 +1696,16 @@ func htmxSubmission(t TB, base *url.URL, page *ct.Subject, elt, submitter *ct.Se
 // test.
 func (c *Client) SubmitHTMX(t TB, page *ct.Subject, elt, submitter *ct.Selection, edits url.Values, opts ...ReqOption) *cthttp.Result {
 	t.Helper()
-	all := c.options(opts)
-	method, target, body, pre, ok := htmxSubmission(t, defaultBase, page, elt, submitter, edits, all)
+	base, ok := c.base(t)
 	if !ok {
 		return nil
 	}
-	req := Request(t, method, target, body, append(pre, all...)...)
+	all := c.options(opts)
+	method, target, body, pre, ok := htmxSubmission(t, base, page, elt, submitter, edits, all)
+	if !ok {
+		return nil
+	}
+	req := c.build(t, method, target, body, append(pre, all...))
 	if req == nil {
 		return nil
 	}

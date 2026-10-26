@@ -204,6 +204,106 @@ func TestBrowserHTTP2AndInsecure(gt *testing.T) {
 	})
 }
 
+// loopbackSite is the site of an application served over plain http on a
+// loopback address.
+const loopbackSite = "http://127.0.0.1:8080"
+
+// TestBase serves an application at a loopback site through a Browser and
+// a Client with that base: requests name the site, and the application's
+// host check and same-origin policy accept them.
+func TestBase(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Run("browser", func(t devtest.T) {
+		_, h := newAccountApp(t, loopbackSite, true)
+		b := webuitest.NewBrowser(t, h, webuitest.BrowserOptions{Base: loopbackSite + "/"})
+		t.Must(be.Equal(loopbackSite, b.URL()))
+		t.Must(webuitest.Location(b.Get(t, "/"), http.StatusSeeOther, ct.Exact("/login")))
+		page := b.Get(t, "/login").HTML()
+		res := b.Submit(t, page, page.Find(ct.Tag("form")), nil, url.Values{"name": {"Ada"}})
+		t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/")))
+		t.Must(webuitest.Cookie(res, "session", webuitest.CookieWant{NotSecure: true, HttpOnly: true}))
+		t.Must(b.Get(t, "/").HTML().Find(ct.Role("heading", ct.Level(1))).Texts("Hello Ada"))
+		st := b.Stream(t, "/live")
+		st.Expect(t, "tasks")
+	})
+	t.Run("client", func(t devtest.T) {
+		_, h := newAccountApp(t, loopbackSite, true)
+		c := &webuitest.Client{Handler: h, Base: loopbackSite}
+		t.Must(be.Equal(loopbackSite, c.URL()))
+		login := c.Get(t, "/login")
+		page := c.Page(t, login, http.StatusOK)
+		res := c.Submit(t, page, page.Find(ct.Tag("form")), nil, url.Values{"name": {"Ada"}}, webuitest.SendCookies(login))
+		t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/")))
+		home := c.Page(t, c.Get(t, "/", webuitest.SendCookies(res)), http.StatusOK)
+		t.Must(home.Find(ct.Role("heading", ct.Level(1))).Texts("Hello Ada"))
+		// On BaseURL, the application refuses the requests.
+		t.Must(c.Get(t, webuitest.BaseURL+"/login").Status(http.StatusBadRequest))
+	})
+	t.Run("what the handler sees", func(t devtest.T) {
+		echo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sni := "-"
+			if r.TLS != nil {
+				sni = r.TLS.ServerName
+			}
+			_, _ = io.WriteString(w, r.Host+" "+r.Header.Get("Origin")+" "+sni)
+		})
+		for _, c := range []struct{ base, want string }{
+			{loopbackSite, "127.0.0.1:8080 http://127.0.0.1:8080 -"},
+			{"HTTPS://Notes.Example.Test:8443", "notes.example.test:8443 https://notes.example.test:8443 notes.example.test"},
+			{"https://notes.example.test:443", "notes.example.test https://notes.example.test notes.example.test"},
+			{"http://[::1]:8080", "[::1]:8080 http://[::1]:8080 -"},
+			// Normalized as mw.ParseSite normalizes the site.
+			{"https://notes.example.test:0443", "notes.example.test https://notes.example.test notes.example.test"},
+			{"http://127.0.0.1:08080", "127.0.0.1:8080 http://127.0.0.1:8080 -"},
+			{"http://[0:0:0:0:0:0:0:1]:8080", "[::1]:8080 http://[::1]:8080 -"},
+		} {
+			client := &webuitest.Client{Handler: echo, Base: c.base}
+			t.Mustf(client.Post(t, "/x", webuitest.Body{}).Body(ct.Exact(c.want)), "client on %s", c.base)
+			for _, http2 := range []bool{false, true} {
+				b := webuitest.NewBrowser(t, echo, webuitest.BrowserOptions{Base: c.base, HTTP2: http2})
+				t.Mustf(b.Post(t, "/x", webuitest.Body{}).Body(ct.Exact(c.want)), "browser on %s", c.base)
+			}
+			// The host check of the same site accepts the requests.
+			checked := &webuitest.Client{Handler: mw.HostCheck(mw.MustParseSite(c.base))(echo), Base: c.base}
+			t.Mustf(checked.Post(t, "/x", webuitest.Body{}).Status(http.StatusOK), "host check of %s", c.base)
+		}
+	})
+	t.Run("htmx", func(t devtest.T) {
+		var got string
+		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Host + " " + r.URL.Path + " " + r.Header.Get("HX-Current-URL")
+		})
+		c := &webuitest.Client{Handler: h, Base: loopbackSite}
+		page := cthtml.PageString(htmlPage(`<button id="go" type="button" hx-post="/tasks/clear">Clear</button>` +
+			`<button id="away" type="button" hx-post="` + webuitest.BaseURL + `/tasks">Away</button>`))
+		t.Must(c.SubmitHTMX(t, page, page.Find(ct.ID("go")), nil, nil, webuitest.PageURL("/tasks")).Status(http.StatusOK))
+		t.Must(be.Equal("127.0.0.1:8080 /tasks/clear "+loopbackSite+"/tasks", got))
+		// A URL of another origin than the page's is refused, as htmx does.
+		r := newRecordT(t.Context())
+		t.Must(be.True(c.SubmitHTMX(r, page, page.Find(ct.ID("away")), nil, nil) == nil))
+		t.Must(be.Substring(r.output(), "is not of the page's origin "+loopbackSite))
+	})
+	t.Run("invalid", func(t devtest.T) {
+		for _, base := range []string{"ftp://example.test", "127.0.0.1:8080", "http://", "https://example.test/app", "https://example.test?x", "https://user@example.test", "https://example.test#x", "http://%zz", "http://example.test", "https://ex_ample.test", "https://example.test:99999"} {
+			r := newRecordT(t.Context())
+			c := &webuitest.Client{Handler: http.NotFoundHandler(), Base: base}
+			t.Mustf(be.True(c.Get(r, "/") == nil), "client on %q", base)
+			t.Must(be.True(r.failed))
+			t.Must(be.Substring(r.output(), "webuitest.Client: "))
+			t.Must(be.Equal(base, c.URL()))
+			r = newRecordT(t.Context())
+			t.Mustf(be.True(webuitest.NewBrowser(r, http.NotFoundHandler(), webuitest.BrowserOptions{Base: base}) == nil), "browser on %q", base)
+			t.Must(be.Substring(r.output(), "webuitest.NewBrowser: "))
+		}
+		r := newRecordT(t.Context())
+		t.Must(be.True(webuitest.NewBrowser(r, http.NotFoundHandler(), webuitest.BrowserOptions{Base: "https://notes.example.test", Insecure: true}) == nil))
+		t.Must(be.Substring(r.output(), `webuitest.NewBrowser: Insecure with the https Base "https://notes.example.test"`))
+		// Insecure and an http Base agree.
+		b := webuitest.NewBrowser(t, http.NotFoundHandler(), webuitest.BrowserOptions{Base: loopbackSite, Insecure: true})
+		t.Must(be.Equal(loopbackSite, b.URL()))
+	})
+}
+
 // TestCookieKeeping pins the documented difference between the harnesses:
 // a Client keeps no cookies, a Browser keeps them, Secure ones over plain
 // http on localhost too, as browsers do.

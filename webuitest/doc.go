@@ -41,6 +41,10 @@
 // Origin on state-changing ones, and options for htmx requests and for
 // the negative cases ([FetchSite], [NoFetchMetadata], [Host], ...). Bodies
 // are [Form], [Multipart] and [Parts]. [Serve] runs a handler on a request.
+// A [Client] and a [Browser] build their requests on [Client.Base] and
+// [BrowserOptions.Base] instead, for an application tested at another
+// site, such as a plain http loopback site; as [SiteSender]s, they report
+// it to [Crawl].
 //
 // [Client] is the handler-level harness: it serves requests through a
 // handler, prepares them (for example to attach a session), adds the

@@ -31,6 +31,11 @@ type RouteChecker func(method, path string) bool
 // generates (to add a trailing slash or clean the path), which a page
 // should not link to.
 //
+// The host is BaseURL's also when the crawl runs on another site
+// ([Client.Base], [BrowserOptions.Base]): patterns with a host are matched
+// against BaseURL's host, not the site's, so the routes of a mux that
+// routes by host need a RouteChecker of their own there.
+//
 // For a mux that an outer mux serves at its catch-all "/", the outer mux
 // routes every request of it to "/": pass mw.Mounted(outer, "/", mux),
 // which resolves those requests with the inner mux.
@@ -131,9 +136,10 @@ type CrawlOptions struct {
 	// ContractFor, when set, picks the contract of each crawled page by
 	// the page's URL, for applications whose pages differ in what they
 	// load or allow, such as a page with an asset set of its own. A nil
-	// result means Contract. The URL is absolute on [BaseURL], with the
-	// path and query of the page (after redirects) and no fragment; each
-	// call gets a fresh copy, which ContractFor may keep or change.
+	// result means Contract. The URL is absolute on the site of the crawl
+	// (see [Crawl]), with the path and query of the page (after
+	// redirects) and no fragment; each call gets a fresh copy, which
+	// ContractFor may keep or change.
 	ContractFor func(u *url.URL) Contract
 	// Skip, when set, excludes targets by path (for example "/logout" or
 	// a prefix of downloads) from route checks and from crawling.
@@ -156,18 +162,18 @@ type CrawlOptions struct {
 	FragmentContract Contract
 	// FragmentContractFor, when set, picks the contract of each fragment
 	// of Fragments by the fragment's URL (the hx-get target, absolute on
-	// [BaseURL], a fresh copy for each call) as ContractFor does for
-	// pages. A nil result means FragmentContract.
+	// the site, a fresh copy for each call) as ContractFor does for pages.
+	// A nil result means FragmentContract.
 	FragmentContractFor func(u *url.URL) Contract
 }
 
 // pick returns the contract of a page key: the one that pickFor returns
-// for its URL, when pickFor is set and returns one, or def.
-func pick(key string, def Contract, pickFor func(u *url.URL) Contract) Contract {
+// for its URL on site, when pickFor is set and returns one, or def.
+func pick(site *url.URL, key string, def Contract, pickFor func(u *url.URL) Contract) Contract {
 	if pickFor == nil {
 		return def
 	}
-	if c := pickFor(mustResolve(key)); c != nil {
+	if c := pickFor(resolve(site, key)); c != nil {
 		return c
 	}
 	return def
@@ -279,11 +285,17 @@ type assetRef struct {
 //   - with Assets and Fragments, the assets and hx-get fragments, see
 //     [CrawlOptions].
 //
-// Only same-site links (paths, or absolute URLs on [BaseURL]'s host) are
-// followed; forms are route-checked, never submitted. Infrastructure
-// failures of s fail the test.
+// The site is that of s ([SiteSender], such as a Client with a Base), or
+// [BaseURL]; [MuxRoutes] still matches host patterns against BaseURL's
+// host (see there). Only same-site links (paths, or absolute URLs on the
+// site's host) are followed; forms are route-checked, never submitted.
+// Infrastructure failures of s fail the test.
 func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 	t.Helper()
+	site, ok := senderSite(t, s)
+	if !ok {
+		return &CrawlReport{Start: o.Start, Problems: []string{"the sender has no valid site"}}
+	}
 	start := o.Start
 	if len(start) == 0 {
 		start = []string{"/"}
@@ -318,7 +330,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 		}
 	}
 	for _, p := range start {
-		if key, _, ok := siteURL(defaultBase, p); ok {
+		if key, _, ok := siteURL(site, site, p); ok {
 			enqueue(key, "the start", nil)
 		} else {
 			problem("start page %q is not a path of the site", p)
@@ -349,7 +361,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 		code := res.StatusCode()
 		if code >= 300 && code < 400 {
 			location := res.Headers().Get("Location")
-			key, _, ok := siteURL(mustResolve(q.url), location)
+			key, _, ok := siteURL(site, resolve(site, q.url), location)
 			if !ok {
 				continue
 			}
@@ -379,7 +391,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			continue
 		}
 		page := res.HTML()
-		if err := pick(q.url, contract, o.ContractFor)(page).Check(t.Context()); err != nil {
+		if err := pick(site, q.url, contract, o.ContractFor)(page).Check(t.Context()); err != nil {
 			problem("page %s: %v", q.url, err)
 		}
 		doc, err := page.Load(t.Context())
@@ -392,9 +404,9 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			ids[id] = true
 		}
 		pageIDs[q.url] = ids
-		base := mustResolve(q.url)
+		base := resolve(site, q.url)
 		for _, tg := range pageTargets(root) {
-			key, frag, ok := siteURL(base, tg.url)
+			key, frag, ok := siteURL(site, base, tg.url)
 			if !ok {
 				continue
 			}
@@ -448,7 +460,7 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			}
 			switch code := res.StatusCode(); code {
 			case http.StatusOK:
-				if err := pick(key, fragContract, o.FragmentContractFor)(res.HTMLFragment("div")).Check(t.Context()); err != nil {
+				if err := pick(site, key, fragContract, o.FragmentContractFor)(res.HTMLFragment("div")).Check(t.Context()); err != nil {
 					problem("fragment %s (hx-get on %s): %v", key, fragments[key], err)
 				}
 			case http.StatusNoContent:
@@ -541,29 +553,29 @@ func pageTargets(root ct.Node) []pageTarget {
 	return out
 }
 
-// mustResolve returns the URL of a page key on the base URL: a new value,
-// never the shared base.
-func mustResolve(key string) *url.URL {
+// resolve returns the URL of a page key on the site: a new value, never
+// the shared site.
+func resolve(site *url.URL, key string) *url.URL {
 	u, err := url.Parse(key)
 	if err != nil {
-		base := *defaultBase
-		return &base
+		s := *site
+		return &s
 	}
-	return defaultBase.ResolveReference(u)
+	return site.ResolveReference(u)
 }
 
 // siteURL resolves ref against base and returns its path and query (the
 // key of a page), its fragment, and whether it is an http(s) URL on the
-// site's host. An empty ref is the base itself, as for a form without an
+// host of site. An empty ref is the base itself, as for a form without an
 // action.
-func siteURL(base *url.URL, ref string) (key, fragment string, ok bool) {
+func siteURL(site, base *url.URL, ref string) (key, fragment string, ok bool) {
 	ref = strings.TrimSpace(ref)
 	r, err := url.Parse(ref)
 	if err != nil {
 		return "", "", false
 	}
 	u := base.ResolveReference(r)
-	if (u.Scheme != "http" && u.Scheme != "https") || !strings.EqualFold(u.Host, defaultBase.Host) {
+	if (u.Scheme != "http" && u.Scheme != "https") || hostKey(u) != hostKey(site) {
 		return "", "", false
 	}
 	key = u.EscapedPath()
@@ -574,6 +586,14 @@ func siteURL(base *url.URL, ref string) (key, fragment string, ok bool) {
 		key += "?" + u.RawQuery
 	}
 	return key, u.Fragment, true
+}
+
+// hostKey returns the host of an http(s) URL as a Host header names it,
+// lower-cased and without the default port of the URL's scheme.
+func hostKey(u *url.URL) string {
+	o := urlOrigin(u)
+	_, host, _ := strings.Cut(o, "://")
+	return host
 }
 
 func pathOf(key string) string {

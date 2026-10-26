@@ -230,6 +230,40 @@ func TestCrawlContractFor(gt *testing.T) {
 	})
 }
 
+// TestCrawlSite crawls through senders with another base: the crawl
+// follows the absolute links of that site, and not those of BaseURL.
+func TestCrawlSite(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	mux := site(
+		text.A(text.Href(loopbackSite+"/tasks?from=home"))(text.Text("Tasks, absolute")),
+		text.A(text.Href("HTTP://127.0.0.1:8080/old"))(text.Text("Old, absolute")),
+		text.A(text.Href(webuitest.BaseURL+"/elsewhere"))(text.Text("Another site")),
+	)
+	var pages []string
+	opts := webuitest.CrawlOptions{
+		Routes: webuitest.MuxRoutes(mux),
+		ContractFor: func(u *url.URL) webuitest.Contract {
+			pages = append(pages, u.String())
+			return nil
+		},
+	}
+	report := webuitest.Crawl(t, &webuitest.Client{Handler: mux, Base: loopbackSite}, opts)
+	t.Must(report)
+	t.Must(be.DeepEqual([]string{"/", "/tasks", "/tasks?from=home"}, report.Pages))
+	t.Must(be.DeepEqual([]string{loopbackSite + "/", loopbackSite + "/tasks", loopbackSite + "/tasks?from=home"}, pages))
+
+	pages = nil
+	browser := webuitest.Crawl(t, webuitest.NewBrowser(t, mux, webuitest.BrowserOptions{Base: loopbackSite}), opts)
+	t.Must(browser)
+	t.Must(be.DeepEqual(report.Pages, browser.Pages))
+	t.Must(be.DeepEqual(report.Targets, browser.Targets))
+
+	r := newRecordT(t.Context())
+	err := webuitest.Crawl(r, &webuitest.Client{Handler: mux, Base: "localhost"}, opts).Check(t.Context())
+	t.Must(be.Substring(r.output(), "webuitest: the site of the sender: base URL \"localhost\""))
+	t.Must(be.ErrorContains(err, "the sender has no valid site"))
+}
+
 func TestCrawlRedirects(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	t.Run("chain that mints new URLs", func(t devtest.T) {

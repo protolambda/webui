@@ -21,13 +21,44 @@ type Sender interface {
 	Send(t TB, method, target string, body Body, opts ...ReqOption) *cthttp.Result
 }
 
+// SiteSender is a [Sender] that reports the site of its requests, as
+// [Client] and [Browser] do: [Crawl] tests the site of a SiteSender, and
+// [BaseURL] for other Senders.
+type SiteSender interface {
+	Sender
+	// URL returns the base URL of the requests, an http or https origin
+	// such as BaseURL.
+	URL() string
+}
+
+var (
+	_ SiteSender = (*Client)(nil)
+	_ SiteSender = (*Browser)(nil)
+)
+
+// senderSite returns the site of s: its URL when it is a [SiteSender],
+// else [BaseURL]'s. A URL that is no origin fails the test.
+func senderSite(t TB, s Sender) (*url.URL, bool) {
+	t.Helper()
+	raw := ""
+	if ss, ok := s.(SiteSender); ok {
+		raw = ss.URL()
+	}
+	u, err := baseOr(raw)
+	if err != nil {
+		fatalf(t, "webuitest: the site of the sender: %v", err)
+		return nil, false
+	}
+	return u, true
+}
+
 // Contract is a reusable expectation of a page or fragment.
 type Contract func(page *ct.Subject) assertion.Assertion
 
 // Client serves requests with a handler, synchronously and without a
 // network, through [cthttp.Serve]: the handler-level harness of an
 // application's tests. Requests are built as [Request] builds them, on
-// [BaseURL].
+// [Client.Base], [BaseURL] by default.
 //
 // A Client keeps no cookies: the Set-Cookie headers of a response never
 // reach the next request, so flows that depend on cookies, such as a
@@ -43,6 +74,15 @@ type Contract func(page *ct.Subject) assertion.Assertion
 type Client struct {
 	// Handler serves the requests. It is required.
 	Handler http.Handler
+	// Base is the site of the requests, a site URL as mw.ParseSite takes
+	// it: an https origin, or an http one of a loopback host, with an
+	// optional port, such as "http://127.0.0.1:8080"; "" means [BaseURL].
+	// Targets that are paths are resolved against it, and it is the
+	// default Host, Origin and TLS state of the requests, normalized as
+	// mw.ParseSite normalizes the site. Configure the application with the
+	// same site (mw.MustParseSite(c.Base)). A Base that mw.ParseSite
+	// refuses fails the test when a request is built.
+	Base string
 	// Prepare, when set, adapts every request before it is served, for
 	// example to attach a session to the context
 	// (session.WithSession(r.Context(), s)) and so bypass cookies and the
@@ -75,16 +115,55 @@ type Client struct {
 	StreamTimeout time.Duration
 }
 
-var _ Sender = (*Client)(nil)
+// URL returns the base URL of the client's requests: the origin of
+// [Client.Base] as mw.ParseSite normalizes it (lower-case, without a
+// default port), or [BaseURL]. A Base that mw.ParseSite refuses is
+// returned as it is.
+func (c *Client) URL() string {
+	u, err := baseOr(c.Base)
+	if err != nil {
+		return c.Base
+	}
+	return u.String()
+}
 
-// Request builds a request with the client's options and CSRF field, see
-// [Client.CSRF]. Prepare is applied when it is sent ([Client.Do]).
+// Request builds a request on [Client.Base] with the client's options and
+// CSRF field, see [Client.CSRF], as [Request] builds one. Prepare is
+// applied when it is sent ([Client.Do]).
 func (c *Client) Request(t TB, method, target string, body Body, opts ...ReqOption) *http.Request {
 	t.Helper()
 	if c.CSRF != "" && !safeMethod(method) && !body.Has(csrfFieldName) {
 		body = body.With(csrfFieldName, c.CSRF)
 	}
-	return Request(t, method, target, body, c.options(opts)...)
+	return c.build(t, method, target, body, c.options(opts))
+}
+
+// base returns the client's base URL. A Base that is no origin fails the
+// test.
+func (c *Client) base(t TB) (*url.URL, bool) {
+	t.Helper()
+	u, err := baseOr(c.Base)
+	if err != nil {
+		fatalf(t, "webuitest.Client: %v", err)
+		return nil, false
+	}
+	return u, true
+}
+
+// build builds a request for a handler on the client's base URL with
+// exactly opts, as [Request] does.
+func (c *Client) build(t TB, method, target string, body Body, opts []ReqOption) *http.Request {
+	t.Helper()
+	base, ok := c.base(t)
+	if !ok {
+		return nil
+	}
+	req, err := buildRequest(t.Context(), base, method, target, body, opts, true)
+	if err != nil {
+		fatalf(t, "webuitest: %v", err)
+		return nil
+	}
+	return req
 }
 
 // options returns the client's options followed by opts.
@@ -224,7 +303,7 @@ func (c *Client) Submit(t TB, page *ct.Subject, form, submitter *ct.Selection, e
 	if !ok {
 		return nil
 	}
-	req := Request(t, method, target, body, all...)
+	req := c.build(t, method, target, body, all)
 	if req == nil {
 		return nil
 	}

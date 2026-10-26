@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/protolambda/devtest"
 	"github.com/protolambda/mustbe/be"
@@ -194,6 +195,115 @@ func TestReadMultipartRefusals(gt *testing.T) {
 		v, err := readString(t, multipartType, c.body, form.Limits{})
 		t.Mustf(be.ErrorIs(err, c.want), "case %s", c.name)
 		t.Mustf(be.NilPtr(v), "case %s", c.name)
+	}
+}
+
+// readers hand a body over as a client may: whole, a byte at a time, or
+// with io.EOF along with its last bytes.
+var readers = []struct {
+	name string
+	of   func(body string) io.Reader
+}{
+	{"whole", func(body string) io.Reader { return strings.NewReader(body) }},
+	{"bytewise", func(body string) io.Reader { return iotest.OneByteReader(strings.NewReader(body)) }},
+	{"eof with data", func(body string) io.Reader { return iotest.DataErrReader(strings.NewReader(body)) }},
+}
+
+// A body that ends before its closing delimiter is malformed wherever it
+// ends, also where the header of a next part is cut off: there the
+// multipart reader reports the end of the body as the end of the form.
+func TestReadMultipartTruncated(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	first := field("a", "1")
+	delimiter := "--" + boundary + "\r\n"
+	header := `Content-Disposition: form-data; name="b"`
+	lf := "--" + boundary + "\n" + `Content-Disposition: form-data; name="a"` + "\n\n1\n"
+	cases := []struct{ name, body string }{
+		{"empty", ""},
+		{"in the first delimiter", "--" + boundary[:3]},
+		{"after the first delimiter", delimiter},
+		{"in the first header", delimiter + `Content-Disposition: form-da`},
+		{"in a delimiter", first + "--" + boundary[:3]},
+		{"after a delimiter", first + delimiter},
+		{"in a header name", first + delimiter + "Content-Disp"},
+		{"in a header value", first + delimiter + `Content-Disposition: form-da`},
+		{"in a header line end", first + delimiter + header + "\r"},
+		{"after a header line", first + delimiter + header + "\r\n"},
+		{"after a header line, more to come", first + delimiter + header + "\r\nContent-Type: text/plain\r\n"},
+		{"after the header", first + delimiter + header + "\r\n\r\n"},
+		{"in a value", first + delimiter + header + "\r\n\r\n2"},
+		{"in the closing delimiter", first + "--" + boundary + "-"},
+		{"closing delimiter as a header line", first + delimiter + "--" + boundary + "--"},
+		// In a body with CRLF line ends, a bare LF does not start a line:
+		// what follows it is part of the value.
+		{"closing delimiter after a bare LF", field("a", "1\n--"+boundary+"--\r\n2") + delimiter},
+		{"LF line ends, after a delimiter", lf + "--" + boundary + "\n"},
+		{"LF line ends, after a header line", lf + "--" + boundary + "\n" + header + "\n"},
+		{"LF line ends, closing delimiter with CRLF", lf + "--" + boundary + "--\r"},
+	}
+	for _, c := range cases {
+		for _, rd := range readers {
+			v, err := form.Read(httptest.NewRecorder(), request(t, multipartType, rd.of(c.body)), form.Limits{})
+			t.Mustf(be.ErrorIs(err, form.ErrMalformed), "case %s, %s", c.name, rd.name)
+			t.Mustf(be.NilPtr(v), "case %s, %s", c.name, rd.name)
+		}
+	}
+
+	// With a colon in the boundary, which RFC 2046 allows and browsers
+	// never send, the closing delimiter is a header line: a body cut off
+	// after a delimiter would read as complete. Such a boundary is refused,
+	// also for a complete body.
+	const colon = "x:y"
+	colonType := `multipart/form-data; boundary="` + colon + `"`
+	colonFirst := "--" + colon + "\r\n" + `Content-Disposition: form-data; name="a"` + "\r\n\r\n1\r\n"
+	for _, c := range []struct{ name, body string }{
+		{"colon boundary, closing delimiter as a header line", colonFirst + "--" + colon + "\r\n" + "--" + colon + "--"},
+		{"colon boundary, closing delimiter after a header line", colonFirst + "--" + colon + "\r\n" + header + "\r\n" + "--" + colon + "--"},
+		{"colon boundary, complete", colonFirst + "--" + colon + "--\r\n"},
+	} {
+		for _, rd := range readers {
+			v, err := form.Read(httptest.NewRecorder(), request(t, colonType, rd.of(c.body)), form.Limits{})
+			t.Mustf(be.ErrorIs(err, form.ErrMalformed), "case %s, %s", c.name, rd.name)
+			t.Mustf(be.NilPtr(v), "case %s, %s", c.name, rd.name)
+		}
+	}
+}
+
+// The closing delimiter ends the form wherever the multipart reader
+// recognises it: with or without a line end, with spaces or tabs after it,
+// after a preamble, before an epilogue, and in a body with LF line ends.
+func TestReadMultipartClosingDelimiter(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	first := field("a", "1")
+	closing := "--" + boundary + "--"
+	lf := "--" + boundary + "\n" + `Content-Disposition: form-data; name="a"` + "\n\n1\n"
+	none, a := map[string][]string{}, map[string][]string{"a": {"1"}}
+	cases := []struct {
+		name string
+		body string
+		want map[string][]string
+	}{
+		{"empty form", closing + "\r\n", none},
+		{"empty form without line end", closing, none},
+		{"line end", first + closing + "\r\n", a},
+		{"no line end", first + closing, a},
+		{"padding", first + closing + " \t\r\n", a},
+		{"padding without line end", first + closing + " \t", a},
+		{"preamble", "preamble\r\n--" + boundary + "x\r\n\r\n" + first + closing + "\r\n", a},
+		{"preamble before an empty form", "preamble\r\n" + closing, none},
+		{"epilogue", first + closing + "\r\nepilogue", a},
+		{"epilogue that looks like a cut part", first + closing + "\r\n--" + boundary + "\r\nContent-Disposition: form-da", a},
+		{"value that looks like a closing delimiter", field("a", "1\n"+closing+"\n") + closing, map[string][]string{"a": {"1\n" + closing + "\n"}}},
+		{"LF line ends", lf + closing + "\n", a},
+		{"LF line ends, no line end", lf + closing, a},
+		{"LF line ends, epilogue", lf + closing + "\n--" + boundary + "\n", a},
+	}
+	for _, c := range cases {
+		for _, rd := range readers {
+			v, err := form.Read(httptest.NewRecorder(), request(t, multipartType, rd.of(c.body)), form.Limits{})
+			t.Mustf(be.NoError(err), "case %s, %s", c.name, rd.name)
+			t.Mustf(be.DeepEqual(c.want, dump(v)), "case %s, %s", c.name, rd.name)
+		}
 	}
 }
 

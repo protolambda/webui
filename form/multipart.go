@@ -1,6 +1,7 @@
 package form
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -16,15 +17,18 @@ import (
 // the Content-Disposition, and a short Content-Type line.
 const headerSlack = 4096
 
-// readMultipart parses a multipart/form-data body.
+// readMultipart parses a multipart/form-data body, whose boundary the
+// caller checked: not empty, at most 70 bytes, and without a colon (see
+// [endReader]).
 //
 // Parts are read raw ([multipart.Reader.NextRawPart]): a
 // Content-Transfer-Encoding header, deprecated for forms by RFC 7578 and
 // never sent by browsers, is not decoded. Each part must have a single
 // Content-Disposition of form-data with a non-empty name and no filename
 // parameter. The body must end with the closing delimiter: a truncated body
-// is malformed, not a shorter form. What follows the closing delimiter is
-// read and dropped, so that it counts against the body limit.
+// is malformed ([errTruncated]), not a shorter form. What follows the
+// closing delimiter is read and dropped, so that it counts against the body
+// limit.
 //
 // While it parses the header of a part, the multipart reader may pull no
 // more than [reader.headerBudget] bytes from the body (plus what its
@@ -33,16 +37,17 @@ const headerSlack = 4096
 // the memory of each part's header; the allocations of header parsing over
 // a whole body remain proportional to the body.
 func (rd *reader) readMultipart(src *bodyReader, boundary string) error {
-	mr := multipart.NewReader(src, boundary)
+	mr := multipart.NewReader(&endReader{r: src, closing: "--" + boundary + "--"}, boundary)
 	budget := rd.headerBudget()
 	for {
 		src.limit(budget)
 		part, err := mr.NextRawPart()
 		src.unlimit()
 		if err == io.EOF {
-			// Only the bare io.EOF marks the closing delimiter; the reader
-			// wraps the io.EOF of a body that ends early. The epilogue
-			// carries no fields but still counts against the body limit.
+			// The end of the body is hidden from the multipart reader
+			// (endReader), so a bare io.EOF marks the closing delimiter.
+			// The epilogue carries no fields but still counts against the
+			// body limit.
 			_, err := io.Copy(io.Discard, src)
 			return err
 		}
@@ -64,6 +69,81 @@ func (rd *reader) readMultipart(src *bodyReader, boundary string) error {
 		}
 		rd.values.Add(name, rd.own(rd.scratch))
 		rd.resetScratch()
+	}
+}
+
+// errTruncated reports a multipart body that ends before its closing
+// delimiter.
+var errTruncated = fmt.Errorf("%w: multipart body ends before the closing delimiter", ErrMalformed)
+
+// endReader passes a multipart body on to the [multipart.Reader] but hides
+// its end: where the body ends, a read returns [errTruncated], unless the
+// last line of the body (what follows the last '\n') is the closing
+// delimiter, "--boundary--" and optional spaces or tabs; only then does it
+// return io.EOF.
+//
+// NextRawPart returns a bare io.EOF in three cases. Two end the form: a
+// closing delimiter line with a line end, which involves no io.EOF of the
+// body, and one at the very end of the body, which the multipart reader
+// tells from a cut-off line by the io.EOF after it. The third is a
+// truncated body: where the body ends at the start of a header line of the
+// next part, net/textproto passes the io.EOF up unchanged, and the form
+// would read as complete without that part. With the end of the body
+// hidden, that and every other early end fails with errTruncated.
+//
+// The io.EOF passed on does not reopen the third case: a body that ends on
+// a closing delimiter line does not end at the start of a line, and where
+// the multipart reader reads that line as a header line, it fails for want
+// of a colon. That needs a boundary without a colon, which [Read] refuses
+// although RFC 2046 allows it: net/textproto would parse a closing
+// delimiter such as "--x:y--" as a header line and pass the io.EOF after
+// it up unchanged, so a body cut off after a delimiter line, or after a
+// header line, would read as complete. Watching the bytes for the closing
+// delimiter instead would not do: only the multipart reader knows where
+// its lines start (in a part of a body with CRLF line ends, a bare LF does
+// not end a line).
+type endReader struct {
+	r io.Reader
+	// closing is the closing delimiter, "--" + boundary + "--".
+	closing string
+	// matched is how much of closing the last line read so far matches:
+	// len(closing) once it is all of it, possibly followed by spaces or
+	// tabs, and -1 once the line cannot match.
+	matched int
+}
+
+func (e *endReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	e.scan(p[:n])
+	if err != io.EOF {
+		return n, err
+	}
+	if e.matched == len(e.closing) {
+		return n, io.EOF
+	}
+	return n, errTruncated
+}
+
+// scan follows the last line of the body through the bytes b that come
+// next.
+func (e *endReader) scan(b []byte) {
+	if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+		e.matched = 0
+		b = b[i+1:]
+	}
+	for _, c := range b {
+		switch {
+		case e.matched < 0:
+			return
+		case e.matched < len(e.closing):
+			if c == e.closing[e.matched] {
+				e.matched++
+			} else {
+				e.matched = -1
+			}
+		case c != ' ' && c != '\t':
+			e.matched = -1
+		}
 	}
 }
 

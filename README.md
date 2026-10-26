@@ -121,7 +121,7 @@ go doc github.com/protolambda/webui/sse Loop
 
 ## Test your application
 
-[`webuitest`](./webuitest/doc.go) provides handler-level clients and a test-server client with TLS and cookies.
+[`webuitest`](./webuitest/doc.go) provides handler-level clients and a test-server client with cookies, over TLS or plain http.
 It can submit the forms rendered by your pages, send htmx requests, read event streams, and check page structure,
 accessibility rules, CSP, and CSRF wiring.
 

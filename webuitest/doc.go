@@ -61,8 +61,9 @@
 // Client keeps no cookies: attach state to its requests (Prepare,
 // [SendCookie], or [SendCookies] with the cookies of an earlier response,
 // which [CookieValue] reads one by one). [Browser] is the same harness
-// over a real test server with TLS and a cookie jar, for full-stack tests
-// and for flows that need cookies, such as logins.
+// over a real test server, with TLS for an https site and plain http for
+// an http one, and a cookie jar, for full-stack tests and for flows that
+// need cookies, such as logins.
 //
 // [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookie],
 // [NoCookies] and [SecurityHeaders] assert responses; cookie values are

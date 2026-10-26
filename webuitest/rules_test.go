@@ -241,6 +241,41 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 		{name: "this in a list", body: `<div hx-include="this, #nope">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
 		{name: "this with a space", body: `<div hx-include=" this">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
 		{name: "include disinherited", body: `<div hx-include="this" hx-disinherit="hx-include">` + csrf + `<button type="button" hx-post="/x">x</button></div>`, want: []string{"hx-post at"}},
+		// The server reads the first csrf value of a submission: the field
+		// must come before every other control that sends one.
+		{name: "select before the field", body: `<form method="post"><select name="csrf"><option>a</option></select>` + csrf + `</form>`, want: []string{`post form at html[1]/body[1]/form[0] sends a "csrf" value from the select at html[1]/body[1]/form[0]/select[0] before its "csrf" field, and the server reads the first`}},
+		{name: "textarea before the field", body: `<form method="post"><textarea name="csrf"></textarea>` + csrf + `</form>`, want: []string{`from the textarea at html[1]/body[1]/form[0]/textarea[0] before`}},
+		{name: "submit button before the field", body: `<form method="post"><button name="csrf" value="go">Go</button>` + csrf + `</form>`, want: []string{`from the submit button at html[1]/body[1]/form[0]/button[0] before`}},
+		{name: "dirname before the field", body: `<form method="post"><input name="title" dirname="csrf">` + csrf + `</form>`, want: []string{`from the dirname of the input at html[1]/body[1]/form[0]/input[0] before`}},
+		{name: "textarea dirname before the field", body: `<form method="post"><textarea name="body" dirname="csrf"></textarea>` + csrf + `</form>`, want: []string{`from the dirname of the textarea at`}},
+		{name: "associated select before the field", body: `<select form="f" name="csrf"><option>a</option></select><form id="f" method="post">` + csrf + `</form>`, want: []string{`from the select at html[1]/body[1]/select[0] before`}},
+		// A select sends what FormData sends for it: nothing without an
+		// option to submit.
+		{name: "selects that send nothing before the field", body: `<form method="post"><select name="csrf"></select><select name="csrf" multiple><option>a</option></select><select name="csrf"><option disabled>a</option></select><select name="csrf" size="2"><option>a</option></select>` + csrf + `</form>`},
+		{name: "associated select without options before the field", body: `<select form="f" name="csrf"></select><form id="f" method="post">` + csrf + `</form>`},
+		{name: "controls after the field", body: `<form method="post">` + csrf + `<select name="csrf"><option>a</option></select><textarea name="csrf"></textarea><button name="csrf">Go</button><input name="t" dirname="csrf"></form>`},
+		{name: "controls that send nothing before the field", body: `<form method="post"><button type="button" name="csrf">x</button><button type="reset" name="csrf">x</button><select name="csrf" disabled></select><fieldset disabled><textarea name="csrf"></textarea></fieldset><datalist id="l"><select name="csrf"></select></datalist><textarea dirname="csrf"></textarea><select name="CSRF"></select>` + csrf + `</form>`},
+		{name: "get submit button before the field", body: `<form method="post"><button name="csrf" formmethod="get">Search</button>` + csrf + `</form>`},
+		{name: "formmethod post submitter", body: `<form><button name="csrf" formmethod="post">Save</button>` + csrf + `</form>`, want: []string{"button at html[1]/body[1]/form[0]/button[0] submits with POST, but its form at html[1]/body[1]/form[0] sends a \"csrf\" value from the submit button at html[1]/body[1]/form[0]/button[0] before"}},
+		{name: "formmethod post other button", body: `<form><button name="csrf">Search</button>` + csrf + `<button formmethod="post">Save</button></form>`},
+		{name: "hx-post form with a button before the field", body: `<form hx-post="/x"><button name="csrf">Go</button>` + csrf + `</form>`},
+		{name: "hx-post form with a select before the field", body: `<form hx-post="/x"><select name="csrf"><option>a</option></select>` + csrf + `</form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends a "csrf" value other than the token first, and the server reads the first`}},
+		{name: "hx-post form with a select without options before the field", body: `<form hx-post="/x"><select name="csrf"></select>` + csrf + `</form>`},
+		// htmx sends the value of an included select, also without options.
+		{name: "hx-include with a select before the field", body: `<div id="d"><select name="csrf"></select>` + csrf + `</div><button type="button" hx-post="/x" hx-include="#d">x</button>`, want: []string{`hx-post at html[1]/body[1]/button[1] sends a "csrf" value other than the token first`}},
+		{name: "hx-include with a select after the field", body: `<div id="d">` + csrf + `<select name="csrf"></select><button name="csrf">x</button></div><button type="button" hx-post="/x" hx-include="#d">x</button>`},
+		// The parameters of the request decide, as HTMXData collects them:
+		// hx-vals replace the fields of their names, the elements of an
+		// hx-include send their values in tree order, and the fields of the
+		// related form replace those of the includes.
+		{name: "form field and other vals", body: `<form hx-post="/x" hx-vals='{"csrf":"other"}'>` + csrf + `</form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends a "csrf" value other than the token first`}},
+		{name: "post form field and other vals", body: `<form method="post" hx-post="/x" hx-vals='{"csrf":"other"}'>` + csrf + `</form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends a "csrf" value other than the token first`}},
+		{name: "form field and vals of the token", body: `<form hx-post="/x" hx-vals='{"csrf":"` + testToken + `"}'><select name="csrf"><option>a</option></select>` + csrf + `</form>`},
+		{name: "includes with a select first", body: `<div id="a"><select name="csrf"><option>x</option></select></div><div id="b">` + csrf + `</div><button type="button" hx-post="/x" hx-include="#a, #b">x</button>`, want: []string{`hx-post at html[1]/body[1]/button[2] sends a "csrf" value other than the token first`}},
+		{name: "includes with the field first", body: `<div id="b">` + csrf + `</div><div id="a"><select name="csrf"><option>x</option></select></div><button type="button" hx-post="/x" hx-include="#a, #b">x</button>`},
+		{name: "form fields over includes", body: `<form>` + csrf + `<button type="button" hx-post="/x" hx-include="#a">x</button></form><div id="a"><select name="csrf"><option>x</option></select></div>`},
+		{name: "button of the request after the form's fields", body: `<form>` + csrf + `<button name="csrf" value="go" hx-post="/x">x</button></form>`},
+		{name: "parts of an include", body: `<div id="d">` + csrf + `</div><button type="button" hx-post="/x" hx-include="inherit, #d, div > input">x</button>`},
 	}
 	checkRule(gt, webuitest.PostFormsCarryCSRF(testToken), cases)
 	gt.Run("no token", func(gt *testing.T) {
@@ -248,6 +283,7 @@ func TestPostFormsCarryCSRF(gt *testing.T) {
 			{name: "any value", body: `<form method="post"><input type="hidden" name="csrf" value="x"></form>`},
 			{name: "empty", body: `<form method="post"><input type="hidden" name="csrf" value=""></form>`, want: []string{`has an empty "csrf" field`}},
 			{name: "hx-post", body: `<button type="button" hx-post="/x">x</button>`, want: []string{`sends no "csrf" field`}},
+			{name: "hx-post with an empty value first", body: `<form hx-post="/x"><select name="csrf"><option value="">-</option></select><input type="hidden" name="csrf" value="x"></form>`, want: []string{`hx-post at html[1]/body[1]/form[0] sends an empty "csrf" value first`}},
 		})
 	})
 	gt.Run("never shows the token", func(gt *testing.T) {
@@ -271,6 +307,9 @@ func TestNoTokenLeaks(gt *testing.T) {
 		{name: "hx-get form", body: `<form method="post" hx-get="/x">` + csrf + `</form>`, want: []string{`hx-get at html[1]/body[1]/form[0] sends the "csrf" field in the URL`}},
 		{name: "hx-get include", body: `<div id="d">` + csrf + `</div><button type="button" hx-get="/x" hx-include="#d">x</button>`, want: []string{`hx-get at html[1]/body[1]/button[1]`}},
 		{name: "visible field", body: `<form method="post"><input type="text" name="csrf" value="` + testToken + `"></form>`, want: []string{`"csrf" field at html[1]/body[1]/form[0]/input[0] is not hidden`}},
+		{name: "other controls of the name", body: `<form method="post">` + csrf + `<select name="csrf"></select><textarea name="csrf"></textarea><button type="button" name="csrf">x</button><select name="CSRF"></select></form>`, want: []string{
+			`"csrf" field at html[1]/body[1]/form[0]/select[1] is not hidden`, `"csrf" field at html[1]/body[1]/form[0]/textarea[2] is not hidden`, `"csrf" field at html[1]/body[1]/form[0]/button[3] is not hidden`,
+		}},
 		{name: "link", body: `<a href="/x?csrf=` + testToken + `">x</a>`, want: []string{"href at html[1]/body[1]/a[0] has the token in a URL"}},
 		{name: "encoded", body: `<a href="/x?t=` + strings.ReplaceAll(testToken, "-", "%2D") + `">x</a>`},
 		{name: "attribute", body: `<div data-x="` + testToken + `"></div>`, want: []string{"data-x at html[1]/body[1]/div[0] has the token"}},

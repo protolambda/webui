@@ -25,24 +25,39 @@ var htmxUnsafeAttrs = []string{"hx-post", "hx-put", "hx-patch", "hx-delete"}
 // token is "":
 //
 //   - every form with method="post" owns an enabled input of that name
-//     (as a descendant, or through the form attribute), exactly one;
+//     (as a descendant, or through the form attribute), exactly one, and
+//     it is the first control in tree order that submits a value of that
+//     name, as [FormData] constructs the submission: the server reads the
+//     first one ([session.Forms.Read]), so a select of that name before it
+//     that submits an option, a textarea of that name, a control whose
+//     dirname is that name, or a submit button of that name (which a
+//     submission with it sends at its place in tree order) takes the place
+//     of the token, and the submission is refused;
 //   - a submit button with formmethod="post" in a form of another method
-//     submits a form that owns one;
+//     submits a form that owns one, first among the values of that name
+//     that its submission sends;
 //   - every element with hx-post, hx-put, hx-patch or hx-delete (also with
-//     a data- prefix) sends one: it is a form that owns the field, its form
-//     owns it (htmx includes the related form in such requests), the
-//     hx-vals of the element and its ancestors, merged as htmx merges them
-//     (nearer keys win; "unset" on any of them drops them all), have the
-//     field, or the hx-include of the element names the field, an element
-//     containing it, "this" (the element that declares the hx-include), or
-//     "closest form" that owns it; and its hx-params does not drop it
-//     ("none", a "not" list that names it, or a list without it).
+//     a data- prefix) sends it first: the first value of that name among
+//     the parameters of its request, as [HTMXData] collects them, is the
+//     token. They are the fields of the element's form (htmx includes the
+//     related form in such requests, without its submit buttons), the
+//     element itself, and the elements of its hx-include with the inputs,
+//     selects and textareas in them, in tree order (a select sends its
+//     value, also without options; the parts of an hx-include that
+//     HTMXData cannot resolve add nothing); the fields of the form replace
+//     those of their names, the merged hx-vals of the element and its
+//     ancestors (nearer keys win; "unset" on any of them drops them all)
+//     then replace those of theirs, and hx-params filters them ("none", a
+//     "not" list that names the field, or a list without it drops it). A
+//     form that owns the field thus fails with an hx-vals that sets
+//     another value of that name.
 //
 // hx-include and hx-params are inherited as htmx inherits them: from the
 // nearest element with a non-empty value, unless an "unset" value or an
 // hx-disinherit that names them stops the inheritance on the way.
 // Fields in the content of a template element are not part of the
-// document, and fields in a datalist are never submitted: neither counts.
+// document, and fields in a datalist are no part of a form's submission:
+// neither counts there.
 //
 // The CSRF token is a second defense beside the same-origin policy
 // (mw.SameOrigin), which depends on browsers sending fetch metadata.
@@ -66,29 +81,40 @@ func PostFormsCarryCSRF(token string) ct.Rule {
 	}
 	return ct.CustomRule(desc, func(root ct.Node) []string {
 		idx := indexForms(root)
-		ids := documentIDs(root)
 		var out []string
 		for _, f := range idx.forms {
 			if formMethod(f) != "post" {
 				continue
 			}
-			if p := csrfProblem(idx.controls[f], token); p != "" {
+			if p := csrfProblem(idx.controls[f], token, nil, true); p != "" {
 				out = append(out, fmt.Sprintf("post form at %s %s", loc(f), p))
 			}
 		}
+		var sc *htmxScope // of the htmx requests, built for the first
 		for e := range ct.Elements(root) {
 			if submitButton(e) {
 				if m, ok := attrOf(e, "formmethod"); ok && normMethod(m) == "post" {
 					if f := idx.owner[e]; f != nil && formMethod(f) != "post" {
-						if p := csrfProblem(idx.controls[f], token); p != "" {
+						if p := csrfProblem(idx.controls[f], token, e, false); p != "" {
 							out = append(out, fmt.Sprintf("%s at %s submits with POST, but its form at %s %s", e.Tag(), loc(e), loc(f), p))
 						}
 					}
 				}
 			}
+			problem, checked := "", false
 			for _, name := range htmxUnsafeAttrs {
-				if _, attr, ok := hxAttrOf(e, name); ok && !htmxCarriesCSRF(e, idx, ids, token) {
-					out = append(out, fmt.Sprintf("%s at %s sends no %q field%s", attr, loc(e), csrfFieldName, withValue(token)))
+				_, attr, ok := hxAttrOf(e, name)
+				if !ok {
+					continue
+				}
+				if !checked {
+					if sc == nil {
+						sc = newHTMXScope(root)
+					}
+					problem, checked = htmxCSRFProblem(sc, idx, e, token), true
+				}
+				if problem != "" {
+					out = append(out, fmt.Sprintf("%s at %s %s", attr, loc(e), problem))
 				}
 			}
 		}
@@ -104,8 +130,10 @@ func withValue(token string) string {
 }
 
 // csrfProblem describes what is wrong with the CSRF field among the
-// controls of a form, or returns "".
-func csrfProblem(controls []ct.Node, token string) string {
+// controls of a form, in a submission by the submit button submitter (nil
+// for none), or in every submission of the form when every is set, or
+// returns "".
+func csrfProblem(controls []ct.Node, token string, submitter ct.Node, every bool) string {
 	var fields, enabled []ct.Node
 	for _, c := range controls {
 		if c.Tag() == "input" && AttrIs(c, "name", csrfFieldName) && inside(c, "datalist") == nil {
@@ -123,12 +151,51 @@ func csrfProblem(controls []ct.Node, token string) string {
 	case len(enabled) > 1:
 		return fmt.Sprintf("has %d %q fields", len(enabled), csrfFieldName)
 	}
-	v, _ := attrOf(enabled[0], "value")
+	field := enabled[0]
+	v, _ := attrOf(field, "value")
 	if !csrfMatches(v, token) {
 		if token == "" {
 			return fmt.Sprintf("has an empty %q field", csrfFieldName)
 		}
 		return fmt.Sprintf("has a %q field with another value", csrfFieldName)
+	}
+	for _, c := range controls {
+		if c == field {
+			break
+		}
+		if what := csrfEntry(c, submitter, every); what != "" {
+			return fmt.Sprintf("sends a %q value from the %s at %s before its %q field, and the server reads the first", csrfFieldName, what, loc(c), csrfFieldName)
+		}
+	}
+	return ""
+}
+
+// csrfEntry describes c, a control of a form other than an input named
+// session.CSRFField, when it adds a value of that name to the form's
+// submission, as [FormData] constructs it: a select that submits an
+// option, or a textarea, of that name, a control whose dirname is that
+// name, or a submit button of that name when it is the submitter, or,
+// when every is set, may submit the form with POST. It returns ""
+// otherwise.
+func csrfEntry(c, submitter ct.Node, every bool) string {
+	if every && submitButton(c) {
+		if m, ok := attrOf(c, "formmethod"); !ok || normMethod(m) == "post" {
+			submitter = c
+		}
+	}
+	// No radios: a radio named csrf is a field of that name (see
+	// csrfProblem), and no radio has a dirname entry.
+	for _, p := range entries(c, submitter, nil) {
+		if p.Name != csrfFieldName {
+			continue
+		}
+		if !AttrIs(c, "name", csrfFieldName) {
+			return "dirname of the " + c.Tag()
+		}
+		if tag := c.Tag(); tag == "select" || tag == "textarea" {
+			return tag
+		}
+		return "submit button"
 	}
 	return ""
 }
@@ -142,49 +209,66 @@ func csrfMatches(v, token string) bool {
 
 // carriesCSRF reports whether the element sends a matching CSRF field when
 // htmx includes it: it is the field, a form that owns it, or (for other
-// elements) contains it in its own tree (not in template content).
+// elements) contains it in its own tree (not in template content), before
+// every select and textarea of that name.
 func carriesCSRF(e ct.Node, idx formIndex, token string) bool {
 	if e.Tag() == "form" {
-		return csrfProblem(idx.controls[e], token) == ""
+		// htmx sends the fields of a form without its submit buttons.
+		return csrfProblem(idx.controls[e], token, nil, false) == ""
 	}
 	if csrfField(e) {
 		v, _ := attrOf(e, "value")
 		return csrfMatches(v, token)
 	}
+	// htmx sends the values of the inputs, selects and textareas below e
+	// (no buttons, no dirname) in tree order: the field must be the first
+	// of that name.
 	var fields []ct.Node
-	for d := range elementsByTag(e, "input") {
-		if csrfField(d) && sameTree(d, e) {
+	var first ct.Node
+	for d := range ct.Elements(e) {
+		switch {
+		case !sameTree(d, e):
+			continue
+		case csrfField(d):
 			fields = append(fields, d)
+		case d.Tag() == "select" || d.Tag() == "textarea":
+			// htmx sends the value of such a control, also of a select
+			// without options.
+			if !AttrIs(d, "name", csrfFieldName) || inside(d, "datalist") != nil || disabledControl(d) {
+				continue
+			}
+		default:
+			continue
+		}
+		if first == nil {
+			first = d
 		}
 	}
-	if len(fields) != 1 {
+	if len(fields) != 1 || first != fields[0] {
 		return false
 	}
 	v, _ := attrOf(fields[0], "value")
 	return csrfMatches(v, token)
 }
 
-// htmxCarriesCSRF reports whether an element's non-GET htmx request sends
-// the CSRF field with a value that matches token.
-func htmxCarriesCSRF(e ct.Node, idx formIndex, ids map[string]ct.Node, token string) bool {
-	if !paramsKeepCSRF(e) {
-		return false
-	}
-	if (e.Tag() == "form" || csrfField(e)) && carriesCSRF(e, idx, token) {
-		return true
-	}
-	if related := relatedForm(e, idx); related != nil && carriesCSRF(related, idx, token) {
-		return true
-	}
-	if v, ok := htmxVals(e)[csrfFieldName].(string); ok && csrfMatches(v, token) {
-		return true
-	}
-	for _, target := range includeTargets(e, ids) {
-		if carriesCSRF(target, idx, token) {
-			return true
+// htmxCSRFProblem describes what is wrong with the CSRF field of the htmx
+// request of e, a request other than GET, or returns "": the first value
+// of that name among the parameters that htmx sends, as [HTMXData]
+// collects them, must match token. sc and idx are of the tree of e.
+func htmxCSRFProblem(sc *htmxScope, idx formIndex, e ct.Node, token string) string {
+	fields, _ := sc.params(idx, e, nil, "post", nil, true)
+	for _, p := range fields {
+		switch {
+		case p.Name != csrfFieldName || p.File:
+			continue
+		case csrfMatches(p.Value, token):
+			return ""
+		case token == "":
+			return fmt.Sprintf("sends an empty %q value first, and the server reads the first", csrfFieldName)
 		}
+		return fmt.Sprintf("sends a %q value other than the token first, and the server reads the first", csrfFieldName)
 	}
-	return false
+	return fmt.Sprintf("sends no %q field%s", csrfFieldName, withValue(token))
 }
 
 // relatedForm returns the form that htmx includes in a request of e other
@@ -396,8 +480,8 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 // in a URL reaches the browser history, server and proxy logs, and the
 // Referer header of other sites. It reports:
 //
-//   - a form with method GET (the default) that owns a control named
-//     [session.CSRFField];
+//   - a form with method GET (the default) that owns an enabled input
+//     named [session.CSRFField];
 //   - a submit button with formmethod="get" in a form that owns one;
 //   - an htmx request that puts its parameters in the URL (also with a
 //     data- prefix) and sends the field: the element is such a form or the
@@ -413,7 +497,9 @@ func includeTargets(e ct.Node, ids map[string]ct.Node) []ct.Node {
 //     meta element, else htmx's default (hx-get and hx-delete); in a
 //     fragment, of the page it is swapped into, which is the zero
 //     hx2.Config here (hx-get only) and [WithHTMXConfig] in [Rules];
-//   - a field of that name that is not of type hidden;
+//   - a control of that name other than a hidden input: an input of
+//     another type, a select, a textarea or a button, which shows the
+//     token or sends a value of its own in its place;
 //   - when token is not "": the token in any attribute other than the value
 //     of the CSRF field, hx-vals and hx-headers (URL attributes are named as
 //     such), and in any text or comment, also percent-encoded.
@@ -474,7 +560,7 @@ func noTokenLeaks(token string, fragmentMethods map[string]bool) ct.Rule {
 					out = append(out, fmt.Sprintf("%s at %s sends the token in the URL (hx-vals)", attr, loc(e)))
 				}
 			}
-			if e.Tag() == "input" && AttrIs(e, "name", csrfFieldName) && inputType(e) != "hidden" {
+			if visibleCSRFControl(e) {
 				out = append(out, fmt.Sprintf("%q field at %s is not hidden", csrfFieldName, loc(e)))
 			}
 		}
@@ -517,6 +603,22 @@ func noTokenLeaks(token string, fragmentMethods map[string]bool) ct.Rule {
 		}
 		return out
 	})
+}
+
+// visibleCSRFControl reports whether e is a control named
+// session.CSRFField other than a hidden input: an input of another type, a
+// select, a textarea or a button.
+func visibleCSRFControl(e ct.Node) bool {
+	switch e.Tag() {
+	case "input":
+		if inputType(e) == "hidden" {
+			return false
+		}
+	case "select", "textarea", "button":
+	default:
+		return false
+	}
+	return AttrIs(e, "name", csrfFieldName)
 }
 
 // htmxURLCarriesCSRF reports whether an htmx request of e that carries its

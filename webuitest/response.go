@@ -60,15 +60,24 @@ func HXRefresh(res *cthttp.Result) assertion.Assertion {
 
 // CookieWant is what [Cookie] expects of a cookie. Boolean fields that are
 // false and zero fields are not checked, except that a cookie that clears
-// itself fails unless Cleared is set.
+// itself fails unless Cleared is set. The Not fields require that an
+// attribute is absent; a want that requires an attribute and its absence
+// fails.
 type CookieWant struct {
 	// HostPrefix requires the __Host- prefix and what it implies: Secure,
 	// Path=/ and no Domain, so the cookie stays with exactly this origin.
 	HostPrefix bool
 	// Secure requires the Secure attribute.
 	Secure bool
+	// NotSecure requires a cookie without the Secure attribute, as an
+	// application sets them for a plain http site (such as a loopback site
+	// with session.Options.Insecure).
+	NotSecure bool
 	// HttpOnly requires the HttpOnly attribute.
 	HttpOnly bool
+	// NotHttpOnly requires a cookie without the HttpOnly attribute, one
+	// that the page's scripts can read.
+	NotHttpOnly bool
 	// SameSite, when not zero, requires that SameSite mode. (A cookie
 	// without the attribute has the zero mode; http.SameSiteDefaultMode is
 	// an attribute without a valid value.)
@@ -161,11 +170,21 @@ func (a cookieAssertion) Check(ctx context.Context) error {
 			problems = append(problems, "a __Host- cookie must not have a Domain")
 		}
 	}
-	if w.Secure && !c.Secure && !w.HostPrefix {
+	switch {
+	case w.NotSecure && (w.Secure || w.HostPrefix):
+		problems = append(problems, "the want requires Secure (or HostPrefix) and NotSecure")
+	case w.Secure && !c.Secure && !w.HostPrefix:
 		problems = append(problems, "not Secure")
+	case w.NotSecure && c.Secure:
+		problems = append(problems, "Secure, want no Secure attribute")
 	}
-	if w.HttpOnly && !c.HttpOnly {
+	switch {
+	case w.HttpOnly && w.NotHttpOnly:
+		problems = append(problems, "the want requires HttpOnly and NotHttpOnly")
+	case w.HttpOnly && !c.HttpOnly:
 		problems = append(problems, "not HttpOnly")
+	case w.NotHttpOnly && c.HttpOnly:
+		problems = append(problems, "HttpOnly, want no HttpOnly attribute")
 	}
 	if w.SameSite != 0 && c.SameSite != w.SameSite {
 		problems = append(problems, fmt.Sprintf("SameSite is %s, want %s", sameSiteName(c.SameSite), sameSiteName(w.SameSite)))
@@ -245,6 +264,63 @@ func (a noCookies) Check(ctx context.Context) error {
 		msg += fmt.Sprintf(" (%d do not parse)", bad)
 	}
 	return fmt.Errorf("%w: %s", ct.ErrMismatch, msg)
+}
+
+// NoCookie asserts that the response sets no cookie called name, while it
+// may set others: a refused login sets no session cookie, but may renew
+// the cookie of its form. A Set-Cookie header that clears the cookie sets
+// it too (assert a clearing with [Cookie] and Cleared), and so does one
+// that does not parse but names it. A failure names the cookie, never its
+// value.
+func NoCookie(res *cthttp.Result, name string) assertion.Assertion {
+	return noCookie{res: res, name: name}
+}
+
+type noCookie struct {
+	res  *cthttp.Result
+	name string
+}
+
+func (a noCookie) String() string {
+	return fmt.Sprintf("noCookie(%s, %q)", a.res.Describe(), a.name)
+}
+
+func (a noCookie) Check(ctx context.Context) error {
+	if err := a.res.Captured().Check(ctx); err != nil {
+		return err
+	}
+	n, bad := 0, 0
+	for _, line := range a.res.Headers().Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		switch {
+		case err == nil && c.Name == a.name:
+			n++
+		case err != nil && rawCookieName(line) == a.name:
+			bad++
+		}
+	}
+	switch {
+	case n+bad == 0:
+		return nil
+	case bad > 0:
+		return fmt.Errorf("%w: %s sets cookie %q in %d Set-Cookie headers, %d of which do not parse", ct.ErrMismatch, a.res.Describe(), a.name, n+bad, bad)
+	case n > 1:
+		return fmt.Errorf("%w: %s sets cookie %q %d times", ct.ErrMismatch, a.res.Describe(), a.name, n)
+	}
+	return fmt.Errorf("%w: %s sets cookie %q", ct.ErrMismatch, a.res.Describe(), a.name)
+}
+
+// rawCookieName returns the name of a Set-Cookie header as browsers split
+// it (RFC 6265bis, section 5.6): the text before the first "=" of the part
+// before the first ";", without surrounding white space, and "" without a
+// "=".
+func rawCookieName(line string) string {
+	pair, _, _ := strings.Cut(line, ";")
+	name, _, ok := strings.Cut(pair, "=")
+	if !ok {
+		return ""
+	}
+	return strings.Trim(name, " \t")
 }
 
 // Policy is what [SecurityHeaders] expects of a response: the security

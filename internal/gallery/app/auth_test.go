@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"slices"
 	"testing"
 	"time"
 
@@ -21,7 +20,7 @@ import (
 	"github.com/protolambda/webui/webuitest"
 )
 
-// cookieNames returns the names of the cookies that res sets.
+// cookieNames returns the names of the cookies that res sets, in order.
 func cookieNames(res *cthttp.Result) []string {
 	var names []string
 	for _, c := range (&http.Response{Header: res.Headers()}).Cookies() {
@@ -71,7 +70,7 @@ func TestLogin(gt *testing.T) {
 		t.Must(page.Find(ct.ID("login-name")).Matches(ct.Attr("value", "Ada")))
 		t.Must(page.Find(ct.ID("login-password"), ct.HasAttr("value")).None())
 		t.Must(page.Find(ct.Attr("name", web.NextParam)).Matches(ct.Attr("value", "/notes")))
-		t.Must(be.False(slices.Contains(cookieNames(res), "__Host-session")))
+		t.Must(webuitest.NoCookie(res, "__Host-session"))
 	})
 
 	t.Run("login CSRF", func(t devtest.T) {
@@ -85,6 +84,8 @@ func TestLogin(gt *testing.T) {
 		}))
 		t.Must(res.Status(http.StatusForbidden))
 		t.Must(be.DeepEqual([]string{"__Host-preauth"}, cookieNames(res)))
+		t.Must(webuitest.Cookie(res, "__Host-preauth", webuitest.CookieWant{HostPrefix: true, HttpOnly: true}))
+		t.Must(webuitest.NoCookie(res, "__Host-session"))
 		page := res.HTML()
 		t.Must(contract("")(page))
 		t.Must(be.NotEqual(token, webuitest.CSRFToken(t, page)))
@@ -177,7 +178,7 @@ func TestLoginThrottled(gt *testing.T) {
 	res := logIn(t, b, "/login", "Ada", app.DemoPassword)
 	t.Must(res.Status(http.StatusTooManyRequests))
 	t.Must(res.Header("Retry-After", ct.Exact("60")))
-	t.Must(be.False(slices.Contains(cookieNames(res), "__Host-session")))
+	t.Must(webuitest.NoCookie(res, "__Host-session"))
 	page := res.HTML()
 	t.Must(contract("")(page))
 	t.Must(page.Find(ct.ID("alerts")).Find(ct.Role("alert")).Texts(web.DefaultMessage(http.StatusTooManyRequests)))
@@ -237,7 +238,7 @@ func TestLoginRejectsInvalidProxyIdentity(gt *testing.T) {
 		}
 		res := logIn(t, b, "/login", "Ada", app.DemoPassword)
 		t.Must(res.Status(http.StatusBadRequest))
-		t.Must(be.False(slices.Contains(cookieNames(res), "__Host-session")))
+		t.Must(webuitest.NoCookie(res, "__Host-session"))
 		t.Must(g.logs.NotLogged("private request text"))
 	}
 }
@@ -260,7 +261,7 @@ func TestLoginExpired(gt *testing.T) {
 	form := page.Find(ct.ID("main")).Find(ct.Tag("form"), ct.Attr("action", "/login"))
 	res := b.Submit(t, page, form, nil, url.Values{"name": {"Ada"}, "password": {app.DemoPassword}})
 	t.Must(res.Status(http.StatusForbidden))
-	t.Must(be.False(slices.Contains(cookieNames(res), "__Host-session")))
+	t.Must(webuitest.NoCookie(res, "__Host-session"))
 	again := res.HTML()
 	t.Must(contract("")(again))
 	t.Must(again.Find(ct.ID("alerts")).Find(ct.Role("alert")).Texts("The login form expired. Enter your password again."))
@@ -281,9 +282,14 @@ func TestInsecureCookies(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	g := newGallery(t, app.Options{Sites: []mw.Site{mw.MustParseSite(webuitest.InsecureBaseURL)}, InsecureCookies: true})
 	b := webuitest.NewBrowser(t, g, webuitest.BrowserOptions{Insecure: true})
+	login := b.Get(t, "/login")
+	t.Must(webuitest.Cookie(login, "preauth", webuitest.CookieWant{NotSecure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, Path: "/"}))
+	t.Must(webuitest.NoCookie(login, "__Host-preauth"))
 	res := logIn(t, b, "/login", "Bo", app.DemoPassword)
 	t.Must(webuitest.Location(res, http.StatusSeeOther, ct.Exact("/notes?notice=signed-in")))
-	t.Must(webuitest.Cookie(res, "session", webuitest.CookieWant{HttpOnly: true, SameSite: http.SameSiteLaxMode, Session: true, Path: "/"}))
+	t.Must(webuitest.Cookie(res, "session", webuitest.CookieWant{NotSecure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, Session: true, Path: "/"}))
+	t.Must(webuitest.NoCookie(res, "__Host-session"))
+	t.Must(webuitest.Cookie(res, "preauth", webuitest.CookieWant{NotSecure: true, Cleared: true}))
 	notes := b.Get(t, "/notes")
 	t.Must(notes.Status(http.StatusOK))
 	// A plain-http loopback site gets no HSTS.

@@ -152,7 +152,8 @@ func ExampleSecurityHeaders() {
 	//   CSP script-src is 'self' 'unsafe-eval', want 'self'
 }
 
-// Cookie checks the attributes of a cookie, never showing its value.
+// Cookie checks the attributes of a cookie, and NoCookie its absence,
+// never showing its value.
 func ExampleCookie() {
 	t := webuitest.PrintT{}
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -165,10 +166,16 @@ func ExampleCookie() {
 	}))
 	fmt.Println("session cookie ok")
 	t.Must(webuitest.Cookie(res, "theme", webuitest.CookieWant{HttpOnly: true, Session: true}))
+	t.Must(webuitest.Cookie(res, "theme", webuitest.CookieWant{NotSecure: true, NotHttpOnly: true}))
+	t.Must(webuitest.NoCookie(res, "flash"))
+	fmt.Println("theme cookie ok, no flash cookie")
+	t.Must(webuitest.NoCookie(res, "theme"))
 	t.Must(webuitest.NoCookies(res))
 	// Output:
 	// session cookie ok
 	// assertion failed: selected nodes do not match: cookie "theme" of GET /: not HttpOnly; has Max-Age or Expires, want a session cookie
+	// theme cookie ok, no flash cookie
+	// assertion failed: selected nodes do not match: GET / sets cookie "theme"
 	// assertion failed: selected nodes do not match: GET / sets 2 cookies: "__Host-session", "theme"
 }
 

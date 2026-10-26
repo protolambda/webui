@@ -30,7 +30,8 @@ type BrowserOptions struct {
 	// http there. A test on it therefore cannot show that such cookies
 	// fail on a plain http site; configure the application as it is
 	// served (for example with insecure cookies) and check the cookie
-	// attributes with [Cookie].
+	// attributes with [Cookie], such as [CookieWant.NotSecure], and
+	// [NoCookie].
 	Insecure bool
 	// HTTP2 enables HTTP/2 (with TLS only).
 	HTTP2 bool

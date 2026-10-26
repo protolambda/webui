@@ -55,8 +55,9 @@
 // with TLS and a cookie jar, for full-stack tests and for flows that need
 // cookies, such as logins.
 //
-// [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookies] and
-// [SecurityHeaders] assert responses; cookie values are never printed.
+// [Location], [HXRedirect], [HXRetarget], [Cookie], [NoCookie],
+// [NoCookies] and [SecurityHeaders] assert responses; cookie values are
+// never printed.
 // [StrictPolicy] and [PolicyFor] are the security headers of pages,
 // [AssetPolicy] and [AssetPolicyFor] those of asset files.
 // [CrossSiteProbes], [RejectsCrossSite], [OpenRedirectVectors] and

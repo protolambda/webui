@@ -107,7 +107,13 @@ func Example_combined() {
 }
 
 // A polling panel that the server answers with 204 No Content while nothing
-// changed: htmx swaps nothing for 204.
+// changed: htmx swaps nothing for 204. Once there is nothing left to poll,
+// such as after the item was deleted, the server answers with
+// StatusStopPolling (286) and the panel's last content, which htmx swaps
+// in before it stops. With outerHTML, that content replaces the panel
+// itself, so it must not carry the "every" trigger, or a new poll starts.
+// Error statuses never stop the poll: an error answer (a 404 for the
+// deleted item, say) would come again every 2 seconds.
 func Example_polling() {
 	core.Dump(div.Div(
 		attr.ID("status"),

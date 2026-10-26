@@ -325,6 +325,32 @@ func ExampleErrors_dialog() {
 	// <div class="alert alert-danger">The item changed meanwhile. Reload the page and try again.</div>
 }
 
+// A poll ends when its item is gone: the handler answers with
+// hx2.StatusStopPolling and the content that takes the polled content's
+// place, which htmx swaps in before it stops polling. A 404 would not stop
+// the poll: its alert would come again on every tick.
+func ExampleErrors_polling() {
+	states := map[string]string{"7": "Running"}
+	mux := http.NewServeMux()
+	mux.Handle("GET /tasks/{id}/state", web.Errors{}.Handle(func(w http.ResponseWriter, r *http.Request) error {
+		state, ok := states[r.PathValue("id")]
+		if !ok {
+			return web.Render(w, r, hx2.StatusStopPolling, text.P()(text.Text("This task was deleted.")))
+		}
+		return web.Render(w, r, http.StatusOK, text.P()(text.Text(state)))
+	}))
+	core.Dump(div.Div(hx2.Get("/tasks/7/state"), hx2.Trigger("every 2s"))(text.P()(text.Text("Running"))))
+	serve(mux, htmxRequest(http.MethodGet, "/tasks/7/state", "https://app.example/tasks/7"))
+	delete(states, "7") // deleted in another tab
+	serve(mux, htmxRequest(http.MethodGet, "/tasks/7/state", "https://app.example/tasks/7"))
+	// Output:
+	// <div hx-get="/tasks/7/state" hx-trigger="every 2s"><p>Running</p></div>
+	// 200
+	// <p>Running</p>
+	// 286
+	// <p>This task was deleted.</p>
+}
+
 // Applications map their own errors ahead of webui's defaults. An *Error
 // keeps the answer that its handler chose, whatever its cause.
 func ExampleErrors_classify() {

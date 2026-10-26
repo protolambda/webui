@@ -116,9 +116,10 @@
 // value of its header. Plain values are set as given: URLs must be
 // percent-encoded, and no value may contain control characters; JSON values
 // are encoded with ASCII escapes. htmx ignores these headers on 3xx
-// responses. The Header constants name every header. A redirect or location
-// taken from the request must be checked to be local before it is set, or
-// it is an open redirect.
+// responses. The Header constants name every header, and
+// [StatusStopPolling] is the status of an answer that stops a poll. A
+// redirect or location taken from the request must be checked to be local
+// before it is set, or it is an open redirect.
 //
 // # Changes from htmx 1
 //

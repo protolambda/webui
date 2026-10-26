@@ -176,6 +176,22 @@ const ErrorReswap = hx2.SwapInnerHTML + " show:top"
 // closes; a successful answer that leaves the dialog in the page can empty
 // the region out of band.
 //
+// # Polling
+//
+// htmx stops an "every" poll (hx2.Trigger) only for an answer with status
+// 286, hx2.StatusStopPolling; error statuses never stop it. An error
+// answer to a poll goes to the alerts region and leaves the polled element
+// in the page, so a poll that keeps failing, such as one for an item that
+// was deleted meanwhile and is answered with 404, swaps its alert into the
+// region again on every tick for as long as the page is open: the window
+// scrolls to the region (the show:top of [ErrorReswap]) and the region
+// announces the message, every time. An [*Error] cannot stop the poll, as
+// its Status is 400 to 599. The handler of a poll answers an item that is
+// gone with hx2.StatusStopPolling and the content that takes the polled
+// content's place, such as a note that the item is gone, through
+// [Render], which takes any status; webui's htmx configuration swaps it
+// as a 2xx answer (see the polling example).
+//
 // # Logging
 //
 // Errors are logged to mw.Logger of the request context, with the status

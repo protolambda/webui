@@ -274,7 +274,10 @@ type ResponseRule struct {
 // what htmx does without a matching rule. Swapping errors lets a handler
 // answer a failed htmx request with a fragment that shows the error, keeping
 // the real status code. A 204 response swaps nothing, which suits polling
-// that found no change.
+// that found no change. A 286 response ([StatusStopPolling]) swaps as a 2xx
+// one and stops the poll of the element that made the request; no other
+// status stops a poll, so an error answer to a poll, swapped like any
+// other, comes again on every tick (see [Trigger]).
 //
 // A 422 (Unprocessable Content) response is the usual answer to a form with
 // problems: an expected outcome of user input that the server explains in

@@ -100,6 +100,18 @@ func TestReportValidityOfForms(gt *testing.T) {
 	t.Must(be.Substring(written, `"reportValidityOfForms":true`))
 }
 
+// The docs of StatusStopPolling and Trigger rely on htmx cancelling a poll
+// for a swapped answer with status 286, and for no other status.
+func TestStopPolling(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	t.Must(be.Equal(286, hx2.StatusStopPolling))
+	data, err := fs.ReadFile(theme.FS(), theme.HTMXJS)
+	t.Must(be.NoError(err))
+	script := string(data)
+	t.Must(be.Equal(1, strings.Count(script, "status===286")))
+	t.Must(be.Substring(script, "if(m.shouldSwap){if(n.status===286){"))
+}
+
 // The extraction helpers fail rather than guess on input they do not
 // understand.
 func TestConfigLiteralParsing(gt *testing.T) {

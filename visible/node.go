@@ -53,6 +53,38 @@ func Code(s string) elem.Node {
 	return Marking{}.Code(s)
 }
 
+// TextString returns display text, such as a name or a title, for places
+// that hold only text: attribute values such as aria-label, title, alt and
+// placeholder, the label of an option, the document title, the message of
+// hx-confirm. Text that needs no escape is returned as it is; escaped text
+// (by [EscapeText]) is returned after [MarkerText] and a space, the words
+// that [Text] shows in its badge:
+//
+//	visible.TextString("Ada Lovelace")        // Ada Lovelace
+//	visible.TextString("invoice\u202Efdp.exe") // escaped invoice\u202Efdp.exe
+//
+// The result reads as [Text] does in extracted text and to a screen
+// reader, but without the badge the marker is only a word on screen too: a
+// value that starts with that word and has literal backslashes looks the
+// same (see the package documentation). Nor can a text-only place isolate
+// the direction of the value: right-to-left letters in it still order the
+// text next to it in the same attribute or option. Never use the result
+// where a value is submitted or parsed, such as the value of an input, the
+// content of a textarea or an href: the marker and the escapes would become
+// part of the value. [Marking.TextString] uses other words.
+func TextString(s string) string {
+	return Marking{}.TextString(s)
+}
+
+// CodeString returns a value that is read character by character, such as
+// an identifier, a host name, a file name or a URL, for places that hold
+// only text, as [TextString] does for display text: the value as it is when
+// [Escape] escapes nothing, and otherwise [MarkerText], a space, and the
+// escaped value. [Marking.CodeString] uses other words.
+func CodeString(s string) string {
+	return Marking{}.CodeString(s)
+}
+
 // Marker renders the badge that precedes an escaped value: a Bootstrap
 // warning badge with [MarkerText], and [MarkerTitle] as its title:
 //
@@ -68,14 +100,16 @@ func Marker() elem.Node {
 }
 
 // Marking is the marker that [Marking.Text] and [Marking.Code] put before
-// escaped values, with words of the application's choice, such as a
-// translation. The zero value is the English marker of [Text], [Code] and
-// [Marker]. A Marking is a small value, safe to copy and to use
-// concurrently.
+// escaped values, and whose label [Marking.TextString] and
+// [Marking.CodeString] write before them, with words of the application's
+// choice, such as a translation. The zero value is the English marker of
+// [Text], [Code], [TextString], [CodeString] and [Marker]. A Marking is a
+// small value, safe to copy and to use concurrently.
 type Marking struct {
-	// Label is the visible text of the badge; empty or blank means
-	// [MarkerText]. The marker must never be empty, because it is what tells
-	// an escaped value apart from text with literal backslashes.
+	// Label is the visible text of the badge, and the word before escaped
+	// values in the string forms; empty or blank means [MarkerText]. The
+	// marker must never be empty, because it is what tells an escaped value
+	// apart from text with literal backslashes.
 	Label string
 	// Title is the title (tooltip) of the badge: why the value is shown
 	// with escapes. Empty or blank means [MarkerTitle].
@@ -84,14 +118,25 @@ type Marking struct {
 
 // Marker renders the badge of [Marker] with the words of m.
 func (m Marking) Marker() elem.Node {
-	label, title := m.Label, m.Title
-	if strings.TrimSpace(label) == "" {
-		label = MarkerText
+	return text.Span(attr.Class("badge text-bg-warning"), attr.Title(m.title()))(text.Text(m.label()))
+}
+
+// label returns the visible text of the marker: Label, or [MarkerText] when
+// it is blank.
+func (m Marking) label() string {
+	if strings.TrimSpace(m.Label) == "" {
+		return MarkerText
 	}
-	if strings.TrimSpace(title) == "" {
-		title = MarkerTitle
+	return m.Label
+}
+
+// title returns the title of the marker: Title, or [MarkerTitle] when it is
+// blank.
+func (m Marking) title() string {
+	if strings.TrimSpace(m.Title) == "" {
+		return MarkerTitle
 	}
-	return text.Span(attr.Class("badge text-bg-warning"), attr.Title(title))(text.Text(label))
+	return m.Title
 }
 
 // Text renders s as [Text] does, with the marker of m.
@@ -110,6 +155,25 @@ func (m Marking) Code(s string) elem.Node {
 		return code(v)
 	}
 	return m.marked(v)
+}
+
+// TextString returns s as [TextString] does, with the label of m: the
+// Label, or [MarkerText] when it is blank.
+func (m Marking) TextString(s string) string {
+	v, escaped := EscapeText(s)
+	if !escaped {
+		return v
+	}
+	return m.label() + " " + v
+}
+
+// CodeString returns s as [CodeString] does, with the label of m.
+func (m Marking) CodeString(s string) string {
+	v, escaped := Escape(s)
+	if !escaped {
+		return v
+	}
+	return m.label() + " " + v
 }
 
 // code renders the value v in a code element, left to right.

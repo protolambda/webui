@@ -149,14 +149,15 @@ func taskFilter(current filter, oob bool) elem.Node {
 func (a *App) taskList(f filter, focus bool) elem.Node {
 	del := func(t task) elem.Node {
 		action := "/htmx/tasks/" + strconv.Itoa(t.ID) + "/delete"
-		// The label names the task with its escaped title: a label
-		// cannot show the marker of visible.Text.
-		title, _ := visible.EscapeText(t.Title)
+		// An aria-label holds only text: visible.TextString puts the
+		// marker's word before an escaped title, as visible.Text puts
+		// the badge.
+		label := "Delete " + visible.TextString(t.Title)
 		return session.PostFormFromContext(action,
 			hx2.Post(action), hx2.Confirm("Delete this task?"),
 			hx2.Target("#"+taskListID), hx2.Swap(changedSwap),
 		)(
-			bs.BtnOutlineDanger(button.Type(button.TypeSubmit), ba.BtnSM(), aria.Label("Delete "+title))(bi.Trash),
+			bs.BtnOutlineDanger(button.Type(button.TypeSubmit), ba.BtnSM(), aria.Label(label))(bi.Trash),
 		)
 	}
 	var caption elem.Node = text.Text("Tasks: " + string(f))

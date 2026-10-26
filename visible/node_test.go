@@ -73,6 +73,57 @@ func TestMarkerView(gt *testing.T) {
 	t.Must(plain.Find(ct.Tag("code")).None())
 }
 
+func TestStringForms(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, c := range []struct{ in, text, code string }{
+		{"", "", ""},
+		{"Ada Lovelace", "Ada Lovelace", "Ada Lovelace"},
+		{`C:\notes`, `C:\notes`, `C:\notes`},
+		{"<b>bold</b>", "<b>bold</b>", "<b>bold</b>"},
+		{"10\u00A0km", "10\u00A0km", bs("escaped 10~u00A0km")},
+		{"\U0001F469\u200D\U0001F4BB", "\U0001F469\u200D\U0001F4BB", bs("escaped \U0001F469~u200D\U0001F4BB")},
+		{"invoice\u202Efdp.exe", bs("escaped invoice~u202Efdp.exe"), bs("escaped invoice~u202Efdp.exe")},
+		{"fake \\u202E real \u202E", bs("escaped fake ~~u202E real ~u202E"), bs("escaped fake ~~u202E real ~u202E")},
+		{"two  spaces", bs("escaped two~x20~x20spaces"), bs("escaped two~x20~x20spaces")},
+		{"Team\nnotes", bs("escaped Team~nnotes"), bs("escaped Team~nnotes")},
+	} {
+		t.Mustf(be.Equal(c.text, visible.TextString(c.in)), "TextString(%+q)", c.in)
+		t.Mustf(be.Equal(c.code, visible.CodeString(c.in)), "CodeString(%+q)", c.in)
+		t.Mustf(be.Equal(c.text, visible.Marking{}.TextString(c.in)), "Marking{}.TextString(%+q)", c.in)
+		t.Mustf(be.Equal(c.code, visible.Marking{}.CodeString(c.in)), "Marking{}.CodeString(%+q)", c.in)
+	}
+
+	m := visible.Marking{Label: "maskiert", Title: "Mit Escapes gezeigt"}
+	t.Must(be.Equal("Ada", m.TextString("Ada")))
+	t.Must(be.Equal(bs("maskiert ad~u200Bmin"), m.TextString("ad\u200Bmin")))
+	t.Must(be.Equal(bs("maskiert 10~u00A0km"), m.CodeString("10\u00A0km")))
+	// A blank label falls back to the default, as the badge does.
+	t.Must(be.Equal(bs("escaped ad~u200Bmin"), visible.Marking{Label: " \t"}.TextString("ad\u200Bmin")))
+}
+
+// TestStringFormsReadAsNodes checks that the string forms read as the
+// markup of Text and Code reads: the marker's word, a space and the escaped
+// value, without the invisible characters of the input.
+func TestStringFormsReadAsNodes(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	samples := append(webuitest.Hostile(), "Ada Lovelace", "ad\u200Bmin", `C:\notes`+"\u202E", "two  spaces")
+	for _, s := range samples {
+		for _, c := range []struct {
+			node elem.Node
+			str  string
+		}{
+			{visible.Text(s), visible.TextString(s)},
+			{visible.Code(s), visible.CodeString(s)},
+		} {
+			t.Mustf(be.False(strings.ContainsFunc(c.str, func(r rune) bool {
+				return unicode.In(r, unicode.Bidi_Control, unicode.Cc, unicode.Cf)
+			})), "string form of %+q has an invisible character", s)
+			page := ct.View(text.P()(c.node))
+			t.Mustf(page.Find(ct.Tag("p")).Matches(ct.InnerText(c.str)), "string form of %+q", s)
+		}
+	}
+}
+
 // TestNodesHostile renders the hostile inputs of webuitest: they stay
 // text, the rendered HTML has no direction controls or other invisible
 // format characters, and it satisfies the webui rules (no inline styles).

@@ -17,9 +17,12 @@
 // Indic scripts write with. [Text] and [Code] render the result as chord
 // nodes. When anything is escaped, they show the escaped form in a code
 // element, preceded by [Marker], a badge that says so; [Marking] renders
-// that badge with other words, such as a translation. [Rune] reports
-// whether a single character shows as itself. All of them are pure
-// functions, safe for concurrent use.
+// that badge with other words, such as a translation. [TextString] and
+// [CodeString] return the same as text, for places that hold only text:
+// the value as it is when nothing is escaped, and otherwise the word of the
+// marker, a space, and the escaped form. [Rune] reports whether a single
+// character shows as itself. All of them are pure functions, safe for
+// concurrent use.
 //
 // # Escapes
 //
@@ -38,7 +41,9 @@
 // look like a backslash show as themselves and are not escaped (see below).
 // Text that needs no escape is returned as it is, backslashes and all. The
 // reported bool, or the marker that [Text] and [Code] add, tells the two
-// cases apart, so show it wherever the escaped form is shown.
+// cases apart, so show it wherever the escaped form is shown: as [Marker]
+// in markup, and as the word that [TextString] and [CodeString] write in
+// text.
 //
 // The escaped form is valid UTF-8, at most six times as long as the input,
 // and shows as itself: escaping it again changes nothing. It decodes
@@ -61,6 +66,16 @@
 // dir="ltr"; both isolate the text, so that it cannot reorder the page text
 // next to it. Put the results of [Escape] and [EscapeText] in such an
 // element too.
+//
+// Some places hold only text: attribute values such as aria-label, title,
+// alt and placeholder, the label of an option, the document title, the
+// message of hx-confirm. There, use [TextString] and [CodeString], which
+// write the word of the marker before an escaped value. The result of
+// [EscapeText] alone would drop the marker, and an escaped value would read
+// the same as a value with those backslashes in it. Never use the string
+// forms where a value is submitted or parsed, such as the value of an
+// input, the content of a textarea or an href: the marker and the escapes
+// would become part of the value.
 //
 // # What it does not do
 //
@@ -91,10 +106,11 @@
 //
 // The marker shows as a badge, and the escaped value as code, so that a
 // reader tells them apart from plain text by their style. In extracted text
-// and to a screen reader, the marker is just the word before the value, and
-// a value that starts with that word and has literal backslashes reads the
-// same. Where that matters, such as for account names, refuse values that
-// [Escape] escapes, and backslashes, when they are entered.
+// and to a screen reader, and on screen in the string forms, the marker is
+// just the word before the value, and a value that starts with that word
+// and has literal backslashes reads the same. Where that matters, such as
+// for account names, refuse values that [Escape] escapes, and backslashes,
+// when they are entered.
 //
 // Characters that show can still crowd out other text: a long run of
 // combining marks draws over the lines above and below it. Bound the length

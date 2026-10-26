@@ -70,7 +70,11 @@
 // and titles that other users chose with
 // [github.com/protolambda/webui/visible.Text], and identifiers with
 // [github.com/protolambda/webui/visible.Code]: they escape such characters
-// and mark the result. Look-alike letters, such as a Cyrillic letter in a
+// and mark the result. Where only text fits, such as the Label of a
+// [SelectOption] or an aria-label, use
+// [github.com/protolambda/webui/visible.TextString] and
+// [github.com/protolambda/webui/visible.CodeString], which keep the marker
+// as a word. Look-alike letters, such as a Cyrillic letter in a
 // Latin name, are visible letters that neither escapes; telling such names
 // apart is an application policy (see the visible package).
 //

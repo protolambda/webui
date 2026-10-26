@@ -95,8 +95,9 @@ func dataName(name string) string {
 var dataNames = func() map[string]string {
 	names := slices.Concat(htmxRequestAttrs, htmxTargetAttrs, []string{
 		"hx-disable", "hx-disinherit", "hx-encoding", "hx-ext", "hx-headers",
-		"hx-params", "hx-push-url", "hx-replace-url", "hx-trigger", "hx-vals",
-		"sse-close", "sse-connect", "sse-swap", "ws-connect",
+		"hx-params", "hx-preserve", "hx-push-url", "hx-replace-url",
+		"hx-trigger", "hx-vals", "sse-close", "sse-connect", "sse-swap",
+		"ws-connect",
 	})
 	out := make(map[string]string, len(names))
 	for _, name := range names {

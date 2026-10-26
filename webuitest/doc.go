@@ -13,9 +13,10 @@
 // [Rules] bundles the document rules that every webui page satisfies: ct's
 // structure rules, the content security policy (no inline script or style,
 // no htmx scripting, safe and same-origin URLs, subresource integrity),
-// CSRF fields and token leaks, htmx targets and SSE wiring, the no-JS
-// dialog markup, and accessibility (icons hidden, controls named, no
-// nested controls, rectangular tables, safe external links). Each rule is
+// CSRF fields and token leaks, htmx targets, preserved elements and SSE
+// wiring, the no-JS dialog markup, and accessibility (icons hidden,
+// controls named, no nested controls, rectangular tables, safe external
+// links). Each rule is
 // also available alone. A fragment is checked as htmx runs it, under the
 // htmx configuration of the page around it: webui's, the zero hx2.Config,
 // unless [WithHTMXConfig] names another. Rules are pure values: they never

@@ -121,8 +121,8 @@ func RuleName(r ct.Rule) string {
 //     [WithHTMXConfig] for fragments of pages with a non-default htmx
 //     configuration);
 //   - htmx and components: [HXTargets] (with [DocumentTargets], see
-//     [WithDocumentTargets]), [SSEWiring], [ModalDialogs] (see
-//     [WithSharedDialogs]) and [NoBootstrapJSHooks] (see
+//     [WithDocumentTargets]), [HXPreserveIDs], [SSEWiring], [ModalDialogs]
+//     (see [WithSharedDialogs]) and [NoBootstrapJSHooks] (see
 //     [WithBootstrapJS]);
 //   - accessibility and HTML quality: [IconsHidden], [ControlsNamed],
 //     [NoNestedInteractive], [RectangularTables] and [ExternalLinksSafe];
@@ -152,6 +152,7 @@ func Rules(opts ...RuleOption) []ct.Rule {
 		PostFormsCarryCSRF(cfg.csrf),
 		noTokenLeaks(cfg.csrf, cfg.urlMethods),
 		HXTargets(cfg.targets...),
+		HXPreserveIDs(),
 		SSEWiring(),
 		ModalDialogs(cfg.dialogs...),
 		IconsHidden(),

@@ -528,6 +528,28 @@ func TestSSEWiring(gt *testing.T) {
 	})
 }
 
+func TestHXPreserveIDs(gt *testing.T) {
+	checkRule(gt, webuitest.HXPreserveIDs(), []ruleCase{
+		{name: "valid", body: `<div id="player" hx-preserve></div><video id="clip-1" data-hx-preserve="true"></video><p id="--x" hx-preserve></p><p id="_y" hx-preserve></p><p id="-z" hx-preserve></p><p id="é" hx-preserve></p><p>no preserve</p>`},
+		{name: "no id", body: `<div hx-preserve></div>`, want: []string{"hx-preserve at html[1]/body[1]/div[0] has no id, so htmx keeps no element"}},
+		{name: "data prefix", body: `<div data-hx-preserve></div>`, want: []string{"data-hx-preserve at html[1]/body[1]/div[0] has no id"}},
+		{name: "empty id", body: `<div id="" hx-preserve="true"></div>`, want: []string{"has no id"}},
+		{name: "false is preserved too", body: `<div hx-preserve="false"></div>`, want: []string{"has no id"}},
+		{name: "data-id", body: `<div data-id="x" hx-preserve></div>`, want: []string{"has no id"}},
+		{name: "digit", body: `<div id="1row" hx-preserve></div>`, want: []string{`hx-preserve at html[1]/body[1]/div#1row[0] has the id "1row", which is not a CSS identifier`}},
+		{name: "dot", body: `<div id="a.b" hx-preserve></div>`, want: []string{`the id "a.b"`}},
+		{name: "dash digit", body: `<div id="-1" hx-preserve></div>`, want: []string{`the id "-1"`}},
+		{name: "space", body: `<div id="a b" hx-preserve></div>`, want: []string{`the id "a b"`}},
+		{name: "fragment", fragment: true, body: `<audio hx-preserve></audio>`, want: []string{"hx-preserve at audio[0] has no id"}},
+	})
+	gt.Run("view", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		t.Must(ct.View(div.Div(attr.KV("ID", "kept"), attr.KV("HX-Preserve", ""))()).Valid(webuitest.HXPreserveIDs()))
+		got := violations(t, ct.View(div.Div(hx2.Preserve())()), webuitest.HXPreserveIDs())
+		t.Must(be.Len(got, 1))
+	})
+}
+
 // dialogPage is a valid page with a no-JS dialog, in the markup of the
 // dialog contract.
 const dialogPage = `<button type="button" commandfor="d" command="show-modal" popovertarget="d">Open</button>` +
@@ -719,7 +741,7 @@ func TestRules(gt *testing.T) {
 			t.Mustf(be.False(names[name]), "duplicate rule %s", name)
 			names[name] = true
 		}
-		for _, want := range []string{"uniqueIDs", "noRaw", "noInlineScripts", "postFormsCarryCSRF", "noTokenLeaks", "hxTargets", "modalDialogs", "noBootstrapJSHooks", "externalLinksSafe"} {
+		for _, want := range []string{"uniqueIDs", "noRaw", "noInlineScripts", "postFormsCarryCSRF", "noTokenLeaks", "hxTargets", "hxPreserveIDs", "modalDialogs", "noBootstrapJSHooks", "externalLinksSafe"} {
 			t.Mustf(be.True(names[want]), "missing rule %s", want)
 		}
 		t.Must(be.False(names["secretsHidden"]))

@@ -108,6 +108,48 @@ func TestPreAuthExpiry(gt *testing.T) {
 	t.Must(be.ErrorContains(err, "expired"))
 }
 
+func TestPreAuthExpires(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	clk := newClock()
+	clk.Advance(400 * time.Millisecond) // issue times have whole seconds
+	p := newPreAuth(t, session.PreAuthOptions{Now: clk.Now, TTL: 2 * time.Minute})
+	token, cookie := issue(t, p, nil)
+	r := post(t, cookie)
+	want := time.Date(2026, 3, 1, 9, 2, 0, 0, time.UTC)
+	expires, ok := p.Expires(r)
+	t.Must(be.True(ok))
+	t.Mustf(be.True(want.Equal(expires)), "expires at %v", expires)
+	t.Must(be.Equal(expires.Round(0), expires)) // no monotonic reading
+
+	// The pair verifies until then, and not from then on.
+	clk.Advance(want.Sub(clk.Now()) - time.Nanosecond)
+	t.Must(be.NoError(p.Verify(r, token)))
+	clk.Advance(time.Nanosecond)
+	t.Must(be.ErrorIs(p.Verify(r, token), session.ErrCSRF))
+	expires, ok = p.Expires(r)
+	t.Must(be.False(ok))
+	t.Must(be.True(expires.IsZero()))
+
+	// The age follows the wall clock: set back, it makes the expired
+	// cookie verify again, until the same expiry.
+	clk.Advance(-time.Minute)
+	t.Must(be.NoError(p.Verify(r, token)))
+	expires, ok = p.Expires(r)
+	t.Must(be.True(ok))
+	t.Must(be.True(want.Equal(expires)))
+
+	// Without a valid cookie there is no expiry: no request, no cookie, a
+	// forged one, or one issued further in the future than the skew.
+	forged := &http.Cookie{Name: p.CookieName(), Value: strings.Repeat("A", 96)}
+	_, future := issue(t, p, nil)
+	clk.Advance(-session.DefaultPreAuthSkew - 2*time.Second)
+	for _, r := range []*http.Request{nil, post(t), post(t, forged), post(t, future)} {
+		expires, ok = p.Expires(r)
+		t.Must(be.False(ok))
+		t.Must(be.True(expires.IsZero()))
+	}
+}
+
 func TestPreAuthClockSkew(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	clk := newClock()

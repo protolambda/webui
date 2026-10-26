@@ -346,6 +346,14 @@ func EventSource() ReqOption {
 
 // Origin sets the Origin header; "" removes it. By default, requests other
 // than GET and HEAD carry the origin of the base URL, as browsers send it.
+//
+// It changes only the Origin: Sec-Fetch-Site stays "same-origin", which
+// mw.SameOrigin (like http.CrossOriginProtection) trusts before Origin,
+// so Origin([ForeignOrigin]) alone builds a request that no browser sends,
+// and it passes such a policy. For a cross-origin request of a current
+// browser, add [FetchSite]("cross-site") (or "same-site"); for one of a
+// client without fetch metadata, use [NoFetchMetadata] and set the Origin
+// with [Header]; [CrossSiteProbes] has both kinds.
 func Origin(origin string) ReqOption {
 	return func(s *reqSettings) { s.origin = ptr(origin) }
 }

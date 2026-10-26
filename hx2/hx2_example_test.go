@@ -125,6 +125,16 @@ func Example_polling() {
 	// Output: <div id="status" hx-get="/status?version=3" hx-trigger="every 2s" hx-swap="outerHTML" hx-sync="this:replace"></div>
 }
 
+// A polled section that htmx swaps with outerHTML keeps the form that the
+// user is filling in: the form has hx-preserve and an id that every answer
+// renders again.
+func ExamplePreserve() {
+	core.Dump(div.Div(attr.ID("activity"), hx2.Get("/tasks/7/activity"), hx2.Trigger("every 5s"), hx2.Swap(hx2.SwapOuterHTML))(
+		elem.Name("form").New(attr.ID("comment-form"), hx2.Preserve(), hx2.Post("/tasks/7/comments"))(),
+	))
+	// Output: <div id="activity" hx-get="/tasks/7/activity" hx-trigger="every 5s" hx-swap="outerHTML"><form id="comment-form" hx-preserve hx-post="/tasks/7/comments"></form></div>
+}
+
 func ExampleHistory() {
 	core.Dump(div.Div(attr.ID("settings"), hx2.History(false)))
 	// Output: <div id="settings" hx-history="false"></div>

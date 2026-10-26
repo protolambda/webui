@@ -99,7 +99,9 @@ type Client struct {
 	// [DefaultShell](), the shell of pages that load the default theme
 	// set. An application that loads other sets, such as a theme without
 	// icons, sets it to their shell and keeps the default rules:
-	// new(webuitest.DefaultShell(sets...)).
+	// new(webuitest.DefaultShell(sets...)). While it is nil, the failure
+	// of a page that loads other stylesheets or scripts than DefaultShell()
+	// ends with a line that suggests so.
 	Shell *Shell
 	// Contract checks the pages that [Client.Page] returns; nil means
 	// [PageContract] with Shell and [Rules]([WithCSRF](CSRF)).
@@ -252,9 +254,15 @@ func (c *Client) Page(t TB, res *cthttp.Result, status int) *ct.Subject {
 	mustbe.Must(t, res.Status(status))
 	page := res.HTML()
 	contract := c.Contract
-	if contract == nil {
+	switch {
+	case contract != nil:
+	case c.Shell != nil:
 		contract = func(p *ct.Subject) assertion.Assertion {
-			return PageContract(p, shellOrDefault(c.Shell), Rules(WithCSRF(c.CSRF))...)
+			return PageContract(p, *c.Shell, Rules(WithCSRF(c.CSRF))...)
+		}
+	default:
+		contract = func(p *ct.Subject) assertion.Assertion {
+			return hinted{inner: PageContract(p, DefaultShell(), Rules(WithCSRF(c.CSRF))...), page: p, option: "Client.Shell"}
 		}
 	}
 	mustbe.Must(t, contract(page))

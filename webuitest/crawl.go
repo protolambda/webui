@@ -135,8 +135,11 @@ type CrawlOptions struct {
 	// Routes, when set, must route every target that the crawl finds.
 	Routes RouteChecker
 	// Shell is the page shell of the default contract, as for
-	// [Client.Shell]; nil means [DefaultShell](). The crawl does not read
-	// the Shell (or the Contract) of the Client that it sends through.
+	// [Client.Shell]; nil means [DefaultShell](), and then the problem of
+	// the first page that fails the default contract and loads other
+	// stylesheets or scripts than DefaultShell() ends with a line that
+	// suggests a Shell. The crawl does not read the Shell (or the
+	// Contract) of the Client that it sends through.
 	Shell *Shell
 	// Contract checks every crawled page; nil means [PageContract] with
 	// Shell and [Rules]().
@@ -200,15 +203,16 @@ type CrawlOptions struct {
 }
 
 // pick returns the contract of a page key: the one that pickFor returns
-// for its URL on site, when pickFor is set and returns one, or def.
-func pick(site *url.URL, key string, def Contract, pickFor func(u *url.URL) Contract) Contract {
+// for its URL on site, when pickFor is set and returns one, or def. It
+// reports whether it is def.
+func pick(site *url.URL, key string, def Contract, pickFor func(u *url.URL) Contract) (Contract, bool) {
 	if pickFor == nil {
-		return def
+		return def, true
 	}
 	if c := pickFor(resolve(site, key)); c != nil {
-		return c
+		return c, false
 	}
-	return def
+	return def, true
 }
 
 // CrawlReport is the result of a [Crawl]: the pages crawled, the targets
@@ -348,6 +352,9 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 		shell := shellOrDefault(o.Shell)
 		contract = func(p *ct.Subject) assertion.Assertion { return PageContract(p, shell) }
 	}
+	// hint tells whether a failure of the default contract may still get
+	// the hint of a Shell: once per crawl.
+	hint := o.Contract == nil && o.Shell == nil
 	fragContract := o.FragmentContract
 	if fragContract == nil {
 		fragContract = func(f *ct.Subject) assertion.Assertion { return FragmentContract(f) }
@@ -456,7 +463,12 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			continue
 		}
 		page := res.HTML()
-		if err := pick(site, q.url, contract, o.ContractFor)(page).Check(t.Context()); err != nil {
+		c, def := pick(site, q.url, contract, o.ContractFor)
+		if err := c(page).Check(t.Context()); err != nil {
+			if hint && def && loadsOtherAssets(t.Context(), page, DefaultShell()) {
+				err = fmt.Errorf("%w\n  %s", err, defaultShellHint("CrawlOptions.Shell"))
+				hint = false
+			}
 			problem("page %s: %v", q.url, err)
 		}
 		doc, err := page.Load(t.Context())
@@ -530,7 +542,8 @@ func Crawl(t TB, s Sender, o CrawlOptions) *CrawlReport {
 			}
 			switch code := res.StatusCode(); code {
 			case http.StatusOK:
-				if err := pick(site, key, fragContract, o.FragmentContractFor)(res.HTMLFragment("div")).Check(t.Context()); err != nil {
+				c, _ := pick(site, key, fragContract, o.FragmentContractFor)
+				if err := c(res.HTMLFragment("div")).Check(t.Context()); err != nil {
 					problem("fragment %s (hx-get on %s): %v", key, fragments[key], err)
 				}
 			case http.StatusNoContent:

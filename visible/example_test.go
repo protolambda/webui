@@ -3,6 +3,7 @@ package visible_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/protolambda/chord/core"
 	"github.com/protolambda/chord/core/attr"
@@ -138,6 +139,41 @@ func ExampleCode() {
 	// Output:
 	// <tr><td><bdi>Ada Lovelace</bdi></td><td><code dir="ltr">ada.lovelace</code></td></tr>
 	// <span class="badge text-bg-warning" title="Shown with escapes: the value has invisible, control or text direction characters, or spaces that would not show">escaped</span> <code dir="ltr">notes.example\u00A0</code>
+}
+
+// Prose shows text of several lines, such as a note: its line breaks stay
+// line breaks, and its spaces and tabs are left for HTML to collapse. The
+// marker shows only when something else is escaped.
+func ExampleProse() {
+	core.Dump(visible.Prose("Water the plants\r\n  on Friday"))
+	core.Dump(visible.Prose("Water the plants\non\u200BFriday"))
+	// Output:
+	// <bdi>Water the plants</bdi><br/><bdi>  on Friday</bdi>
+	// <span class="badge text-bg-warning" title="Shown with escapes: the value has invisible, control or text direction characters, or spaces that would not show">escaped</span> <code dir="ltr">Water the plants<br/>on\u200BFriday</code>
+}
+
+// EscapeProse keeps line breaks, spaces and tabs as they are, and escapes
+// everything else that EscapeText escapes.
+func ExampleEscapeProse() {
+	for _, s := range []string{
+		"First line\n  indented,  with two spaces\n",
+		"C:\\notes\nline\u2028separator",
+	} {
+		out, escaped := visible.EscapeProse(s)
+		fmt.Println(escaped)
+		for line := range strings.Lines(out) {
+			fmt.Print("| ", line)
+		}
+		fmt.Println()
+	}
+	// Output:
+	// false
+	// | First line
+	// |   indented,  with two spaces
+	//
+	// true
+	// | C:\\notes
+	// | line\u2028separator
 }
 
 // TextString names a value where only text fits, such as the label of an

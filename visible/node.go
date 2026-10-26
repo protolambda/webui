@@ -53,6 +53,29 @@ func Code(s string) elem.Node {
 	return Marking{}.Code(s)
 }
 
+// Prose renders text of several lines, such as a description or a note,
+// escaped by [EscapeProse], with a br element at every line break. Prose
+// that needs no escape renders each line in a bdi element, which isolates
+// its direction, as [Text] does:
+//
+//	<bdi>Water the plants</bdi><br/><bdi>on Friday</bdi>
+//
+// Escaped prose renders as [Marker], a space, and the escaped lines in one
+// code element, left to right:
+//
+//	<span class="badge ...">escaped</span> <code dir="ltr">Water the plants<br/>on\u200BFriday</code>
+//
+// Spaces and tabs stay as they are, for HTML to collapse: render Prose where
+// white space collapses, as it does by default, and not in a pre element or
+// under a white-space style that preserves it. A run of line breaks, which
+// shows no marker, pushes the lines after it down: bound the lines of
+// untrusted prose, or do not clip its box by height (see the package
+// documentation). Empty text renders an empty bdi element.
+// [Marking.Prose] renders the marker with other words.
+func Prose(s string) elem.Node {
+	return Marking{}.Prose(s)
+}
+
 // TextString returns display text, such as a name or a title, for places
 // that hold only text: attribute values such as aria-label, title, alt and
 // placeholder, the label of an option, the document title, the message of
@@ -99,12 +122,13 @@ func Marker() elem.Node {
 	return Marking{}.Marker()
 }
 
-// Marking is the marker that [Marking.Text] and [Marking.Code] put before
-// escaped values, and whose label [Marking.TextString] and
-// [Marking.CodeString] write before them, with words of the application's
-// choice, such as a translation. The zero value is the English marker of
-// [Text], [Code], [TextString], [CodeString] and [Marker]. A Marking is a
-// small value, safe to copy and to use concurrently.
+// Marking is the marker that [Marking.Text], [Marking.Code] and
+// [Marking.Prose] put before escaped values, and whose label
+// [Marking.TextString] and [Marking.CodeString] write before them, with
+// words of the application's choice, such as a translation. The zero value
+// is the English marker of [Text], [Code], [Prose], [TextString],
+// [CodeString] and [Marker]. A Marking is a small value, safe to copy and
+// to use concurrently.
 type Marking struct {
 	// Label is the visible text of the badge, and the word before escaped
 	// values in the string forms; empty or blank means [MarkerText]. The
@@ -155,6 +179,29 @@ func (m Marking) Code(s string) elem.Node {
 		return code(v)
 	}
 	return m.marked(v)
+}
+
+// Prose renders s as [Prose] does, with the marker of m.
+func (m Marking) Prose(s string) elem.Node {
+	v, escaped := EscapeProse(s)
+	lines := strings.Split(v, "\n")
+	nodes := make([]elem.Node, 0, 2*len(lines)-1)
+	for i, l := range lines {
+		if i > 0 {
+			nodes = append(nodes, text.BR())
+		}
+		// The result keeps a carriage return only before a line feed.
+		l = strings.TrimSuffix(l, "\r")
+		if escaped {
+			nodes = append(nodes, text.Text(l))
+		} else {
+			nodes = append(nodes, text.Bdi()(text.Text(l)))
+		}
+	}
+	if !escaped {
+		return elem.Bundle(nodes)
+	}
+	return elem.Bundle{m.Marker(), text.Text(" "), text.Code(attr.Dir("ltr"))(nodes...)}
 }
 
 // TextString returns s as [TextString] does, with the label of m: the

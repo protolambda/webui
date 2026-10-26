@@ -62,9 +62,9 @@ const (
 //
 // The result is valid UTF-8, at most six times as long as s, and shows as
 // itself: Escape of the result returns it unchanged. See [EscapeText] for
-// display text.
+// display text, and [EscapeProse] for text of several lines.
 func Escape(s string) (string, bool) {
-	return escape(s, false)
+	return escape(s, strict)
 }
 
 // EscapeText is [Escape] for display text, such as names and titles: it
@@ -97,7 +97,37 @@ func Escape(s string) (string, bool) {
 // replaces too, so the result of [Escape] needs no further escape by
 // EscapeText.
 func EscapeText(s string) (string, bool) {
-	return escape(s, true)
+	return escape(s, display)
+}
+
+// EscapeProse is [EscapeText] for prose, text of several lines such as a
+// description or a note. It keeps the white space that [Prose] shows as
+// line breaks, or that HTML collapses into one space, as it is:
+//   - line breaks: a line feed (U+000A), or a carriage return and a line
+//     feed;
+//   - ASCII spaces and tabs, also at the start or end of a line and in
+//     runs.
+//
+// None of it hides text within a line, but many line breaks can push the
+// text after them out of a box that clips at a fixed height, unmarked (see
+// the package documentation). Everything else is escaped as [EscapeText]
+// escapes it: the other control characters (a carriage return on its own
+// too), the line and paragraph separators U+2028 and U+2029, the other
+// spaces, such as a no-break space next to white space, the direction
+// controls and the invisible characters. A character that shows only after
+// another one, such as a combining mark, is escaped at the start of s and
+// of every line, and after white space other than a single space after
+// another character. EscapeProse reports whether it escaped anything, which
+// white space alone never is. If not, it returns s itself, without
+// allocating.
+//
+// As with [EscapeText], the result decodes unambiguously back to s, and
+// EscapeProse of the result returns it unchanged. Prose that differs only
+// in white space looks the same: a tab or two spaces between two words look
+// like one space. Use [EscapeText] or [Escape] for values that must look
+// different, such as names.
+func EscapeProse(s string) (string, bool) {
+	return escape(s, prose)
 }
 
 // Rune reports whether r shows as itself on its own: it is a printable
@@ -118,17 +148,25 @@ func Rune(r rune) bool {
 		!unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
 }
 
-// escape escapes s (see [Escape]), with the leniency of [EscapeText] if
-// lenient.
-func escape(s string, lenient bool) (string, bool) {
-	if showsAsIs(s, lenient) {
+// mode is the leniency of an escape.
+type mode uint8
+
+const (
+	strict  mode = iota // [Escape]
+	display             // [EscapeText]
+	prose               // [EscapeProse]
+)
+
+// escape escapes s (see [Escape]), with the leniency of mode m.
+func escape(s string, m mode) (string, bool) {
+	if showsAsIs(s, m) {
 		return s, false
 	}
 	var b strings.Builder
 	b.Grow(len(s) + len(s)/4 + 16)
 	prev := false
 	for i := 0; i < len(s); {
-		n, shows := unit(s, i, prev, lenient)
+		n, shows := unit(s, i, prev, m)
 		switch {
 		case !shows:
 			writeEscape(&b, s[i:i+n])
@@ -137,37 +175,44 @@ func escape(s string, lenient bool) (string, bool) {
 		default:
 			b.WriteString(s[i : i+n])
 		}
-		prev = shows
+		prev = shows && base(s, i, m)
 		i += n
 	}
 	return b.String(), true
 }
 
 // showsAsIs reports whether every unit of s shows as itself (see unit).
-func showsAsIs(s string, lenient bool) bool {
+func showsAsIs(s string, m mode) bool {
+	prev := false
 	for i := 0; i < len(s); {
-		n, shows := unit(s, i, i > 0, lenient)
+		n, shows := unit(s, i, prev, m)
 		if !shows {
 			return false
 		}
+		prev = base(s, i, m)
 		i += n
 	}
 	return true
 }
 
 // unit returns the size in bytes of the unit at byte i of s, and whether it
-// shows as itself. A unit is a character, a byte of invalid UTF-8, or, if
-// lenient, a flag with its tag characters (see [EscapeText]); a unit that
-// does not show is always a single character or byte. prev reports whether
-// the unit before it shows as itself (false at the start of s): characters
-// that show only next to others need a shown character before them.
-func unit(s string, i int, prev, lenient bool) (int, bool) {
+// shows as itself. A unit is a character, a byte of invalid UTF-8, in prose
+// a line break (a line feed, or a carriage return and a line feed), or, if
+// lenient (display or prose), a flag with its tag characters (see
+// [EscapeText]); a unit that does not show is always a single character or
+// byte. prev reports whether the unit before it shows as itself and is a
+// base (see base; false at the start of s): characters that show only next
+// to others need such a unit before them.
+func unit(s string, i int, prev bool, m mode) (int, bool) {
+	lenient := m != strict
 	if c := s[i]; c < utf8.RuneSelf {
 		switch {
-		case c == ' ':
-			return 1, plainSpace(s, i)
 		case c > ' ' && c < 0x7F:
 			return 1, true
+		case m == prose:
+			return proseSpace(s, i)
+		case c == ' ':
+			return 1, plainSpace(s, i)
 		}
 		return 1, false // a control character
 	}
@@ -201,6 +246,46 @@ func unit(s string, i int, prev, lenient bool) (int, bool) {
 // to another space.
 func plainSpace(s string, i int) bool {
 	return i > 0 && i < len(s)-1 && s[i-1] != ' ' && s[i+1] != ' '
+}
+
+// proseSpace returns the size of the ASCII control character or space at
+// byte i of s, and whether it shows as itself in prose (see [EscapeProse]):
+// a space, a tab, a line feed, or a carriage return and a line feed, as one
+// unit.
+func proseSpace(s string, i int) (int, bool) {
+	switch s[i] {
+	case ' ', '\t', '\n':
+		return 1, true
+	case '\r':
+		if i+1 < len(s) && s[i+1] == '\n' {
+			return 2, true
+		}
+	}
+	return 1, false
+}
+
+// base reports whether the unit at byte i of s, which shows as itself, is
+// a base for the characters that show only next to others, such as
+// combining marks (see unit). Every unit is, except in prose: there, line
+// breaks and tabs are not, and a space is only right after a character
+// that is not white space, where HTML keeps it.
+func base(s string, i int, m mode) bool {
+	if m != prose {
+		return true
+	}
+	switch s[i] {
+	case '\t', '\n', '\r':
+		return false
+	case ' ':
+		return i > 0 && !asciiSpace(s[i-1])
+	}
+	return true
+}
+
+// asciiSpace reports whether c is white space that HTML collapses: a
+// space, a tab, a line feed or a carriage return.
+func asciiSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // selects reports whether the presentation selector r (of size bytes) at
@@ -259,11 +344,11 @@ func joinsLetters(s string, i, size int) bool {
 }
 
 // betweenVisible reports whether the no-break space (of size bytes) at byte
-// i of s is between two characters that show, neither a space. The caller
-// checks that the character before it shows.
+// i of s is between two characters that show, neither white space. The
+// caller checks that the character before it shows.
 func betweenVisible(s string, i, size int) bool {
 	after := runeAt(s, i+size)
-	return s[i-1] != ' ' && after != ' ' && Rune(after)
+	return !asciiSpace(s[i-1]) && after != ' ' && Rune(after)
 }
 
 // runeAt returns the character at byte i of s, or -1 if there is none: at

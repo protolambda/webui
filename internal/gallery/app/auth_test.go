@@ -116,13 +116,19 @@ func TestLogin(gt *testing.T) {
 		p := b.Get(t, "/notes").HTML()
 		t.Must(p.Find(ct.ID("main")).Find(ct.Class("list-group-item")).Texts("Buy <milk>"))
 		t.Must(p.Find(ct.Tag("milk")).None())
-		// A note keeps its lines, each shown through visible.Text: a line
-		// break is no escape, an invisible character is.
-		t.Must(webuitest.Location(add("Call Bo\r\nat\u200Bnoon"), http.StatusSeeOther, ct.Exact("/notes?notice=note-added")))
+		// A note keeps its lines and its spaces (visible.Prose): a line
+		// break or an indented line is no escape.
+		t.Must(webuitest.Location(add("Call Bo\r\n  at noon"), http.StatusSeeOther, ct.Exact("/notes?notice=note-added")))
 		item := b.Get(t, "/notes").HTML().Find(ct.ID("main")).Find(ct.Class("list-group-item")).Last()
-		t.Must(item.Find(ct.Tag("div")).Count(2))
-		t.Must(item.Find(ct.Tag("div")).First().Texts("Call Bo"))
+		t.Must(item.Find(ct.Tag("br")).Count(1))
+		t.Must(item.Find(ct.Tag("bdi")).Texts("Call Bo", "at noon"))
+		t.Must(item.Find(ct.Class("badge")).None())
+		// An invisible character is escaped, and the note marked once.
+		t.Must(webuitest.Location(add("Call Bo\r\nat\u200Bnoon"), http.StatusSeeOther, ct.Exact("/notes?notice=note-added")))
+		item = b.Get(t, "/notes").HTML().Find(ct.ID("main")).Find(ct.Class("list-group-item")).Last()
 		t.Must(item.Find(ct.Class("badge")).Texts(visible.MarkerText))
+		t.Must(item.Find(ct.Tag("code")).Find(ct.Tag("br")).Count(1))
+		t.Must(item.Matches(ct.InnerText(`escaped Call Bo at\u200Bnoon`)))
 
 		res := add("   ")
 		t.Must(res.Status(http.StatusUnprocessableEntity))

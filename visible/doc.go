@@ -1,6 +1,6 @@
-// Package visible shows untrusted text, such as the names, titles and
-// labels that other users or other systems chose, so that a reader sees
-// what the text is.
+// Package visible shows untrusted text, such as the names, titles, labels
+// and descriptions that other users or other systems chose, so that a
+// reader sees what the text is.
 //
 // HTML escaping, which chord applies to all text, keeps such text from
 // becoming markup. It does not keep the text from misleading a reader. A
@@ -14,9 +14,11 @@
 // escape, and reports whether it replaced anything. [EscapeText] does the
 // same, but is a little more lenient, for display text: it also keeps emoji
 // sequences, no-break spaces between words, and the joiners that Arabic and
-// Indic scripts write with. [Text] and [Code] render the result as chord
-// nodes. When anything is escaped, they show the escaped form in a code
-// element, preceded by [Marker], a badge that says so; [Marking] renders
+// Indic scripts write with. [EscapeProse] is EscapeText for text of several
+// lines: it also keeps line breaks, spaces and tabs. [Text], [Code] and
+// [Prose] render the result as chord nodes (Prose with a br element at each
+// line break). When anything is escaped, they show the escaped form in a
+// code element, preceded by [Marker], a badge that says so; [Marking] renders
 // that badge with other words, such as a translation. [TextString] and
 // [CodeString] return the same as text, for places that hold only text:
 // the value as it is when nothing is escaped, and otherwise the word of the
@@ -40,10 +42,10 @@
 // literal "\u202E" in escaped text reads "\\u202E". Characters that only
 // look like a backslash show as themselves and are not escaped (see below).
 // Text that needs no escape is returned as it is, backslashes and all. The
-// reported bool, or the marker that [Text] and [Code] add, tells the two
-// cases apart, so show it wherever the escaped form is shown: as [Marker]
-// in markup, and as the word that [TextString] and [CodeString] write in
-// text.
+// reported bool, or the marker that [Text], [Code] and [Prose] add, tells
+// the two cases apart, so show it wherever the escaped form is shown: as
+// [Marker] in markup, and as the word that [TextString] and [CodeString]
+// write in text.
 //
 // The escaped form is valid UTF-8, at most six times as long as the input,
 // and shows as itself: escaping it again changes nothing. It decodes
@@ -60,12 +62,28 @@
 // another account's "Ada Lovelace"). A validator can refuse such values when
 // they are entered: a value that [Escape] escapes does not show as itself.
 //
+// Use [Prose] for text of several lines, such as a description or a note.
+// [Text] and [Code] escape line breaks and tabs, because a name must not
+// hide text on lines out of view, so they would show every line break of a
+// description as an escape, with the marker. Prose keeps line breaks, and
+// leaves spaces and tabs for HTML to collapse: none of them hides text
+// within a line. It escapes everything else as [Text] does, and shows the
+// marker only then. Prose that differs only in white space looks the same,
+// so names and titles still go through [Text].
+//
+// Line breaks can still move text out of view. Each one renders a br
+// element, and blank lines do not collapse, so a run of them pushes the
+// text after it down, past the end of a box that clips its content at a
+// fixed height, and no marker shows. Bound the number of lines of
+// untrusted prose when it is entered, or show prose in a box that grows
+// with it or scrolls, not in one that clips it by height.
+//
 // Escaping removes the direction controls, but right-to-left letters still
 // order the characters around them, by the Unicode bidirectional algorithm.
-// [Text] renders text in a bdi element, and [Code] in a code element with
-// dir="ltr"; both isolate the text, so that it cannot reorder the page text
-// next to it. Put the results of [Escape] and [EscapeText] in such an
-// element too.
+// [Text] renders text in a bdi element, [Prose] each of its lines, and
+// [Code] in a code element with dir="ltr"; all of them isolate the text, so
+// that it cannot reorder the page text next to it. Put the results of
+// [Escape], [EscapeText] and [EscapeProse] in such an element too.
 //
 // Some places hold only text: attribute values such as aria-label, title,
 // alt and placeholder, the label of an option, the document title, the
@@ -116,8 +134,8 @@
 // combining marks draws over the lines above and below it. Bound the length
 // of untrusted values when they are entered, and clip the elements that show
 // them where the layout matters. Clipping must keep the marker in view:
-// [Text] and [Code] put it before the value, so that clipping the end, for
-// example with Bootstrap's text-truncate class
+// [Text], [Code] and [Prose] put it before the value, so that clipping the
+// end, for example with Bootstrap's text-truncate class
 // ([github.com/protolambda/webui/ba.TextTruncate]), cuts the value and keeps
 // the marker. Put [Marker] before the value in markup of your own too.
 //

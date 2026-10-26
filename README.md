@@ -107,7 +107,7 @@ supplies credential verification and access rules.
 | Forms, sessions, and CSRF | [`form`](./form), [`session`](./session) |
 | Handlers, middleware, and serving | [`web`](./web), [`mw`](./mw), [`server`](./server) |
 | Partial updates and live regions | [`hx2`](./hx2), [`sse`](./sse) |
-| Displaying untrusted names and identifiers | [`visible`](./visible) |
+| Displaying untrusted names, identifiers, and descriptions | [`visible`](./visible) |
 | Testing pages and request flows | [`webuitest`](./webuitest) |
 
 The package documentation covers contracts and configuration; executable `Example` tests show how the APIs fit

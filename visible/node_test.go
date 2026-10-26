@@ -124,16 +124,79 @@ func TestStringFormsReadAsNodes(gt *testing.T) {
 	}
 }
 
+func TestProseMarkup(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, c := range []struct{ in, out string }{
+		{"", `<bdi></bdi>`},
+		{"Water the plants", `<bdi>Water the plants</bdi>`},
+		{"Water the plants\non Friday", `<bdi>Water the plants</bdi><br/><bdi>on Friday</bdi>`},
+		{"a\r\nb\n", `<bdi>a</bdi><br/><bdi>b</bdi><br/><bdi></bdi>`},
+		{"a\n\nb", `<bdi>a</bdi><br/><bdi></bdi><br/><bdi>b</bdi>`},
+		{"  indented\n\ttabbed  ", "<bdi>  indented</bdi><br/><bdi>\ttabbed  </bdi>"},
+		{"<b>bold</b>\n& \"quoted\"", `<bdi>&lt;b&gt;bold&lt;/b&gt;</bdi><br/><bdi>&amp; &#34;quoted&#34;</bdi>`},
+		{"\u0645\u0631\u062D\u0628\u0627\nHello", "<bdi>\u0645\u0631\u062D\u0628\u0627</bdi><br/><bdi>Hello</bdi>"},
+		{"line\nad\u200Bmin", marker + bs(` <code dir="ltr">line<br/>ad~u200Bmin</code>`)},
+		{"C:\\notes\r\n\u202E", marker + bs(` <code dir="ltr">C:~~notes<br/>~u202E</code>`)},
+		{"old\rmac", marker + bs(` <code dir="ltr">old~rmac</code>`)},
+		{"line\u2028separator", marker + bs(` <code dir="ltr">line~u2028separator</code>`)},
+		{"<i>x</i>\n\u00A0", marker + bs(` <code dir="ltr">&lt;i&gt;x&lt;/i&gt;<br/>~u00A0</code>`)},
+	} {
+		t.Mustf(be.Equal(c.out, render(t, visible.Prose(c.in))), "Prose(%+q)", c.in)
+	}
+}
+
+// TestProseView checks prose as a reader and a test see it: the lines
+// stay lines, a single marker comes first, and nothing in the value reorders
+// or hides the text around it.
+func TestProseView(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	for _, c := range []struct{ in, text string }{
+		// Bidi controls on one line of several.
+		{"First line\nevil\u202Etxt.exe\u2066x\nlast line", bs("escaped First line evil~u202Etxt.exe~u2066x last line")},
+		// A line separator, which is no line break.
+		{"one\u2028two", bs("escaped one~u2028two")},
+		// A no-break space next to white space looks like two spaces.
+		{"Ada \u00A0Lovelace\nnext", bs("escaped Ada ~u00A0Lovelace next")},
+		// Zero-width characters.
+		{"ad\u200Bmin\r\nre\u200Dview\u2060", bs("escaped ad~u200Bmin re~u200Dview~u2060")},
+	} {
+		page := ct.View(text.P()(text.Text("Note: "), visible.Prose(c.in), text.Text(".")))
+		p := page.Find(ct.Tag("p"))
+		t.Mustf(p.Matches(ct.InnerText("Note: "+c.text+".")), "Prose(%+q)", c.in)
+		t.Mustf(p.Find(ct.Class("badge")).Count(1), "Prose(%+q) marker", c.in)
+		t.Mustf(p.Find(ct.Class("badge").Or(ct.Tag("code"))).InOrder(ct.Class("badge"), ct.Tag("code")), "Prose(%+q) order", c.in)
+		t.Mustf(p.Find(ct.Tag("code")).Matches(ct.Attr("dir", "ltr")), "Prose(%+q) direction", c.in)
+		t.Mustf(p.Find(ct.Tag("code")).Find(ct.Tag("br")).Count(strings.Count(c.in, "\n")), "Prose(%+q) lines", c.in)
+		t.Mustf(page.Valid(webuitest.Rules()...), "Prose(%+q) breaks the webui rules", c.in)
+	}
+
+	// Prose that needs no escape isolates every line.
+	page := ct.View(text.P()(visible.Prose("\u0645\u0631\u062D\u0628\u0627\nHello  world\n\tagain")))
+	t.Must(page.Find(ct.Tag("bdi")).Count(3))
+	t.Must(page.Find(ct.Tag("br")).Count(2))
+	t.Must(page.Find(ct.Tag("p")).Matches(ct.InnerText("\u0645\u0631\u062D\u0628\u0627 Hello world again")))
+	t.Must(page.Find(ct.Class("badge")).None())
+	t.Must(page.Find(ct.Tag("code")).None())
+}
+
 // TestNodesHostile renders the hostile inputs of webuitest: they stay
 // text, the rendered HTML has no direction controls or other invisible
 // format characters, and it satisfies the webui rules (no inline styles).
 func TestNodesHostile(gt *testing.T) {
 	t := devtest.ParallelT(gt)
 	for _, s := range webuitest.Hostile() {
-		for _, node := range []elem.Node{visible.Text(s), visible.Code(s)} {
+		for _, c := range []struct {
+			node elem.Node
+			tabs bool // prose keeps tabs, which HTML collapses
+		}{
+			{visible.Text(s), false},
+			{visible.Code(s), false},
+			{visible.Prose(s), true},
+		} {
+			node := c.node
 			html := render(t, node)
 			t.Mustf(be.False(strings.ContainsFunc(html, func(r rune) bool {
-				return unicode.In(r, unicode.Bidi_Control, unicode.Cc, unicode.Cf)
+				return unicode.In(r, unicode.Bidi_Control, unicode.Cc, unicode.Cf) && !(c.tabs && r == '\t')
 			})), "rendered %+q has an invisible character", s)
 			page := ct.View(node)
 			t.Mustf(page.Valid(webuitest.Rules()...), "rendered %+q breaks the webui rules", s)
@@ -151,10 +214,13 @@ func TestNodesHostile(gt *testing.T) {
 // the words stay text.
 func TestMarking(gt *testing.T) {
 	t := devtest.ParallelT(gt)
-	for _, s := range []string{"", "Ada", "ad\u200Bmin", "10\u00A0km", "invoice\u202Efdp.exe"} {
+	for _, s := range []string{"", "Ada", "ad\u200Bmin", "10\u00A0km", "invoice\u202Efdp.exe", "two\nlines", "two\nad\u200Bmin"} {
 		t.Mustf(be.Equal(render(t, visible.Text(s)), render(t, visible.Marking{}.Text(s))), "Text(%+q)", s)
 		t.Mustf(be.Equal(render(t, visible.Code(s)), render(t, visible.Marking{}.Code(s))), "Code(%+q)", s)
+		t.Mustf(be.Equal(render(t, visible.Prose(s)), render(t, visible.Marking{}.Prose(s))), "Prose(%+q)", s)
 	}
+	t.Must(be.Equal(`<span class="badge text-bg-warning" title="`+visible.MarkerTitle+`">maskiert</span>`+bs(` <code dir="ltr">a<br/>b~u200B</code>`),
+		render(t, visible.Marking{Label: "maskiert"}.Prose("a\nb\u200B"))))
 	t.Must(be.Equal(render(t, visible.Marker()), render(t, visible.Marking{}.Marker())))
 	t.Must(be.Equal(marker, render(t, visible.Marking{Label: " ", Title: "\t\n"}.Marker())))
 

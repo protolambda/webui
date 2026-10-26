@@ -40,7 +40,10 @@
 //   - [AlertsID] ("alerts"): a polite live region at the top of the main
 //     content. Alerts placed here at render time show with the page; the web
 //     package retargets htmx error responses into it, so that a failed
-//     request shows its message without client-side script.
+//     request shows its message without client-side script. Its content is
+//     transient: those answers and out-of-band notices ([AlertsOOB])
+//     replace all of it, so a warning that must stay with the page belongs
+//     in the [Header] or the main content.
 //   - [DialogsID] ("dialogs"): the dialogs of the page, after all other
 //     content and outside every form (forms do not nest, and a dialog often
 //     holds a form of its own).

@@ -60,6 +60,11 @@ type RequestLog struct {
 	// read from the request after the handler returns ([http.Request.Pattern]),
 	// which the mux sets only on the request value it receives: it is lost
 	// when an inner middleware derives a new request, as [HostCheck] does.
+	//
+	// For nested muxes, pass the router of the mux that serves the request:
+	// with an outer mux that serves a UI mux at its catch-all "/", the outer
+	// mux reports "/" for every request of the UI. [Mounted](outer, "/", ui)
+	// resolves those with the UI mux and the others with the outer one.
 	Routes Router
 
 	// Path adds the escaped URL path (at most 256 bytes) to the records. Off

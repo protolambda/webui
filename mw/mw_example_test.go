@@ -387,6 +387,35 @@ func ExampleLogRequests() {
 	// level=INFO msg="http request" method=GET pattern="" status=404 bytes=19
 }
 
+// Mounted resolves the patterns of a UI mux that an outer mux serves at
+// its catch-all "/", so that the request log names them instead of "/".
+func ExampleMounted() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey || a.Key == "duration" {
+				return slog.Attr{} // for a stable output
+			}
+			return a
+		},
+	}))
+	ui := http.NewServeMux()
+	ui.HandleFunc("GET /notes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "note")
+	})
+	outer := http.NewServeMux()
+	outer.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	})
+	outer.Handle("/", ui)
+	routes := mw.Mounted(outer, "/", ui)
+	h := mw.LogRequests(mw.RequestLog{Logger: logger, Routes: routes})(outer)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/notes/42", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	// Output:
+	// level=INFO msg="http request" method=GET pattern="GET /notes/{id}" status=200 bytes=4
+	// level=INFO msg="http request" method=GET pattern="GET /healthz" status=200 bytes=2
+}
+
 func ExampleLogger() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {

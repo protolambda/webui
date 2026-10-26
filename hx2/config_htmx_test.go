@@ -81,6 +81,25 @@ func TestConfigKeysMatchPinnedHTMX(gt *testing.T) {
 	}
 }
 
+// The docs of Validate and Config rely on htmx's default of
+// reportValidityOfForms, false (a request that htmx checks and stops shows
+// nothing), and on Extra setting it, which makes htmx report the field.
+func TestReportValidityOfForms(gt *testing.T) {
+	t := devtest.ParallelT(gt)
+	data, err := fs.ReadFile(theme.FS(), theme.HTMXJS)
+	t.Must(be.NoError(err))
+	script := string(data)
+	literal, err := configLiteral(script)
+	t.Must(be.NoError(err))
+	t.Must(be.Substring(literal, "reportValidityOfForms:false"))
+	t.Must(be.Substring(script, ".config.reportValidityOfForms)"))
+	t.Must(be.Substring(script, ".reportValidity()"))
+
+	written, err := hx2.Config{Extra: map[string]any{"reportValidityOfForms": true}}.JSON()
+	t.Must(be.NoError(err))
+	t.Must(be.Substring(written, `"reportValidityOfForms":true`))
+}
+
 // The extraction helpers fail rather than guess on input they do not
 // understand.
 func TestConfigLiteralParsing(gt *testing.T) {

@@ -72,6 +72,20 @@ var ErrInvalidConfig = errors.New("hx2: invalid htmx config")
 // test of this package checks the keys against that script, and fails when
 // the theme moves to another release.
 //
+// Other keys keep htmx's defaults. One of them matters to forms:
+// reportValidityOfForms is false, so a request that htmx checks and stops,
+// that of an element with hx-validate="true" ([Validate]) or of a form
+// without novalidate that a trigger other than submit sends, shows no
+// message and moves no focus: nothing seems to happen. A click on an htmx
+// button inside a form skips the browser's own check too. Set the key in
+// Extra to have htmx report the first invalid field, or validate on the
+// server:
+//
+//	hx2.Config{Extra: map[string]any{"reportValidityOfForms": true}}
+//
+// An ordinary form submit is not affected: the browser checks the form,
+// and reports, before htmx sees the submit event.
+//
 // A Config is a plain value; it is safe for concurrent use as long as no
 // goroutine modifies its ResponseHandling, AttributesToSettle or Extra
 // while another reads it.
@@ -200,8 +214,9 @@ type Config struct {
 	// back to an unknown style, or to [SwapTextContent], never ends.
 	DefaultSwapStyle string
 
-	// Extra holds additional htmx config keys, e.g. "timeout" or
-	// "defaultSettleDelay", written in sorted key order with the keys above.
+	// Extra holds additional htmx config keys, e.g. "timeout",
+	// "defaultSettleDelay" or "reportValidityOfForms" (see [Validate]),
+	// written in sorted key order with the keys above.
 	// Values are encoded with encoding/json. Keys are not checked against the
 	// htmx config, so a misspelled key is silently ignored by htmx. A key that
 	// a field of Config controls, such as "allowEval", is an error: use the

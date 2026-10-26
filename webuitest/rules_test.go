@@ -574,6 +574,32 @@ func TestModalDialogs(gt *testing.T) {
 		{name: "fragment dialog", fragment: true, body: strings.TrimPrefix(dialogPage, `<button type="button" commandfor="d" command="show-modal" popovertarget="d">Open</button>`)},
 		{name: "fragment checks", fragment: true, body: `<button commandfor="d" command="show-modal">Open</button>`, want: []string{"is not on a button of type button", "has no popovertarget naming the same dialog"}},
 	})
+	// A dialog that every page renders for the openers that fragments
+	// bring needs no opener on the page; the other checks stay.
+	noOpener := mutate(`<button type="button" commandfor="d" command="show-modal" popovertarget="d">Open</button>`, ``)
+	gt.Run("shared", func(gt *testing.T) {
+		checkRule(gt, webuitest.ModalDialogs("d"), []ruleCase{
+			{name: "no opener", body: noOpener},
+			{name: "with opener", body: dialogPage},
+			{name: "other dialog", body: noOpener + `<dialog id="e" class="modal" popover aria-label="E"><button type="button" commandfor="e" command="close" popovertarget="e" popovertargetaction="hide" autofocus>x</button></dialog>`, want: []string{`dialog at html[1]/body[1]/dialog#e[1] has no opener (command="show-modal")`}},
+			{name: "other checks", body: strings.Replace(noOpener, ` autofocus`, ``, 1), want: []string{"has no autofocus control"}},
+			{name: "no close button", body: `<div id="dialogs"><dialog id="d" class="modal" popover aria-label="D"><input name="a" autofocus></dialog></div>`, want: []string{`has no close button (command="close")`}},
+		})
+	})
+	gt.Run("shared in Rules", func(gt *testing.T) {
+		t := devtest.ParallelT(gt)
+		page := func() *ct.Subject { return cthtml.PageString(htmlPage(noOpener)) }
+		t.Must(be.ErrorContains(page().Valid(webuitest.Rules()...).Check(t.Context()), "has no opener"))
+		t.Must(page().Valid(webuitest.Rules(webuitest.WithSharedDialogs("x"), webuitest.WithSharedDialogs("d"))...))
+		var desc string
+		for _, r := range webuitest.Rules(webuitest.WithSharedDialogs("x", "d")) {
+			if webuitest.RuleName(r) == "modalDialogs" {
+				desc = r.String()
+			}
+		}
+		t.Must(be.Equal(`modalDialogs("x", "d")`, desc))
+		t.Must(be.Equal("modalDialogs()", webuitest.ModalDialogs().String()))
+	})
 }
 
 // TestModalDialogsMatchBS checks that the dialog of the bs package, its

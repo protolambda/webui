@@ -34,9 +34,18 @@ import (
 // In a fragment (a subject without an html element) dialogs and their
 // openers may be in different responses, so a commandfor or popovertarget
 // whose dialog is missing, and a dialog without an opener, are not
-// reported there.
-func ModalDialogs() ct.Rule {
-	return ct.CustomRule("modalDialogs()", func(root ct.Node) []string {
+// reported there. On a complete page, the dialogs whose ids are among
+// shared need no opener either: dialogs that the document renders on
+// every page for the openers that later fragments bring (see
+// [WithSharedDialogs]). Every other check applies to them.
+func ModalDialogs(shared ...string) ct.Rule {
+	isShared := make(map[string]bool, len(shared))
+	quoted := make([]string, len(shared))
+	for i, id := range shared {
+		isShared[id] = true
+		quoted[i] = fmt.Sprintf("%q", id)
+	}
+	return ct.CustomRule("modalDialogs("+strings.Join(quoted, ", ")+")", func(root ct.Node) []string {
 		frag := isFragment(root)
 		ids := idIndex(root)
 		var out []string
@@ -134,7 +143,7 @@ func ModalDialogs() ct.Rule {
 			if id == "" {
 				continue
 			}
-			if !openers[id] && !frag {
+			if !openers[id] && !frag && !isShared[id] {
 				out = append(out, "dialog at "+loc(d)+" has no opener (command=\"show-modal\")")
 			}
 			if !closers[id] {

@@ -28,6 +28,7 @@ type ruleConfig struct {
 	csrf        string
 	secrets     []string
 	targets     []string
+	dialogs     []string // shared dialogs
 	bootstrapJS bool
 	urlMethods  map[string]bool // of the page around fragments; nil: the zero hx2.Config
 	without     map[string]bool
@@ -67,6 +68,16 @@ func WithHTMXConfig(c hx2.Config) RuleOption {
 // [DocumentTargets].
 func WithDocumentTargets(ids ...string) RuleOption {
 	return func(c *ruleConfig) { c.targets = append([]string(nil), ids...) }
+}
+
+// WithSharedDialogs names dialogs that the document renders on every page
+// for the openers that later fragments bring, such as a confirmation
+// dialog in the dialogs region of page.Layout that the rows of a list
+// loaded by htmx open: [ModalDialogs] requires no opener for them on a
+// page. Every other dialog check still applies to them; in a fragment, no
+// dialog needs an opener anyway. Repeated options add up.
+func WithSharedDialogs(ids ...string) RuleOption {
+	return func(c *ruleConfig) { c.dialogs = append(c.dialogs, ids...) }
 }
 
 // WithBootstrapJS drops [NoBootstrapJSHooks], for pages that load
@@ -110,8 +121,9 @@ func RuleName(r ct.Rule) string {
 //     [WithHTMXConfig] for fragments of pages with a non-default htmx
 //     configuration);
 //   - htmx and components: [HXTargets] (with [DocumentTargets], see
-//     [WithDocumentTargets]), [SSEWiring], [ModalDialogs] and
-//     [NoBootstrapJSHooks] (see [WithBootstrapJS]);
+//     [WithDocumentTargets]), [SSEWiring], [ModalDialogs] (see
+//     [WithSharedDialogs]) and [NoBootstrapJSHooks] (see
+//     [WithBootstrapJS]);
 //   - accessibility and HTML quality: [IconsHidden], [ControlsNamed],
 //     [NoNestedInteractive], [RectangularTables] and [ExternalLinksSafe];
 //   - with [WithSecrets]: [SecretsHidden] and [NotInURLs].
@@ -141,7 +153,7 @@ func Rules(opts ...RuleOption) []ct.Rule {
 		noTokenLeaks(cfg.csrf, cfg.urlMethods),
 		HXTargets(cfg.targets...),
 		SSEWiring(),
-		ModalDialogs(),
+		ModalDialogs(cfg.dialogs...),
 		IconsHidden(),
 		ControlsNamed(),
 		NoNestedInteractive(),

@@ -1,6 +1,6 @@
 module github.com/protolambda/webui
 
-go 1.27.0
+go 1.27
 
 require (
 	github.com/protolambda/chord v0.6.0
@@ -10,5 +10,5 @@ require (
 
 require (
 	github.com/protolambda/proto-log v0.2.1 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 )
